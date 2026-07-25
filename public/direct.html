@@ -79,6 +79,35 @@ const packetCounts = DSP.CHANNEL_NAMES.map(() => 0);
 const tracker = new DSP.CalmTracker();
 let lastDataAt = 0;
 
+// Breathing, from the Muse's PPG (heart) sensor rather than EEG — heart
+// rate subtly speeds up on the inhale and slows on the exhale (respiratory
+// sinus arrhythmia), which is a real, physical signature of your actual
+// breath, not a guess. 'infrared' is the PPG channel typically carrying
+// the clearest pulse waveform; red/ambient are available if it's worth
+// trying as an alternative later.
+const PPG_CHANNEL_INDEX = DSP.PPG_CHANNEL_NAMES.indexOf('infrared');
+const PPG_WINDOW_SEC = 90;   // how much history the breathing estimate looks at
+const PPG_MIN_SEC = 40;      // don't attempt an estimate on less than this much data
+let ppgBuffer = [];
+let ppgAvailable = false;
+let breathPeriod = null;     // seconds per breath, or null until confidently estimated
+
+function pushPPGSamples(raw) {
+  ppgBuffer.push(...raw);
+  const cap = PPG_WINDOW_SEC * DSP.PPG_FREQUENCY;
+  if (ppgBuffer.length > cap) ppgBuffer.splice(0, ppgBuffer.length - cap);
+}
+
+function updateBreathing() {
+  if (ppgBuffer.length < PPG_MIN_SEC * DSP.PPG_FREQUENCY) return;
+  const beats = DSP.detectBeats(ppgBuffer, DSP.PPG_FREQUENCY);
+  const period = DSP.estimateBreathingPeriod(beats);
+  if (period != null) {
+    breathPeriod = period;
+    visual.setBreathPeriod(period);
+  }
+}
+
 // Tracks what fraction of recent windows were artifact-flagged, so a single
 // blink doesn't flash a warning but sustained talking/jaw tension does.
 let artifactRate = 0;
@@ -141,9 +170,40 @@ async function connect() {
       eegChars.push(ch);
     }
 
+    // PPG is optional — if this fails for any reason (older firmware, a
+    // characteristic that isn't there), the core EEG/calm path should keep
+    // working without it; breathing just stays on the calm-linked guess.
+    try {
+      const ppgChar = await service.getCharacteristic(DSP.PPG_CHARACTERISTICS[PPG_CHANNEL_INDEX]);
+      await ppgChar.startNotifications();
+      ppgChar.addEventListener('characteristicvaluechanged', (ev) => {
+        const value = ev.target.value;
+        const raw = new Uint8Array(value.buffer, value.byteOffset + 2);
+        pushPPGSamples(DSP.decode24Bit(raw));
+      });
+      ppgAvailable = true;
+    } catch (err) {
+      ppgAvailable = false;
+    }
+
     setStatus('starting stream…');
-    for (const cmd of ['h', 'p21', 's', 'd']) {
-      await controlChar.writeValue(DSP.encodeCommand(cmd));
+    // 'p50' enables PPG alongside EEG (vs. 'p21' for EEG-only) — required
+    // for the Muse to actually stream PPG data even once subscribed. If
+    // this preset misbehaves on some firmware, fall back to the
+    // known-working EEG-only preset rather than losing the whole
+    // connection over an optional feature.
+    async function sendStartSequence(preset) {
+      for (const cmd of ['h', preset, 's', 'd']) await controlChar.writeValue(DSP.encodeCommand(cmd));
+    }
+    if (ppgAvailable) {
+      try {
+        await sendStartSequence('p50');
+      } catch (err) {
+        ppgAvailable = false;
+        await sendStartSequence('p21');
+      }
+    } else {
+      await sendStartSequence('p21');
     }
 
     setStatus('gathering signal— sit still for a moment…');
@@ -169,6 +229,8 @@ function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<'
 
 connectBtn.addEventListener('click', connect, { once: true });
 
+setInterval(updateBreathing, 2000);
+
 setInterval(() => {
   const result = computeCalm();
   if (!result) {
@@ -180,10 +242,14 @@ setInterval(() => {
   if (stale) setStatus('signal lost — check the headband fit');
   else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
   else setStatus('', { hide: true });
+  const breathLabel = !ppgAvailable ? 'n/a'
+    : breathPeriod == null ? `gathering (${Math.round(ppgBuffer.length / DSP.PPG_FREQUENCY)}s)`
+    : `${(60 / breathPeriod).toFixed(1)}/min`;
   if (showHud) hudEl.innerHTML =
     `calm&nbsp;&nbsp;${(result.calm * 100).toFixed(0)}%${stale ? ' (stale)' : ''}<br>` +
     `α/β&nbsp;&nbsp;&nbsp;&nbsp;${result.ratio == null ? '— (artifact)' : result.ratio.toFixed(3)}<br>` +
     `noise&nbsp;&nbsp;${(result.artifactRate * 100).toFixed(0)}%<br>` +
+    `breathing&nbsp;${breathLabel}<br>` +
     `packets&nbsp;${DSP.CHANNEL_NAMES.map((n, i) => `${n}:${packetCounts[i]}`).join(' ')}` +
     `${stale ? `<br>last data ${((Date.now()-lastDataAt)/1000).toFixed(1)}s ago` : ''}`;
 }, 250);

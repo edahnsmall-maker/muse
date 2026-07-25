@@ -113,6 +113,33 @@ Both paths feed the ratio into the same **adaptive normalization**: a slow runni
 mean/variance tracks your own baseline (individual variability is too large for a fixed
 threshold), squashed to 0–1 and heavily smoothed so the visuals glide instead of jitter.
 
+## Real breathing (Path B only, from the Muse's PPG/heart sensor)
+
+The visual's breathing pulse can follow your **actual breathing**, not just a
+calm-linked guess. The Muse S Gen 2 has a PPG (optical heart) sensor. Heart rate
+subtly speeds up on the inhale and slows on the exhale — respiratory sinus
+arrhythmia — so your real breathing rate is recoverable from beat-to-beat heart
+timing alone, with no separate breath sensor needed.
+
+Pipeline (`public/dsp.js`): a simple peak detector finds heartbeats in the raw PPG
+waveform (`detectBeats`), then `estimateBreathingPeriod` resamples the beat-to-beat
+intervals onto a uniform grid and finds the dominant frequency in the normal
+breathing band (6–30 breaths/min) via the same FFT used for EEG bands. Verified on a
+synthetic PPG signal with a known, embedded breathing rate before ever touching real
+hardware (`test-dsp.js`): recovers a 5.00s true period as 4.92s.
+
+**This needs ~40 seconds of steady heartbeat data before it produces an estimate**
+(fewer than a handful of breath cycles isn't trustworthy), so the visual runs on the
+calm-linked guess at first and smoothly hands off to your real measured rate once
+there's enough data. Press `D` to see `breathing` in the readout — it shows
+"gathering (Ns)" until then, then breaths/min once estimated.
+
+This is a best-effort estimate, not a clinical measurement — motion, poor sensor
+contact, or an irregular pulse waveform can all degrade it. If PPG doesn't work on
+your unit/firmware for any reason, the app falls back automatically to EEG-only
+(`p21` preset) and breathing just stays on the calm-linked guess — it should never
+take down the core EEG/calm experience.
+
 Knobs:
 - `server.js` (Path A) / `DSP.CalmTracker` in `public/dsp.js` (Path B) — `adapt`/`aStat`
   (how fast it learns your baseline, lower = steadier), the logistic `slope` (higher =
@@ -128,7 +155,9 @@ color warmth, contrast, and a breathing luminance pulse that slows as you settle
 ```bash
 node test.js       # Path A: OSC parsing + the calm math, no hardware needed
 node test-dsp.js   # Path B: FFT (checked against brute-force DFT), band-power
-                    # isolation on synthetic tones, 12-bit decode, calm math
+                    # isolation on synthetic tones, 12-bit decode, calm math,
+                    # artifact detection, and breathing-rate recovery from a
+                    # synthetic PPG signal with a known, embedded breath rate
 ```
 
 ## Troubleshooting

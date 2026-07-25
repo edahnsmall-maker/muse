@@ -79,12 +79,36 @@ that warms, slows, and softens as calm rises — first working instance of "mirr
   a simulated session), contact-quality gating, server boot, page serving.
 - Verified (Path B): FFT checked against a brute-force DFT, band-power isolation
   on synthetic tones (a 10Hz test tone lands correctly in alpha, 20Hz in beta),
-  12-bit sample decode round-trip, microvolt scaling, calm-score math. The actual
-  Bluetooth GATT wiring (pairing, characteristic subscriptions, command sequence)
-  follows the documented Muse protocol exactly but is inherently untestable
-  without real hardware — first real-headset run is the remaining check.
-- Known gap in Path B: no equivalent of Muse's own contact-quality signal (not
-  exposed over raw BLE) — headband fit has to be judged by feel, not by the app.
+  12-bit sample decode round-trip, microvolt scaling, calm-score math.
+
+**First real-headset connection (live-tested, same day):** connected on the first
+try. Live testing surfaced three real bugs, each caught and fixed with the same
+test-first discipline as the rest of the DSP core:
+- Frontal-channel EEG picked up eye/jaw/talking artifact far more strongly than
+  real brainwave activity (confirmed live: talking visibly dominated the signal).
+  Fixed with a peak-to-peak amplitude check (`isArtifact`) that discards
+  noise-flagged windows instead of feeding them into the calm score.
+  Consequence for the roadmap: **the "known gap" above is now handled for the
+  noise case** (loose/bad contact still isn't detected, but gross artifact is).
+- The visual developed a blocky, tiled look after running a while — traced to
+  the noise `hash()` function losing precision on large intermediate values on
+  this GPU, not to elapsed time as first suspected (bounding time didn't fix it;
+  rewriting the hash to stay near [0,1) at every step did). A reminder that a
+  live, physical test environment finds bugs a synthetic test suite can't.
+- High-calm states weren't settling toward real stillness, just "slower."
+
+**Real breathing, from the Muse's PPG (heart) sensor — built ahead of the Phase 2
+placeholder below, once the spike was already in the user's hands and requested
+live:** `detectBeats` + `estimateBreathingPeriod` recover actual breathing rate
+from heart-rate variability (respiratory sinus arrhythmia — heart rate speeds up
+on the inhale, slows on the exhale) — no separate breath sensor needed. Verified
+on a synthetic PPG signal with a known, embedded breathing rate before touching
+real hardware: recovered a true 5.00s period as 4.92s. A real bug was caught this
+way too — an FFT sample-rate mismatch that would have silently skewed every
+estimate — exactly why the synthetic-signal test existed. Needs ~40s of steady
+heartbeat data before it trusts an estimate; the visual runs on the calm-linked
+guess until then and hands off smoothly once real data is available. PPG failure
+degrades gracefully to EEG-only rather than breaking the core experience.
 
 Files: `server.js`, `public/index.html` (Path A), `public/direct.html` (Path B),
 `public/dsp.js` (shared DSP core, environment-agnostic), `public/visual.js`
@@ -124,7 +148,11 @@ moving.
       to control your thinking — just keep returning to the breath"),
       silent when already settled.
 - [ ] Breath-paced audio/haptic: tone or pulse on inhale/exhale, with tone
-      quality itself reflecting physiological state (not just timing).
+      quality itself reflecting physiological state (not just timing). Real
+      breath-rate detection (PPG-based, via respiratory sinus arrhythmia)
+      already exists in the Phase 0 spike (`public/dsp.js`) — this is about
+      bringing it to audio/haptic feedback in the real app, not building the
+      detection itself again.
 - [ ] On-device only — no backend yet. Session storage + reports live on
       the phone.
 

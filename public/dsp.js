@@ -28,6 +28,15 @@
   const EEG_FREQUENCY = 256; // Hz
   const EEG_SAMPLES_PER_PACKET = 12;
 
+  const PPG_CHARACTERISTICS = [
+    '273e000f-4c4d-454d-96be-f03bac821358', // ambient
+    '273e0010-4c4d-454d-96be-f03bac821358', // infrared
+    '273e0011-4c4d-454d-96be-f03bac821358', // red
+  ];
+  const PPG_CHANNEL_NAMES = ['ambient', 'infrared', 'red'];
+  const PPG_FREQUENCY = 64; // Hz
+  const PPG_SAMPLES_PER_PACKET = 6;
+
   // ---- Command encoding (length-prefixed ASCII "serial" protocol) ----
   function encodeCommand(cmd) {
     const encoded = new TextEncoder().encode(`X${cmd}\n`);
@@ -53,6 +62,16 @@
   // Muse's documented scale: unsigned 12-bit -> microvolts, centered at 0x800.
   function samplesToMicrovolts(raw12bit) {
     return raw12bit.map((n) => 0.48828125 * (n - 0x800));
+  }
+
+  // PPG samples arrive as plain 24-bit unsigned values, 3 bytes each (no
+  // centering/scaling — used as a relative light-intensity waveform here).
+  function decode24Bit(bytes) {
+    const out = [];
+    for (let i = 0; i + 2 < bytes.length; i += 3) {
+      out.push((bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2]);
+    }
+    return out;
   }
 
   // ---- Windowing --------------------------------------------------------
@@ -157,6 +176,85 @@
     return peakToPeak(samples) > thresholdUv;
   }
 
+  // ---- Heartbeat detection from a raw PPG channel ------------------------
+  // Not clinical-grade (a real pulse oximeter does far more), but enough to
+  // recover approximate beat timing from a reasonable signal: detrend with
+  // a moving average to remove slow baseline drift (ambient light, motion),
+  // then pick local maxima that clear a relative-amplitude threshold and
+  // respect a minimum refractory distance so noise can't be double-counted.
+  function detectBeats(samples, sampleRate, { maxBpm = 180 } = {}) {
+    const n = samples.length;
+    const maWin = Math.max(1, Math.round(sampleRate * 0.75));
+    const detrended = new Float64Array(n);
+    const q = [];
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      q.push(samples[i]); sum += samples[i];
+      if (q.length > maWin) sum -= q.shift();
+      detrended[i] = samples[i] - sum / q.length;
+    }
+    let maxAbs = 0;
+    for (let i = 0; i < n; i++) maxAbs = Math.max(maxAbs, Math.abs(detrended[i]));
+    const threshold = maxAbs * 0.35;
+    const minDistance = Math.round((sampleRate * 60) / maxBpm);
+    const beats = [];
+    for (let i = 1; i < n - 1; i++) {
+      if (detrended[i] > threshold && detrended[i] >= detrended[i - 1] && detrended[i] >= detrended[i + 1]) {
+        if (!beats.length || i - beats[beats.length - 1] >= minDistance) beats.push(i);
+      }
+    }
+    return beats.map((i) => i / sampleRate); // beat times in seconds
+  }
+
+  // ---- Breathing period from beat-to-beat timing (RSA) -------------------
+  // Heart rate speeds up on the inhale and slows on the exhale — respiratory
+  // sinus arrhythmia. Resample the instantaneous beat-to-beat interval onto
+  // a uniform low-rate grid, then find the dominant frequency in the normal
+  // breathing band (6-30 breaths/min) with the same FFT used for EEG bands.
+  // Returns the estimated breathing period in seconds, or null if there
+  // isn't enough data yet to say anything trustworthy.
+  function estimateBreathingPeriod(beatTimes, { minBreathsPerMin = 6, maxBreathsPerMin = 30 } = {}) {
+    if (beatTimes.length < 6) return null;
+    const ibi = [];
+    for (let i = 1; i < beatTimes.length; i++) ibi.push({ t: beatTimes[i], v: beatTimes[i] - beatTimes[i - 1] });
+    const dur = ibi[ibi.length - 1].t - ibi[0].t;
+    if (dur < 8) return null; // need several breath cycles' worth of beats
+
+    // Fixed-interval resampling: spacing must be exactly 1/resampleHz, not
+    // "however many samples fit across dur" — those two only coincide when
+    // dur happens to land exactly on a power of two, otherwise the true
+    // sample spacing silently drifts from what powerSpectrum() is told to
+    // assume, skewing every frequency estimate by that same ratio.
+    const resampleHz = 4;
+    const dt = 1 / resampleHz;
+    let pow2 = 32;
+    while (pow2 < dur / dt) pow2 *= 2;
+    const series = new Float64Array(pow2);
+    let ptr = 0;
+    const tStart = ibi[0].t;
+    for (let i = 0; i < pow2; i++) {
+      const t = tStart + i * dt;
+      while (ptr < ibi.length - 1 && ibi[ptr + 1].t < t) ptr++;
+      series[i] = ibi[Math.min(ptr, ibi.length - 1)].v;
+    }
+    let mean = 0;
+    for (let i = 0; i < series.length; i++) mean += series[i];
+    mean /= series.length;
+    for (let i = 0; i < series.length; i++) series[i] -= mean;
+
+    const spectrum = powerSpectrum(Array.from(series), resampleHz);
+    const loHz = minBreathsPerMin / 60, hiHz = maxBreathsPerMin / 60;
+    const lo = Math.max(1, Math.round(loHz / spectrum.binHz));
+    const hi = Math.min(spectrum.power.length - 1, Math.round(hiHz / spectrum.binHz));
+    let bestBin = -1, bestPower = -1;
+    for (let i = lo; i <= hi; i++) {
+      if (spectrum.power[i] > bestPower) { bestPower = spectrum.power[i]; bestBin = i; }
+    }
+    if (bestBin < 0) return null;
+    const freqHz = bestBin * spectrum.binHz;
+    return freqHz > 0 ? 1 / freqHz : null;
+  }
+
   // ---- Adaptive "calm" scoring (same math as server.js's step(), --------
   // ---- generalized into a reusable, testable class) ----------------------
   class CalmTracker {
@@ -181,9 +279,11 @@
   return {
     MUSE_SERVICE, CONTROL_CHARACTERISTIC, EEG_CHARACTERISTICS, CHANNEL_NAMES,
     EEG_FREQUENCY, EEG_SAMPLES_PER_PACKET,
-    encodeCommand, decode12Bit, samplesToMicrovolts,
+    PPG_CHARACTERISTICS, PPG_CHANNEL_NAMES, PPG_FREQUENCY, PPG_SAMPLES_PER_PACKET,
+    encodeCommand, decode12Bit, decode24Bit, samplesToMicrovolts,
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
     ARTIFACT_PTP_UV, peakToPeak, isArtifact,
+    detectBeats, estimateBreathingPeriod,
     CalmTracker,
   };
 });

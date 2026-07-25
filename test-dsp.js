@@ -128,4 +128,56 @@ function naiveDFT(real) {
   console.log('✓ CalmTracker holds steady through a run of artifact-flagged (null) windows');
 }
 
+// 10) 24-bit decode round-trip.
+{
+  const v0 = 0x123456;
+  const decoded = DSP.decode24Bit(new Uint8Array([(v0 >> 16) & 0xff, (v0 >> 8) & 0xff, v0 & 0xff]));
+  assert.deepStrictEqual(decoded, [v0], `decode24Bit roundtrip failed: got ${decoded}`);
+  console.log('✓ 24-bit PPG sample decode round-trips correctly');
+}
+
+// 11) Beat detection + breathing-period estimation on a synthetic PPG
+//     signal: a heart-rate carrier whose instantaneous frequency is
+//     phase-modulated by a known respiration rate (respiratory sinus
+//     arrhythmia) — the pipeline should recover a period close to the
+//     true breathing period from nothing but the raw waveform.
+{
+  const fs = DSP.PPG_FREQUENCY; // 64Hz
+  const hrHz = 1.2;              // 72 bpm carrier
+  const modDepthHz = 0.15;       // heart rate swings ±0.15Hz with breathing
+  const trueRespHz = 0.2;        // 12 breaths/min -> 5s true period
+  const durationSec = 90;
+  const n = Math.round(durationSec * fs);
+  const samples = new Array(n);
+  let phase = 0;
+  for (let i = 0; i < n; i++) {
+    const t = i / fs;
+    const instHr = hrHz + modDepthHz * Math.sin(2 * Math.PI * trueRespHz * t);
+    phase += (2 * Math.PI * instHr) / fs;
+    const raw = Math.sin(phase);
+    const pulseShape = Math.max(0, raw) ** 2; // peaked, PPG-like pulse lobes
+    samples[i] = pulseShape + 0.02 * (Math.random() - 0.5);
+  }
+
+  const beats = DSP.detectBeats(samples, fs);
+  const expectedBeats = durationSec * hrHz;
+  console.log(`  detected ${beats.length} beats (~${expectedBeats.toFixed(0)} expected for ${hrHz * 60}bpm over ${durationSec}s)`);
+  assert.ok(Math.abs(beats.length - expectedBeats) < expectedBeats * 0.25,
+    `beat count should be roughly right (got ${beats.length}, expected ~${expectedBeats.toFixed(0)})`);
+
+  const period = DSP.estimateBreathingPeriod(beats);
+  const truePeriod = 1 / trueRespHz;
+  console.log(`  estimated breathing period ${period.toFixed(2)}s (true period ${truePeriod.toFixed(2)}s)`);
+  assert.ok(period !== null, 'should produce a breathing-period estimate with 90s of clean synthetic data');
+  assert.ok(Math.abs(period - truePeriod) < truePeriod * 0.3,
+    `estimated period should be close to the true respiration period (got ${period.toFixed(2)}s, true ${truePeriod.toFixed(2)}s)`);
+  console.log('✓ breathing period recovered from synthetic PPG via respiratory sinus arrhythmia');
+}
+
+// 12) Not enough data yet -> null, not a bogus number.
+{
+  assert.strictEqual(DSP.estimateBreathingPeriod([0, 0.8, 1.6]), null, 'too few beats should return null, not guess');
+  console.log('✓ breathing estimate declines to guess when there is not enough data');
+}
+
 console.log('\nAll DSP tests passed.');

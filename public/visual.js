@@ -10,7 +10,7 @@ function createZenVisual(canvas) {
   const VERT = `attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }`;
   const FRAG = `
 precision highp float;
-uniform vec2 u_res; uniform float u_time; uniform float u_calm;
+uniform vec2 u_res; uniform float u_time; uniform float u_calm; uniform float u_breathPeriod;
 // Multiplying by large constants (123.34, 345.45) before taking fract()
 // requires the GPU to resolve the fractional part of a *large* number —
 // exactly where "highp" silently degrades to lower precision on some
@@ -44,7 +44,9 @@ void main(){
   vec3 col = mix(cool, warm, smoothstep(0.0,1.0,u_calm));
   float contrast = mix(1.25, 0.9, u_calm);
   col = (col-0.5)*contrast + 0.5;
-  float period = mix(6.0, 11.0, u_calm);        // breathing luminance slows as you settle
+  // Use a real measured breathing period once one exists (u_breathPeriod > 0);
+  // fall back to a calm-linked guess until then (0 is the "no estimate yet" sentinel).
+  float period = u_breathPeriod > 0.5 ? u_breathPeriod : mix(6.0, 11.0, u_calm);
   float breath = 0.5 + 0.5*sin(loopedTime*6.2831853/period);
   col *= mix(1.0, 0.9 + 0.18*breath, 0.6);
   float d = distance(uv, vec2(0.5));
@@ -67,6 +69,7 @@ void main(){
   const uRes = gl.getUniformLocation(prog, 'u_res');
   const uTime = gl.getUniformLocation(prog, 'u_time');
   const uCalm = gl.getUniformLocation(prog, 'u_calm');
+  const uBreathPeriod = gl.getUniformLocation(prog, 'u_breathPeriod');
 
   function resize() {
     const dpr = Math.min(devicePixelRatio || 1, 2);
@@ -76,16 +79,22 @@ void main(){
   addEventListener('resize', resize); resize();
 
   let calm = 0.5, targetCalm = 0.5;
+  let breathPeriod = 0, targetBreathPeriod = 0; // 0 = no real measurement yet
   const start = performance.now();
   function frame(now) {
     calm += 0.035 * (targetCalm - calm); // gentle inertia so shifts settle rather than snap
+    breathPeriod += 0.01 * (targetBreathPeriod - breathPeriod); // breath period changes glide, don't snap
     gl.uniform2f(uRes, canvas.width, canvas.height);
     gl.uniform1f(uTime, (now - start) / 1000);
     gl.uniform1f(uCalm, calm);
+    gl.uniform1f(uBreathPeriod, breathPeriod);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
-  return { setCalm: (v) => { targetCalm = v; } };
+  return {
+    setCalm: (v) => { targetCalm = v; },
+    setBreathPeriod: (v) => { targetBreathPeriod = v == null ? 0 : v; },
+  };
 }
