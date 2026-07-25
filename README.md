@@ -140,6 +140,32 @@ your unit/firmware for any reason, the app falls back automatically to EEG-only
 (`p21` preset) and breathing just stays on the calm-linked guess — it should never
 take down the core EEG/calm experience.
 
+**Important honesty note: this measures your breathing *rate*, not the exact moment
+you're inhaling vs. exhaling.** The visual's pulse tends toward your real tempo, but
+it is not phase-locked to your actual breath — don't expect it to feel like it's
+"synced" from moment to moment. Getting genuine real-time phase-lock would need much
+more precise processing, and Muse's PPG sensor (temple/forehead) is a noisier
+location for this than a fingertip, where real pulse oximeters go. We judged that
+not worth chasing — rate-matching is the honest ceiling here for now.
+
+## Plain-English readout (Path B)
+
+Once connected, small chips in the bottom-right corner show your **calm score**,
+**breathing rate**, and **signal quality** in plain language (no jargon, no raw
+ratios) — this is the "friendly" always-visible display. Press `D` for the
+technical readout (raw α/β ratio, per-channel packet counts, artifact %) if you
+want the underlying numbers instead.
+
+## The visual: lines fade, glow strengthens as you settle
+
+As calm rises, thin bright ridge-lines in the field fade out while a soft, low-detail
+glow strengthens to take their place — the intent is that a calmer state reads as
+"softening into light," not just "different colors, same busyness." This was a
+direct response to feedback that the field looked too visually busy/psychedelic for
+a contemplative context — the goal is closer to a slow color field than a generative
+art piece. Tunable in `public/visual.js`: `lineAmount`/`glowAmount` control how much
+of each is present at low vs. high calm.
+
 Knobs:
 - `server.js` (Path A) / `DSP.CalmTracker` in `public/dsp.js` (Path B) — `adapt`/`aStat`
   (how fast it learns your baseline, lower = steadier), the logistic `slope` (higher =

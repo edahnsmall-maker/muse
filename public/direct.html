@@ -20,6 +20,13 @@
     font-variant-numeric: tabular-nums; line-height: 1.7; text-shadow: 0 1px 8px rgba(0,0,0,.7);
     opacity: 0; transition: opacity .4s; }
   #hud.show { opacity: 1; }
+  #chips { position: absolute; right: 5vmin; bottom: 5vmin;
+    display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
+  .chip { display: inline-flex; align-items: baseline; gap: 10px;
+    background: rgba(18,20,28,.5); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    padding: 9px 16px; border-radius: 12px; box-shadow: 0 1px 12px rgba(0,0,0,.25); }
+  .chip .label { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: rgba(255,255,255,.5); }
+  .chip .value { font-size: 18px; color: rgba(255,255,255,.92); font-variant-numeric: tabular-nums; }
   #hint { color: rgba(255,255,255,.4); font-size: 12px; letter-spacing: .05em; text-align: center; }
   kbd { background: rgba(255,255,255,.12); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
   button { pointer-events: auto; font: inherit; font-size: 16px; letter-spacing: .03em;
@@ -36,8 +43,9 @@
   <div class="status" id="status" style="align-self:center">
     <button id="connect">Connect to Muse</button>
   </div>
+  <div id="chips"></div>
   <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
-    press <kbd>D</kbd> for readout · <kbd>F</kbd> for fullscreen ·
+    press <kbd>D</kbd> for the technical readout · <kbd>F</kbd> for fullscreen ·
     <a href="index.html">use Mind Monitor instead →</a></div>
 </div>
 <script src="dsp.js"></script>
@@ -46,7 +54,10 @@
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
 const hudEl = document.getElementById('hud');
+const chipsEl = document.getElementById('chips');
 const connectBtn = document.getElementById('connect');
+
+function chip(label, value) { return `<div class="chip"><span class="label">${label}</span><span class="value">${value}</span></div>`; }
 
 let showHud = false;
 addEventListener('keydown', (e) => {
@@ -217,6 +228,7 @@ async function connect() {
 
 function onDisconnected() {
   setStatus('disconnected. <button id="connect2">reconnect</button>');
+  chipsEl.innerHTML = '';
   rewireRetry();
 }
 
@@ -242,6 +254,17 @@ setInterval(() => {
   if (stale) setStatus('signal lost — check the headband fit');
   else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
   else setStatus('', { hide: true });
+
+  // Plain-English chips — always visible once connected, no jargon.
+  const signalLabel = stale ? 'Reconnecting…' : result.artifactRate > 0.5 ? 'Settling' : 'Steady';
+  const breathChipLabel = !ppgAvailable ? null
+    : breathPeriod == null ? `Reading… (${Math.round(ppgBuffer.length / DSP.PPG_FREQUENCY)}s)`
+    : `${Math.round(60 / breathPeriod)}/min`;
+  chipsEl.innerHTML =
+    chip('Calm', Math.round(result.calm * 100)) +
+    (breathChipLabel ? chip('Breath', breathChipLabel) : '') +
+    chip('Signal', signalLabel);
+
   const breathLabel = !ppgAvailable ? 'n/a'
     : breathPeriod == null ? `gathering (${Math.round(ppgBuffer.length / DSP.PPG_FREQUENCY)}s)`
     : `${(60 / breathPeriod).toFixed(1)}/min`;

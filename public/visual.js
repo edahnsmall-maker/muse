@@ -44,6 +44,19 @@ void main(){
   vec3 col = mix(cool, warm, smoothstep(0.0,1.0,u_calm));
   float contrast = mix(1.25, 0.9, u_calm);
   col = (col-0.5)*contrast + 0.5;
+
+  // Thin bright ridge lines where the field crosses its midpoint — these
+  // fade out as calm rises, per the "lines decrease, glow increases" brief.
+  float ridge = pow(1.0 - abs(n*2.0 - 1.0), 4.0);
+  float lineAmount = mix(0.85, 0.0, smoothstep(0.0, 0.85, u_calm));
+  col += ridge * lineAmount * vec3(0.75, 0.82, 0.95);
+
+  // A much lower-detail field (fewer effective octaves' worth of warp) as a
+  // soft glow base — strengthens as calm rises, replacing the linework
+  // rather than just sitting alongside it.
+  float glowField = fbm(p*warp*0.4 + clockA*0.5);
+  float glowAmount = mix(0.05, 0.9, smoothstep(0.1, 1.0, u_calm));
+  col += glowField * glowAmount * mix(vec3(0.5,0.6,0.9), vec3(0.95,0.85,0.65), u_calm);
   // Use a real measured breathing period once one exists (u_breathPeriod > 0);
   // fall back to a calm-linked guess until then (0 is the "no estimate yet" sentinel).
   float period = u_breathPeriod > 0.5 ? u_breathPeriod : mix(6.0, 11.0, u_calm);
