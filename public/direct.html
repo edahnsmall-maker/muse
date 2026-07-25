@@ -746,6 +746,7 @@ setInterval(() => {
     `Visual&nbsp;&nbsp;<b>${visual.currentMode().label}</b>`,
     `Calm&nbsp;&nbsp;<b>${Math.round(result.calm * 100)}</b>`,
     `Brainwaves&nbsp;&nbsp;<b>${brainLabel}</b>`,
+    `Thinking&nbsp;&nbsp;<b>${result.activity == null ? '—' : Math.round(result.activity * 100)}</b>`,
     breathLine,
     `Noise&nbsp;&nbsp;<b>${noiseLabel}</b>`,
     timerLine,

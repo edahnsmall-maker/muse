@@ -171,4 +171,23 @@ const VizCore = require('./public/viz-core.js');
   console.log('✓ breathing-pattern cycling wraps correctly');
 }
 
+// 13) expand(): stretches the band an adaptively-normalised score actually
+//     occupies to a full 0..1. Without this, calm/activity sit near 0.5 and a
+//     visual property driven by them barely moves — the real cause of "the
+//     void didn't change" and "the corona is busy even when I'm focusing".
+{
+  assert.strictEqual(VizCore.expand(0.35), 0, 'the bottom of the band maps to 0');
+  assert.strictEqual(VizCore.expand(0.75), 1, 'the top of the band maps to 1');
+  assert.ok(Math.abs(VizCore.expand(0.55) - 0.5) < 1e-9, 'the middle maps to the middle');
+  assert.strictEqual(VizCore.expand(0.1), 0, 'below the band clamps to 0');
+  assert.strictEqual(VizCore.expand(0.99), 1, 'above the band clamps to 1');
+  assert.strictEqual(VizCore.expand(null), 0.5, 'missing input falls back to neutral, not NaN');
+  assert.strictEqual(VizCore.expand(NaN), 0.5, 'NaN falls back to neutral');
+  assert.strictEqual(VizCore.expand(0.5, 0.5, 0.5), 0.5, 'a degenerate band must not divide by zero');
+  // The whole point: a realistic swing must produce a large output swing.
+  const swing = VizCore.expand(0.70) - VizCore.expand(0.45);
+  assert.ok(swing > 0.5, `a realistic 0.45->0.70 swing should move the output a lot (got ${swing.toFixed(2)})`);
+  console.log('✓ expand() turns a realistic score swing into a large visual swing');
+}
+
 console.log('\nAll viz-core tests passed.');

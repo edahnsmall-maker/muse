@@ -182,6 +182,22 @@
     return { amount: 0, label: 'Hold', phase: 'holdOut' }; // unreachable in practice
   }
 
+  // ---- Range expansion ---------------------------------------------------
+  // Both the calm score and the activity score are ADAPTIVELY NORMALISED, which
+  // means they sit near 0.5 by construction and in practice only range over
+  // roughly 0.35..0.75. Feeding such a value straight into a visual property
+  // wastes most of that property's range: mapping calm to a radius as
+  // (0.28 + 0.34*calm) moved the radius by only ~12%, which reads on screen as
+  // "it didn't change at all".
+  //
+  // expand() stretches the band the signal actually occupies to a full 0..1,
+  // clamping outside it, so realistic excursions produce visible change.
+  function expand(v, lo = 0.35, hi = 0.75) {
+    if (v == null || Number.isNaN(v)) return 0.5;
+    if (hi <= lo) return 0.5;
+    return Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
+  }
+
   // ---- Smooth deterministic wobble ---------------------------------------
   // Sum of a few sines — no RNG, no per-frame state, and bounded, so it
   // can't drift or accumulate precision problems over a long session.
@@ -193,7 +209,7 @@
 
   return {
     CHANNEL_COLORS, CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, EventDetector, BloomField, wobble,
+    MODES, nextMode, EventDetector, BloomField, wobble, expand,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
   };
 });

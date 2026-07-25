@@ -103,8 +103,13 @@ function createZenVisual(canvas) {
 
     const cx = BW / 2, cy = BH / 2;
     const maxR = Math.min(BW, BH) * 0.5;
-    const voidR = Math.max(2, maxR * (0.28 + 0.34 * clamp01(smooth.voidCalm)));
-    const act = clamp01(smooth.activity);
+    // Both scores are adaptively normalised and so sit near 0.5, occupying only
+    // about 0.35..0.75 in practice. Expanding that band to a full 0..1 is what
+    // makes the change visible — the previous mapping moved the void radius by
+    // only ~12% across a realistic session, i.e. not at all to the eye.
+    const calmE = VizCore.expand(clamp01(smooth.voidCalm));
+    const act = VizCore.expand(clamp01(smooth.activity));
+    const voidR = Math.max(2, maxR * (0.12 + 0.62 * calmE));
 
     // ctx.filter blurs EVERY draw operation separately, so setting it once and
     // then issuing four fills costs FOUR full-buffer blur passes. Draw the
@@ -117,14 +122,20 @@ function createZenVisual(canvas) {
       const spike = clamp01(state.bands[i].spike);
       // Reach grows with activity and with a spike; a channel sitting in alpha
       // (restful) pulls its own lobe back in toward the void.
-      const span = Math.max(1, voidR * (0.26 + 1.25 * act + 0.55 * spike) * (0.55 + 0.65 * (1 - lvl)));
+      const span = Math.max(1, voidR * (0.09 + 1.05 * act + 0.45 * spike) * (0.55 + 0.65 * (1 - lvl)));
+      // How ragged and how fast the boundary churns is now driven BY ACTIVITY.
+      // Previously the wobble amplitude was a constant (0.40), so the corona
+      // seethed identically whether the mind was racing or completely settled —
+      // which is exactly why it looked busy while focusing. At low activity the
+      // boundary is nearly a smooth circle and drifts slowly; at high activity
+      // it is deeply scalloped and moves several times faster.
+      const churn = 0.06 + 0.94 * act;
       const N = 64;
       lctx.beginPath();
       for (let s = 0; s <= N; s++) {
         const a = (s / N) * Math.PI * 2;
-        // Angular variation: this is what makes it peek and move like a real
-        // corona rather than sitting as a perfect ring.
-        const flare = 0.60 + 0.40 * VizCore.wobble(tSec * (0.20 + 0.05 * i) + a * 2.0, i + 1);
+        const timeScale = 0.06 + 0.34 * act;   // settled => slow drift
+        const flare = 1.0 + churn * 0.62 * VizCore.wobble(tSec * timeScale * (1 + 0.25 * i) + a * (1.2 + 2.2 * act), i + 1);
         // Localise this hue to where the sensor actually is on the head, so
         // the flaring side of the image tells you WHICH sensor is active.
         const w = VizCore.lobeWeight(a, i);
@@ -135,8 +146,8 @@ function createZenVisual(canvas) {
       }
       lctx.closePath();
       const rg = lctx.createRadialGradient(cx, cy, voidR * 0.88, cx, cy, Math.max(voidR + 1, voidR + span * 1.25));
-      rg.addColorStop(0, rgba(col, 0.50 + 0.34 * act));
-      rg.addColorStop(0.42, rgba(col, 0.26 * (0.45 + act)));
+      rg.addColorStop(0, rgba(col, 0.22 + 0.62 * act));
+      rg.addColorStop(0.42, rgba(col, 0.30 * (0.20 + act)));
       rg.addColorStop(1, rgba(col, 0));
       lctx.fillStyle = rg;
       lctx.fill();
