@@ -54,18 +54,42 @@ not to grade their meditation.** Concretely, that means:
 
 **Goal:** prove the loop end to end before building anything real.
 
-- Muse S Gen 2 → Mind Monitor app (OSC/WiFi) → local Node server → browser.
-- Computes a smoothed 0–1 "calm" score from alpha/beta band power, adaptively
-  normalized to the wearer's own baseline (individual variability is too
-  large for absolute thresholds).
-- Full-screen WebGL field that warms, slows, and softens as calm rises —
-  first working instance of "mirror mode."
-- `sim.js` fakes a calming session so the loop can be seen without hardware.
-- Verified: OSC message + bundle parsing, calm-score math (climbs across a
-  simulated session), contact-quality gating, server boot, page serving.
+Two independent paths to the same visual, added because real-world access to a
+laptop varies a lot (locked-down/managed machines, Chromebooks with no Node.js):
 
-Files: `server.js`, `public/index.html`, `sim.js`, `test.js`, `README.md`
-(setup + troubleshooting for Mind Monitor).
+- **Path A — Mind Monitor.** Muse S Gen 2 → Mind Monitor app (OSC/WiFi) → local
+  Node server → browser. Requires Node.js and a firewall exception for the local
+  server to receive LAN traffic (can be a hard blocker on managed/school/work
+  machines without admin rights).
+- **Path B — direct Bluetooth.** Muse S Gen 2 → browser directly, via the Web
+  Bluetooth API (Chrome/Edge on Windows/Mac/Linux/**ChromeOS**/Android). No phone,
+  no app, no local server, no admin permission of any kind — the page does its
+  own DSP (FFT, band powers) client-side in `public/dsp.js` since there's no
+  Mind Monitor to precompute band powers for it. Needs the page served over
+  `https://` (or `http://localhost`) — GitHub Pages works well for this and is
+  free once the repo is public.
+
+Both computes a smoothed 0–1 "calm" score from alpha/beta band power, adaptively
+normalized to the wearer's own baseline (individual variability is too large for
+absolute thresholds), and drive the same full-screen WebGL field (`public/visual.js`)
+that warms, slows, and softens as calm rises — first working instance of "mirror mode."
+
+- `sim.js` fakes a calming session so Path A's loop can be seen without hardware.
+- Verified (Path A): OSC message + bundle parsing, calm-score math (climbs across
+  a simulated session), contact-quality gating, server boot, page serving.
+- Verified (Path B): FFT checked against a brute-force DFT, band-power isolation
+  on synthetic tones (a 10Hz test tone lands correctly in alpha, 20Hz in beta),
+  12-bit sample decode round-trip, microvolt scaling, calm-score math. The actual
+  Bluetooth GATT wiring (pairing, characteristic subscriptions, command sequence)
+  follows the documented Muse protocol exactly but is inherently untestable
+  without real hardware — first real-headset run is the remaining check.
+- Known gap in Path B: no equivalent of Muse's own contact-quality signal (not
+  exposed over raw BLE) — headband fit has to be judged by feel, not by the app.
+
+Files: `server.js`, `public/index.html` (Path A), `public/direct.html` (Path B),
+`public/dsp.js` (shared DSP core, environment-agnostic), `public/visual.js`
+(shared visual, used by both pages), `sim.js`, `test.js`, `test-dsp.js`,
+`README.md` (setup + troubleshooting for both paths).
 
 ## Phase 1 — next: the two mechanics that answer "I might be failing"
 

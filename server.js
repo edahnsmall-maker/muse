@@ -157,7 +157,9 @@ const server = http.createServer((req, res) => {
   const full = path.join(__dirname, 'public', path.basename(file));
   fs.readFile(full, (err, data) => {
     if (err) { res.writeHead(404); res.end('not found'); return; }
-    const type = full.endsWith('.html') ? 'text/html' : 'application/octet-stream';
+    const type = full.endsWith('.html') ? 'text/html'
+      : full.endsWith('.js') ? 'text/javascript'
+      : 'application/octet-stream';
     res.writeHead(200, { 'Content-Type': type });
     res.end(data);
   });

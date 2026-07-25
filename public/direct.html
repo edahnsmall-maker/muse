@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Muse Zen Spike — Direct Bluetooth</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05060a;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #overlay { position: fixed; inset: 0;
+    display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 5vmin; }
+  #overlay > * { pointer-events: auto; }
+  .status { color: rgba(255,255,255,.85); font-size: 15px;
+    letter-spacing: .04em; text-align: center; text-shadow: 0 1px 12px rgba(0,0,0,.6);
+    background: rgba(0,0,0,.28); padding: 10px 18px; border-radius: 999px;
+    backdrop-filter: blur(6px); transition: opacity .6s; max-width: 80vw; }
+  .status.hidden { opacity: 0; }
+  #hud { align-self: flex-start; color: rgba(255,255,255,.55); font-size: 12px;
+    font-variant-numeric: tabular-nums; line-height: 1.7; text-shadow: 0 1px 8px rgba(0,0,0,.7);
+    opacity: 0; transition: opacity .4s; }
+  #hud.show { opacity: 1; }
+  #hint { color: rgba(255,255,255,.4); font-size: 12px; letter-spacing: .05em; text-align: center; }
+  kbd { background: rgba(255,255,255,.12); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
+  button { pointer-events: auto; font: inherit; font-size: 16px; letter-spacing: .03em;
+    padding: 14px 28px; border-radius: 999px; border: none; cursor: pointer;
+    background: rgba(255,255,255,.92); color: #111; }
+  button:disabled { opacity: .5; cursor: default; }
+  a { color: inherit; }
+</style>
+</head>
+<body>
+<canvas id="gl"></canvas>
+<div id="overlay">
+  <div id="hud"></div>
+  <div class="status" id="status" style="align-self:center">
+    <button id="connect">Connect to Muse</button>
+  </div>
+  <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
+    press <kbd>D</kbd> for readout · <kbd>F</kbd> for fullscreen ·
+    <a href="index.html">use Mind Monitor instead →</a></div>
+</div>
+<script src="dsp.js"></script>
+<script src="visual.js"></script>
+<script>
+const visual = createZenVisual(document.getElementById('gl'));
+const statusEl = document.getElementById('status');
+const hudEl = document.getElementById('hud');
+const connectBtn = document.getElementById('connect');
+
+let showHud = false;
+addEventListener('keydown', (e) => {
+  if (e.key === 'd' || e.key === 'D') { showHud = !showHud; hudEl.classList.toggle('show', showHud); }
+  if (e.key === 'f' || e.key === 'F') {
+    if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+    else document.exitFullscreen();
+  }
+});
+
+function setStatus(html, opts = {}) {
+  statusEl.innerHTML = html;
+  statusEl.classList.toggle('hidden', !!opts.hide);
+}
+
+if (!navigator.bluetooth) {
+  setStatus('Web Bluetooth isn’t available in this browser.<br>Use Chrome or Edge (desktop, Android, or ChromeOS).');
+  connectBtn.remove();
+}
+
+// Two frontal channels only (AF7, AF8) drive the calm score — the same
+// "anterior alpha" signal used throughout this project, and the pair
+// least affected by neck/jaw movement compared to the temporal (TP9/TP10)
+// channels. Channel order matches DSP.CHANNEL_NAMES: [TP9, AF7, AF8, TP10].
+const FRONTAL = [1, 2];
+const WINDOW = 256; // 1s of samples at 256Hz — exactly 1Hz per FFT bin
+
+const buffers = DSP.CHANNEL_NAMES.map(() => []);
+const packetCounts = DSP.CHANNEL_NAMES.map(() => 0);
+const tracker = new DSP.CalmTracker();
+let lastDataAt = 0;
+
+function pushSamples(channelIndex, microvolts) {
+  const buf = buffers[channelIndex];
+  buf.push(...microvolts);
+  if (buf.length > WINDOW * 2) buf.splice(0, buf.length - WINDOW * 2); // bound memory
+  packetCounts[channelIndex]++;
+  lastDataAt = Date.now();
+}
+
+function computeCalm() {
+  const ready = FRONTAL.every((ch) => buffers[ch].length >= WINDOW);
+  if (!ready) return null;
+  let alphaSum = 0, betaSum = 0;
+  for (const ch of FRONTAL) {
+    const window = buffers[ch].slice(-WINDOW);
+    const powers = DSP.bandPowers(window, DSP.EEG_FREQUENCY);
+    alphaSum += powers.alpha; betaSum += powers.beta;
+  }
+  const ratio = Math.log(alphaSum / FRONTAL.length + 1e-6) - Math.log(betaSum / FRONTAL.length + 1e-6);
+  return { calm: tracker.update(ratio), ratio };
+}
+
+let device = null;
+
+async function connect() {
+  connectBtn.disabled = true;
+  try {
+    setStatus('choose your Muse in the browser picker…');
+    device = await navigator.bluetooth.requestDevice({ filters: [{ services: [DSP.MUSE_SERVICE] }] });
+    device.addEventListener('gattserverdisconnected', onDisconnected);
+
+    setStatus('connecting…');
+    const gatt = await device.gatt.connect();
+    const service = await gatt.getPrimaryService(DSP.MUSE_SERVICE);
+
+    // All GATT operations on one device must be serialized (awaited one at
+    // a time) — issuing them concurrently reliably fails with "GATT
+    // operation already in progress" on most platforms.
+    const controlChar = await service.getCharacteristic(DSP.CONTROL_CHARACTERISTIC);
+    await controlChar.startNotifications();
+
+    const eegChars = [];
+    for (let i = 0; i < DSP.EEG_CHARACTERISTICS.length; i++) {
+      const ch = await service.getCharacteristic(DSP.EEG_CHARACTERISTICS[i]);
+      await ch.startNotifications();
+      ch.addEventListener('characteristicvaluechanged', (ev) => {
+        const value = ev.target.value; // DataView
+        const raw = new Uint8Array(value.buffer, value.byteOffset + 2); // skip 2-byte packet index
+        pushSamples(i, DSP.samplesToMicrovolts(DSP.decode12Bit(raw)));
+      });
+      eegChars.push(ch);
+    }
+
+    setStatus('starting stream…');
+    for (const cmd of ['h', 'p21', 's', 'd']) {
+      await controlChar.writeValue(DSP.encodeCommand(cmd));
+    }
+
+    setStatus('gathering signal— sit still for a moment…');
+  } catch (err) {
+    connectBtn.disabled = false;
+    if (err.name === 'NotFoundError') setStatus('no device selected. <button id="connect2">try again</button>');
+    else setStatus(`connection failed: ${escapeHtml(err.message)}. <button id="connect2">try again</button>`);
+    rewireRetry();
+  }
+}
+
+function onDisconnected() {
+  setStatus('disconnected. <button id="connect2">reconnect</button>');
+  rewireRetry();
+}
+
+function rewireRetry() {
+  const btn = document.getElementById('connect2');
+  if (btn) btn.addEventListener('click', connect, { once: true });
+}
+
+function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+connectBtn.addEventListener('click', connect, { once: true });
+
+setInterval(() => {
+  const result = computeCalm();
+  if (!result) {
+    if (lastDataAt) setStatus('gathering signal— sit still for a moment…');
+    return;
+  }
+  visual.setCalm(result.calm);
+  const stale = Date.now() - lastDataAt > 2000;
+  if (stale) setStatus('signal lost — check the headband fit');
+  else setStatus('', { hide: true });
+  if (showHud) hudEl.innerHTML =
+    `calm&nbsp;&nbsp;${(result.calm * 100).toFixed(0)}%<br>` +
+    `α/β&nbsp;&nbsp;&nbsp;&nbsp;${result.ratio.toFixed(3)}<br>` +
+    `packets&nbsp;${DSP.CHANNEL_NAMES.map((n, i) => `${n}:${packetCounts[i]}`).join(' ')}`;
+}, 250);
+</script>
+</body>
+</html>
