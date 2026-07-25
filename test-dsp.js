@@ -209,4 +209,61 @@ function naiveDFT(real) {
   console.log('✓ SpikeDetector catches a genuine sustained shift away from baseline');
 }
 
+// 14) ActivityTracker measures DEPARTURE FROM YOUR OWN BASELINE, not an
+//     absolute scale — the same design choice as the calm score, because
+//     there is no population-level "correct" beta level. So the meaningful
+//     test is a WITHIN-session change: sit steady, then start churning, and
+//     activity should climb. (Comparing two separate sessions would prove
+//     nothing: a constantly-busy signal is its own baseline and normalises
+//     back toward the middle, which is intended behaviour, not a bug.)
+{
+  const t = new DSP.ActivityTracker();
+  for (let i = 0; i < 240; i++) {
+    t.update({ betaLog: -1.0 + 0.01 * Math.sin(i / 9), ratio: 0.8 + 0.01 * Math.sin(i / 7), spiked: false });
+  }
+  const settled = t.value;
+  for (let i = 0; i < 80; i++) {
+    t.update({ betaLog: 1.2 + 0.5 * Math.sin(i / 3), ratio: 0.6 * Math.sin(i / 2.1) + 0.5 * Math.sin(i / 1.3), spiked: i % 20 === 0 });
+  }
+  const churning = t.value;
+  console.log(`  settled≈${settled.toFixed(2)} -> churning≈${churning.toFixed(2)}`);
+  assert.ok(churning > settled + 0.15,
+    `activity should climb clearly when the mind starts churning (${settled.toFixed(2)} -> ${churning.toFixed(2)})`);
+  assert.ok(settled >= 0 && settled <= 1 && churning >= 0 && churning <= 1, 'activity must stay within 0..1');
+
+  // And it should come back down when things settle again.
+  for (let i = 0; i < 200; i++) {
+    t.update({ betaLog: -1.0 + 0.01 * Math.sin(i / 9), ratio: 0.8 + 0.01 * Math.sin(i / 7), spiked: false });
+  }
+  assert.ok(t.value < churning - 0.1, `activity should fall again when the mind settles (stayed at ${t.value.toFixed(2)})`);
+  console.log('✓ ActivityTracker rises when the mind churns and falls when it settles');
+}
+
+// 15) Movement artifact must NOT be read as thinking. This is the honesty
+//     boundary the whole metric depends on: `noise` is a measurement problem,
+//     activity is a signal about the person. An artifact-flagged tick must
+//     hold the value and must not let a spike through.
+{
+  const t = new DSP.ActivityTracker();
+  for (let i = 0; i < 100; i++) t.update({ betaLog: -1, ratio: 0.5, spiked: false });
+  const settled = t.value;
+  // Now slam it with huge artifact-flagged values, as a jaw clench would.
+  for (let i = 0; i < 60; i++) {
+    const out = t.update({ betaLog: 40, ratio: 25, artifact: true, spiked: true });
+    assert.strictEqual(out, settled, 'activity must not move at all on artifact-flagged ticks');
+  }
+  assert.strictEqual(t.value, settled, 'and must be unchanged afterwards');
+  console.log('✓ movement artifact never registers as mental activity');
+}
+
+// 16) ActivityTracker survives being fed nothing useful (all nulls) without
+//     producing NaN — the render path multiplies this into geometry.
+{
+  const t = new DSP.ActivityTracker();
+  for (let i = 0; i < 50; i++) t.update({});
+  assert.ok(Number.isFinite(t.value), `value must stay finite with no inputs (got ${t.value})`);
+  assert.ok(t.value >= 0 && t.value <= 1, 'and stay in range');
+  console.log('✓ ActivityTracker stays finite and in-range with no usable input');
+}
+
 console.log('\nAll DSP tests passed.');

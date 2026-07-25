@@ -48,10 +48,56 @@
     user-select: none; font-size: 11px; transition: opacity .2s; }
   .legendItem.off { opacity: .3; }
   .legendItem .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+
+  /* Visual-mode pills, top centre — light, clickable, unobtrusive. */
+  #modeBar { position: absolute; top: 3.5vmin; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 7px; flex-wrap: wrap; justify-content: center;
+    opacity: 0; transition: opacity .6s; }
+  #modeBar.show { opacity: 1; }
+  .pill { font-size: 12px; letter-spacing: .07em; padding: 7px 15px; border-radius: 999px;
+    background: rgba(255,255,255,.06); color: rgba(255,255,255,.5); cursor: pointer;
+    user-select: none; transition: background .25s, color .25s;
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); white-space: nowrap; }
+  .pill:hover { color: rgba(255,255,255,.92); }
+  .pill.active { background: rgba(255,255,255,.17); color: rgba(255,255,255,.95); }
+  #patternBar { position: absolute; top: calc(3.5vmin + 42px); left: 50%; transform: translateX(-50%);
+    display: none; gap: 7px; }
+  #patternBar.show { display: flex; }
+  #breathCue { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    color: rgba(255,255,255,.42); font-size: 13px; letter-spacing: .22em;
+    text-transform: uppercase; pointer-events: none; opacity: 0; transition: opacity .8s; }
+  #breathCue.show { opacity: 1; }
+
+  /* Session summary overlay */
+  #summary { position: fixed; inset: 0; z-index: 20; display: none;
+    background: rgba(4,6,14,.9); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    flex-direction: column; align-items: center; justify-content: center; gap: 20px; padding: 6vmin;
+    color: rgba(255,255,255,.85); text-align: center; overflow-y: auto; }
+  #summary.show { display: flex; }
+  #summary h2 { font-weight: 400; font-size: 20px; letter-spacing: .06em; margin: 0;
+    color: rgba(255,255,255,.75); }
+  #summaryLines { max-width: 560px; font-size: 15px; line-height: 1.85; }
+  #summaryTrace { border-radius: 10px; background: rgba(255,255,255,.04); }
+  #summaryChannels { display: flex; gap: 18px; flex-wrap: wrap; justify-content: center;
+    font-size: 11px; color: rgba(255,255,255,.55); }
+  .chStat { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+  .chBarOuter { width: 8px; height: 54px; border-radius: 4px; background: rgba(255,255,255,.08);
+    position: relative; overflow: hidden; }
+  .chBarFill { position: absolute; bottom: 0; left: 0; right: 0; border-radius: 4px; }
+  #ratingRow { display: flex; gap: 10px; }
+  #ratingRow .pill { font-size: 15px; padding: 12px 20px; }
+  .subtle { color: rgba(255,255,255,.45); font-size: 13px; max-width: 480px; line-height: 1.7; }
 </style>
 </head>
 <body>
 <canvas id="gl"></canvas>
+<div id="modeBar"></div>
+<div id="patternBar"></div>
+<div id="breathCue"></div>
+<div id="summary">
+  <h2 id="summaryTitle">Session</h2>
+  <div id="summaryBody"></div>
+</div>
 <div id="overlay">
   <div></div>
   <div class="status" id="status" style="align-self:center">
@@ -67,13 +113,17 @@
     </div>
   </div>
   <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
-    press <kbd>V</kbd> to change the visual · <kbd>F</kbd> for fullscreen ·
+    <span id="summaryLink" style="cursor:pointer;text-decoration:underline">session summary</span> ·
+    <span id="cueToggle" style="cursor:pointer;text-decoration:underline">cues: on</span> ·
+    <kbd>V</kbd> changes the visual · <kbd>F</kbd> fullscreen ·
     <a href="index.html">use Mind Monitor instead →</a></div>
 </div>
 <script src="dsp.js"></script>
 <script src="viz-core.js"></script>
 <script src="visual.js"></script>
 <script src="chart.js"></script>
+<script src="summary.js"></script>
+<script src="cues.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -85,16 +135,63 @@ const connectBtn = document.getElementById('connect');
 // 250ms status loop must not immediately overwrite it.
 let statusLockUntil = 0;
 
+const modeBarEl = document.getElementById('modeBar');
+const patternBarEl = document.getElementById('patternBar');
+const breathCueEl = document.getElementById('breathCue');
+
+function renderModeBar() {
+  const cur = visual.currentMode().key;
+  modeBarEl.innerHTML = visual.modes()
+    .map((m) => `<span class="pill${m.key === cur ? ' active' : ''}" data-mode="${m.key}" title="${m.blurb}">${m.label}</span>`)
+    .join('');
+  modeBarEl.querySelectorAll('.pill').forEach((el) => {
+    el.addEventListener('click', () => {
+      const idx = visual.modes().findIndex((m) => m.key === el.dataset.mode);
+      selectMode(idx);
+    });
+  });
+  // The breathing-pattern row only makes sense while Breath is showing.
+  patternBarEl.classList.toggle('show', cur === 'breath');
+  breathCueEl.classList.toggle('show', cur === 'breath');
+}
+
+function renderPatternBar() {
+  const cur = visual.currentPattern().key;
+  patternBarEl.innerHTML = VizCore.BREATH_PATTERNS
+    .map((p) => `<span class="pill${p.key === cur ? ' active' : ''}" data-pattern="${p.key}">${p.label}</span>`)
+    .join('');
+  patternBarEl.querySelectorAll('.pill').forEach((el) => {
+    el.addEventListener('click', () => {
+      // cyclePattern() steps by one, so step until the clicked one is current.
+      let guard = 0;
+      while (visual.currentPattern().key !== el.dataset.pattern && guard++ < VizCore.BREATH_PATTERNS.length) {
+        visual.cyclePattern();
+      }
+      renderPatternBar();
+    });
+  });
+}
+
+function selectMode(index) {
+  const mode = visual.setMode(index);
+  setStatus(`${mode.label} — ${mode.blurb}`);
+  statusLockUntil = Date.now() + 2200;
+  renderModeBar();
+}
+
 addEventListener('keydown', (e) => {
   if (e.key === 'f' || e.key === 'F') {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();
     else document.exitFullscreen();
   }
   if (e.key === 'v' || e.key === 'V') {
-    const mode = visual.cycleMode();
+    visual.cycleMode();
+    const mode = visual.currentMode();
     setStatus(`${mode.label} — ${mode.blurb}`);
     statusLockUntil = Date.now() + 2200;
+    renderModeBar();
   }
+  if (e.key === 'Escape') closeSummary();
 });
 
 // Session timer — optional, understated. Pick a duration once connected;
@@ -119,6 +216,142 @@ function setStatus(html, opts = {}) {
   statusEl.classList.toggle('hidden', !!opts.hide);
 }
 
+// ---- Session log + summary -------------------------------------------------
+// One sample per second for the whole sit (a 40-minute sit is only 2400 rows).
+// The chart's own buffer is capped at ~3 minutes, so the summary needs its own.
+const sessionLog = [];
+let sessionStartedAt = null;
+let selfRating = null;      // the person's own guess, asked BEFORE any numbers
+const summaryEl = document.getElementById('summary');
+const summaryBodyEl = document.getElementById('summaryBody');
+const summaryTitleEl = document.getElementById('summaryTitle');
+
+function logSessionSample(result, channels) {
+  if (sessionStartedAt == null) sessionStartedAt = Date.now();
+  sessionLog.push({
+    t: (Date.now() - sessionStartedAt) / 1000,
+    calm: result.calm,
+    noise: result.artifactRate,
+    levels: channels.map((c) => (c.pct == null ? null : c.pct)),
+    spikes: bandState.filter((s) => s.spike > 0.9).length,
+  });
+}
+
+function closeSummary() { summaryEl.classList.remove('show'); }
+
+// "Predict, then reveal" — a ROADMAP commitment. Asking how settled the sit
+// FELT before showing any number keeps the person's own felt sense primary and
+// trains interoception, rather than letting the score define the experience.
+function openSummary() {
+  const stats = Summary.summarize(sessionLog);
+  if (!stats) {
+    summaryTitleEl.textContent = 'Nothing to summarise yet';
+    summaryBodyEl.innerHTML = '<div class="subtle">Sit for a little while first — the summary needs at least a few seconds of signal.</div>'
+      + '<div style="margin-top:18px"><span class="pill" id="sumClose">Close</span></div>';
+    summaryEl.classList.add('show');
+    document.getElementById('sumClose').addEventListener('click', closeSummary);
+    return;
+  }
+  if (selfRating == null) {
+    summaryTitleEl.textContent = 'Before the numbers';
+    summaryBodyEl.innerHTML =
+      '<div class="subtle">How settled did that feel to you?<br>Your own sense first — the data comes after.</div>'
+      + '<div id="ratingRow" style="margin-top:20px">'
+      + [1, 2, 3, 4, 5].map((n) => `<span class="pill" data-rate="${n}">${n}</span>`).join('')
+      + '</div>'
+      + '<div class="subtle" style="margin-top:14px;font-size:11px">1 = scattered · 5 = deeply settled</div>'
+      + '<div style="margin-top:18px"><span class="pill" id="sumSkip">skip</span></div>';
+    summaryEl.classList.add('show');
+    summaryBodyEl.querySelectorAll('[data-rate]').forEach((el) => {
+      el.addEventListener('click', () => { selfRating = Number(el.dataset.rate); showSummaryStats(stats); });
+    });
+    document.getElementById('sumSkip').addEventListener('click', () => { selfRating = 0; showSummaryStats(stats); });
+    return;
+  }
+  showSummaryStats(stats);
+}
+
+function showSummaryStats(stats) {
+  summaryTitleEl.textContent = 'The shape of your sit';
+  const lines = Summary.describe(stats).map((l) => `<div>${l}</div>`).join('');
+  const chan = stats.perChannel.map((c, i) => {
+    const col = VizCore.CHANNEL_COLORS[i];
+    const pct = c.alphaFraction == null ? null : Math.round(c.alphaFraction * 100);
+    const h = c.alphaFraction == null ? 0 : Math.round(c.alphaFraction * 54);
+    return `<div class="chStat"><div class="chBarOuter">`
+      + `<div class="chBarFill" style="height:${h}px;background:rgb(${col[0]},${col[1]},${col[2]})"></div></div>`
+      + `<div>${DSP.CHANNEL_NAMES[i]}</div>`
+      + `<div style="color:rgba(255,255,255,.4)">${pct == null ? 'no signal' : pct + '% alpha'}</div></div>`;
+  }).join('');
+
+  const yours = selfRating > 0
+    ? `<div class="subtle" style="margin-top:4px">You felt it as a <b>${selfRating}</b> out of 5. `
+      + `Over time, noticing how your guess lines up with the trace is the skill worth building — `
+      + `more than the number itself.</div>`
+    : '';
+
+  summaryBodyEl.innerHTML =
+    `<canvas id="summaryTrace" width="560" height="90"></canvas>`
+    + `<div id="summaryLines" style="margin-top:6px">${lines}</div>`
+    + yours
+    + `<div id="summaryChannels" style="margin-top:16px">${chan}</div>`
+    + `<div style="margin-top:22px;display:flex;gap:10px;justify-content:center">`
+    + `<span class="pill" id="sumDownload">Download report (.md)</span>`
+    + `<span class="pill" id="sumClose">Close</span></div>`;
+  summaryEl.classList.add('show');
+  document.getElementById('sumClose').addEventListener('click', closeSummary);
+  document.getElementById('sumDownload').addEventListener('click', () => downloadReport(stats));
+
+  // Sparkline of the whole sit — the "shape", not a grade.
+  const c = document.getElementById('summaryTrace');
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  g.strokeStyle = 'rgba(255,255,255,.10)';
+  g.beginPath(); g.moveTo(0, c.height / 2); g.lineTo(c.width, c.height / 2); g.stroke();
+  if (stats.trace.length > 1) {
+    const grad = g.createLinearGradient(0, 0, c.width, 0);
+    grad.addColorStop(0, 'rgba(125,211,252,.9)');
+    grad.addColorStop(1, 'rgba(242,200,121,.95)');
+    g.strokeStyle = grad;
+    g.lineWidth = 2;
+    g.lineJoin = 'round';
+    g.beginPath();
+    stats.trace.forEach((v, i) => {
+      const x = (i / (stats.trace.length - 1)) * c.width;
+      const y = c.height - Math.max(0, Math.min(1, v)) * c.height;
+      i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+    });
+    g.stroke();
+  }
+}
+
+function downloadReport(stats) {
+  const md = Summary.toMarkdown(stats, {
+    selfRating: selfRating || null,
+    cueLog: cueEngine.log,
+    dateISO: new Date().toISOString().slice(0, 16).replace('T', ' '),
+    visualMode: visual.currentMode().label,
+    breathPattern: visual.currentPattern().label,
+  });
+  const blob = new Blob([md], { type: 'text/markdown' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `meditation-${new Date().toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+document.getElementById('summaryLink').addEventListener('click', openSummary);
+const cueToggleEl = document.getElementById('cueToggle');
+cueToggleEl.addEventListener('click', () => {
+  const on = cueEngine.setEnabled(!cueEngine.enabled);
+  cueToggleEl.textContent = `cues: ${on ? 'on' : 'off'}`;
+});
+summaryEl.addEventListener('click', (e) => { if (e.target === summaryEl) closeSummary(); });
+
 if (!navigator.bluetooth) {
   setStatus('Web Bluetooth isn’t available in this browser.<br>Use Chrome or Edge (desktop, Android, or ChromeOS).');
   connectBtn.remove();
@@ -133,6 +366,13 @@ const WINDOW = 256; // 1s of samples at 256Hz — exactly 1Hz per FFT bin
 
 const buffers = DSP.CHANNEL_NAMES.map(() => []);
 const tracker = new DSP.AdaptiveNormalizer();
+// "Thinking" is a separate signal from movement noise: activation (beta level),
+// how much the band balance churns, and how often it shifts abruptly. Computed
+// only from artifact-free windows, so a jaw clench is never read as a thought.
+const activityTracker = new DSP.ActivityTracker();
+const cueEngine = new Cues.CueEngine({ minIntervalSec: 300 });
+let settledStreakFrom = 0;  // when the current settled stretch began
+let recentReturns = 0;      // spikes since the last cue — "coming back" count
 let lastDataAt = 0;
 
 // Breathing, from the Muse's PPG (heart) sensor rather than EEG — heart
@@ -183,7 +423,12 @@ function computeCalm() {
   const artifact = windows.some((w) => DSP.isArtifact(w));
   artifactRate += 0.2 * ((artifact ? 1 : 0) - artifactRate);
 
-  if (artifact) return { calm: tracker.update(null), ratio: null, artifact, artifactRate };
+  if (artifact) {
+    return {
+      calm: tracker.update(null), ratio: null, artifact, artifactRate,
+      activity: activityTracker.update({ artifact: true }),
+    };
+  }
 
   let alphaSum = 0, betaSum = 0;
   for (const window of windows) {
@@ -191,7 +436,13 @@ function computeCalm() {
     alphaSum += powers.alpha; betaSum += powers.beta;
   }
   const ratio = Math.log(alphaSum / FRONTAL.length + 1e-6) - Math.log(betaSum / FRONTAL.length + 1e-6);
-  return { calm: tracker.update(ratio), ratio, artifact, artifactRate, alphaSum, betaSum };
+  const activity = activityTracker.update({
+    betaLog: Math.log(betaSum / FRONTAL.length + 1e-6),
+    ratio,
+    artifact: false,
+    spiked: bandState.some((b) => b.spike > 0.9),
+  });
+  return { calm: tracker.update(ratio), ratio, artifact, artifactRate, alphaSum, betaSum, activity };
 }
 
 // Raw per-sensor readout — all 4 electrodes individually (TP9/TP10 behind
@@ -393,6 +644,9 @@ async function connect() {
     renderTimerPicker();
     readoutEl.classList.add('show');
     dataPanelEl.classList.add('show');
+    modeBarEl.classList.add('show');
+    renderModeBar();
+    renderPatternBar();
   } catch (err) {
     connectBtn.disabled = false;
     if (err.name === 'NotFoundError') setStatus('no device selected. <button id="connect2">try again</button>');
@@ -430,10 +684,12 @@ setInterval(() => {
   }
   const channels = computeChannelLabels(); // one call, reused for readout + bands + chart
   updateBandState(channels);
+  recentReturns += bandState.filter((b) => b.spike > 0.9).length;
 
   visual.setState({
     calm: result.calm,
     noise: result.artifactRate,
+    activity: result.activity,
     bands: bandState.map((s) => ({ level: s.level, spike: s.spike })),
   });
 
@@ -442,11 +698,31 @@ setInterval(() => {
   if (timerEndAt && !timerDone && Date.now() >= timerEndAt) {
     timerDone = true;
     setStatus('session complete');
+    openSummary(); // the timer ending is the natural moment to reflect
   } else if (statusLocked) {
-    /* a transient message (visual mode name) owns the status line right now */
+    /* a transient message (visual mode name / a cue) owns the status line */
   } else if (stale) setStatus('signal lost — check the headband fit');
-  else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
   else if (!timerDone) setStatus('', { hide: true });
+
+  // Cues: silence is the default. At most one every 5 minutes, only when
+  // there is something worth saying, and never the same one twice running.
+  if (!statusLocked && !stale && sessionStartedAt != null) {
+    const nowSec = (Date.now() - sessionStartedAt) / 1000;
+    if (nowSec - settledStreakFrom > 0 && result.calm <= 0.6) settledStreakFrom = nowSec;
+    const cue = cueEngine.update({
+      tSec: nowSec,
+      calm: result.calm,
+      activity: result.activity == null ? 0.5 : result.activity,
+      noise: result.artifactRate,
+      recentReturns: recentReturns,
+      settledStreakSec: result.calm > 0.6 ? nowSec - settledStreakFrom : 0,
+    });
+    if (cue) {
+      setStatus(cue.text);
+      statusLockUntil = Date.now() + 9000; // long enough to actually read
+      recentReturns = 0;
+    }
+  }
 
   // One understated, plain-English readout. No jargon, no Greek letters,
   // no raw ratios — this is the only interface; there is no separate
@@ -477,7 +753,10 @@ setInterval(() => {
   readoutEl.innerHTML = sensorLines.join('<br>') + '<br><br>' + composite.join('<br>');
 
   tickCount++;
-  if (tickCount % 4 === 0) sampleHistory(result, channels); // ~1 sample/sec at a 250ms tick rate
+  if (tickCount % 4 === 0) {
+    sampleHistory(result, channels);     // ~1 sample/sec at a 250ms tick rate
+    logSessionSample(result, channels);  // whole-session log, for the summary
+  }
 }, 250);
 </script>
 </body>

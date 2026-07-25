@@ -82,11 +82,21 @@ function makeCtx() {
   ctx.clearRect = record('clearRect');
   ctx.drawImage = record('drawImage');
   ctx.beginPath = record('beginPath');
+  ctx.closePath = record('closePath');
   ctx.arc = record('arc', [2]); // radius must be >= 0
   ctx.fill = record('fill');
   ctx.stroke = record('stroke');
   ctx.moveTo = record('moveTo');
   ctx.lineTo = record('lineTo');
+  ctx.quadraticCurveTo = record('quadraticCurveTo');
+  ctx.bezierCurveTo = record('bezierCurveTo');
+  ctx.ellipse = record('ellipse', [2, 3]); // radii must be >= 0
+  ctx.save = record('save');
+  ctx.restore = record('restore');
+  ctx.translate = record('translate');
+  ctx.rotate = record('rotate');
+  ctx.scale = record('scale');
+  ctx.createPattern = () => ({ setTransform: () => {} });
   return ctx;
 }
 

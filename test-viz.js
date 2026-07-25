@@ -109,4 +109,66 @@ const VizCore = require('./public/viz-core.js');
   console.log('✓ wobble stays bounded and smooth even after a very long session');
 }
 
+// 9) Breathing patterns: 'Follow me' has no fixed pattern; the others do.
+{
+  const byKey = Object.fromEntries(VizCore.BREATH_PATTERNS.map((p) => [p.key, p]));
+  assert.strictEqual(VizCore.breathPattern(byKey.measured, 3), null,
+    '"Follow me" should have no fixed pattern (it tracks the measured rate)');
+  const box = byKey.box;
+  assert.ok(box, 'a box-breathing pattern should exist');
+  assert.strictEqual(box.phases.reduce((s, p) => s + p[1], 0), 16, 'box 4·4·4·4 should total 16s');
+  console.log('✓ breathing patterns include Follow-me plus fixed classical patterns');
+}
+
+// 10) Box breathing: inhale rises, hold genuinely HOLDS (does not drift),
+//     exhale falls, hold-out holds at empty. This is the property the user
+//     asked for — "slow in and slow out", steady, with real pauses.
+{
+  const box = VizCore.BREATH_PATTERNS.find((p) => p.key === 'box');
+  const at = (t) => VizCore.breathPattern(box, t);
+  assert.ok(at(0.2).amount < at(2).amount && at(2).amount < at(3.8).amount, 'inhale should rise');
+  assert.strictEqual(at(0).phase, 'in');
+  // 4..8s is the hold — amount must be pinned at 1 the entire time
+  for (let t = 4.05; t < 7.95; t += 0.2) {
+    assert.strictEqual(at(t).amount, 1, `hold must stay full, no drift (t=${t.toFixed(2)})`);
+    assert.strictEqual(at(t).label, 'Hold');
+  }
+  assert.ok(at(8.2).amount > at(10).amount && at(10).amount > at(11.8).amount, 'exhale should fall');
+  // 12..16s is the hold-out — pinned at 0
+  for (let t = 12.05; t < 15.95; t += 0.2) {
+    assert.strictEqual(at(t).amount, 0, `hold-out must stay empty (t=${t.toFixed(2)})`);
+  }
+  console.log('✓ box breathing rises, truly holds, falls, and truly holds empty');
+}
+
+// 11) Patterns are continuous across the cycle boundary — no visible jump
+//     when the cycle wraps, and bounded in [0,1] everywhere.
+{
+  for (const p of VizCore.BREATH_PATTERNS.filter((x) => x.phases)) {
+    const total = p.phases.reduce((s, q) => s + q[1], 0);
+    let prev = VizCore.breathPattern(p, 0).amount;
+    let maxJump = 0;
+    for (let t = 0; t < total * 3; t += 0.02) {
+      const a = VizCore.breathPattern(p, t).amount;
+      assert.ok(a >= 0 && a <= 1, `${p.key}: amount must stay in [0,1] (got ${a} at t=${t.toFixed(2)})`);
+      maxJump = Math.max(maxJump, Math.abs(a - prev));
+      prev = a;
+    }
+    // A jump only occurs at in->hold / out->holdOut joins, which are equal by
+    // construction, so nothing should exceed a small per-step delta.
+    assert.ok(maxJump < 0.05, `${p.key}: must be continuous, largest step was ${maxJump.toFixed(4)}`);
+  }
+  console.log('✓ every breathing pattern is continuous and bounded across cycle wrap');
+}
+
+// 12) Pattern cycling wraps like mode cycling.
+{
+  let i = 0;
+  const seen = new Set();
+  for (let n = 0; n < VizCore.BREATH_PATTERNS.length; n++) { seen.add(i); i = VizCore.nextPattern(i); }
+  assert.strictEqual(seen.size, VizCore.BREATH_PATTERNS.length, 'should reach every pattern');
+  assert.strictEqual(i, 0, 'should wrap back to the first');
+  console.log('✓ breathing-pattern cycling wraps correctly');
+}
+
 console.log('\nAll viz-core tests passed.');

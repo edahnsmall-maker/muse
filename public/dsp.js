@@ -305,6 +305,64 @@
     }
   }
 
+  // ---- Mental-activity ("thinking") score --------------------------------
+  // Deliberately NOT the same thing as `noise`. Noise here means movement
+  // artifact — jaw, blink, a shifting headband — which is a measurement
+  // problem. This is a signal about cortical activation, computed only from
+  // artifact-FREE windows, from three components that all point the same way:
+  //
+  //   1. beta level      — beta (13-30Hz) rises with active, effortful,
+  //                        analytical engagement.
+  //   2. variability     — a churning mind's band powers move around a lot;
+  //                        a settled one holds steadier. Rolling standard
+  //                        deviation of the alpha/beta log-ratio.
+  //   3. spike density   — how often the balance shifts abruptly, i.e. the
+  //                        rate of discrete "something just happened" events.
+  //
+  // HONESTY BOUNDARY: this measures mental ACTIVATION, not thoughts. It cannot
+  // read content, and it cannot distinguish "solving a problem" from "worrying"
+  // from "composing a poem". Present it as activity, never as mind-reading.
+  class ActivityTracker {
+    constructor({ varWindow = 40, smoothing = 0.06, spikeDecay = 0.94 } = {}) {
+      this.varWindow = varWindow;      // ticks; 40 @ ~4/sec ≈ 10s
+      this.smoothing = smoothing;
+      this.spikeDecay = spikeDecay;
+      this.betaNorm = new AdaptiveNormalizer({ smoothing: 0.12 });
+      this.varNorm = new AdaptiveNormalizer({ smoothing: 0.12 });
+      this.ratios = [];
+      this.spikeDensity = 0;
+      this.value = 0.5;
+    }
+    update({ betaLog = null, ratio = null, artifact = false, spiked = false } = {}) {
+      // Spike density decays continuously, but a spike only counts when the
+      // window was clean — an artifact is not a thought.
+      this.spikeDensity *= this.spikeDecay;
+      if (artifact) return this.value; // hold; don't learn from unusable data
+      if (spiked) this.spikeDensity = Math.min(1, this.spikeDensity + 0.5);
+
+      const betaLevel = betaLog == null ? 0.5 : this.betaNorm.update(betaLog);
+
+      let variability = 0.5;
+      if (ratio != null && !Number.isNaN(ratio)) {
+        this.ratios.push(ratio);
+        if (this.ratios.length > this.varWindow) this.ratios.shift();
+        if (this.ratios.length >= 4) {
+          const mean = this.ratios.reduce((a, b) => a + b, 0) / this.ratios.length;
+          const sd = Math.sqrt(
+            this.ratios.reduce((a, b) => a + (b - mean) * (b - mean), 0) / this.ratios.length
+          );
+          variability = this.varNorm.update(sd);
+        }
+      }
+
+      const target = Math.max(0, Math.min(1,
+        0.45 * betaLevel + 0.35 * variability + 0.20 * Math.min(1, this.spikeDensity)
+      ));
+      this.value += this.smoothing * (target - this.value);
+      return this.value;
+    }
+  }
+
   return {
     MUSE_SERVICE, CONTROL_CHARACTERISTIC, EEG_CHARACTERISTICS, CHANNEL_NAMES,
     EEG_FREQUENCY, EEG_SAMPLES_PER_PACKET,
@@ -313,6 +371,6 @@
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
     ARTIFACT_PTP_UV, peakToPeak, isArtifact,
     detectBeats, estimateBreathingPeriod,
-    AdaptiveNormalizer, SpikeDetector,
+    AdaptiveNormalizer, SpikeDetector, ActivityTracker,
   };
 });
