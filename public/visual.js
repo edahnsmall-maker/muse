@@ -11,7 +11,12 @@ function createZenVisual(canvas) {
   const FRAG = `
 precision highp float;
 uniform vec2 u_res; uniform float u_time; uniform float u_calm;
-float hash(vec2 p){ p=fract(p*vec2(123.34,345.45)); p+=dot(p,p+34.345); return fract(p.x*p.y); }
+// Multiplying by large constants (123.34, 345.45) before taking fract()
+// requires the GPU to resolve the fractional part of a *large* number —
+// exactly where "highp" silently degrades to lower precision on some
+// GPUs, collapsing this into visible blocky tiles. Small constants keep
+// every intermediate value near [0,1), which stays precise everywhere.
+float hash(vec2 p){ vec2 q=fract(p*vec2(0.1031,0.1030)); q+=dot(q,q.yx+19.19); return fract((q.x+q.y)*q.x); }
 float noise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
   float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
   return mix(mix(a,b,u.x), mix(c,d,u.x), u.y); }

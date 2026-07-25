@@ -181,10 +181,11 @@ setInterval(() => {
   else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
   else setStatus('', { hide: true });
   if (showHud) hudEl.innerHTML =
-    `calm&nbsp;&nbsp;${(result.calm * 100).toFixed(0)}%<br>` +
+    `calm&nbsp;&nbsp;${(result.calm * 100).toFixed(0)}%${stale ? ' (stale)' : ''}<br>` +
     `α/β&nbsp;&nbsp;&nbsp;&nbsp;${result.ratio == null ? '— (artifact)' : result.ratio.toFixed(3)}<br>` +
     `noise&nbsp;&nbsp;${(result.artifactRate * 100).toFixed(0)}%<br>` +
-    `packets&nbsp;${DSP.CHANNEL_NAMES.map((n, i) => `${n}:${packetCounts[i]}`).join(' ')}`;
+    `packets&nbsp;${DSP.CHANNEL_NAMES.map((n, i) => `${n}:${packetCounts[i]}`).join(' ')}` +
+    `${stale ? `<br>last data ${((Date.now()-lastDataAt)/1000).toFixed(1)}s ago` : ''}`;
 }, 250);
 </script>
 </body>
