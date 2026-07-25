@@ -98,6 +98,8 @@ function makeCtx() {
   ctx.quadraticCurveTo = record('quadraticCurveTo');
   ctx.bezierCurveTo = record('bezierCurveTo');
   ctx.ellipse = record('ellipse', [2, 3]); // radii must be >= 0
+  ctx.rect = record('rect');
+  ctx.clip = record('clip');
   ctx.save = record('save');
   ctx.restore = record('restore');
   ctx.translate = record('translate');

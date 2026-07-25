@@ -301,18 +301,24 @@ function createZenVisual(canvas) {
   }
 
   // ---- Flow: chronological watercolour ribbons --------------------------
+  // "Now" sits slightly right of centre rather than hard against the right
+  // edge: new paint appears where the eye already is, history trails off to
+  // the left, and the newest stroke's soft wash blooms into the space to its
+  // right instead of being clipped by the frame.
+  const FLOW_NOW_X = 0.56;
+
   function renderFlow() {
     paintBase(bctx);
     if (history.length < 2) return;
 
     lctx.clearRect(0, 0, BW, BH);
     lctx.globalCompositeOperation = 'lighter';
-    // Unblurred here; the single blur happens on the blit to `buf` below.
-    // Blurring per-stroke would cost ~12 full-buffer passes per frame.
+    // Unblurred here; blur is applied per age-zone on the blit below.
     lctx.lineCap = 'round';
     lctx.lineJoin = 'round';
 
-    const xOf = (i) => ((FLOW_MAX - history.length + i) / (FLOW_MAX - 1)) * BW;
+    const nowX = BW * FLOW_NOW_X;
+    const xOf = (i) => nowX - ((history.length - 1 - i) / (FLOW_MAX - 1)) * nowX;
 
     for (let ch = 0; ch < 4; ch++) {
       const col = VizCore.CHANNEL_COLORS[ch];
@@ -348,17 +354,43 @@ function createZenVisual(canvas) {
     }
     // Age fade: erase progressively toward the left so older paint dissolves.
     lctx.globalCompositeOperation = 'destination-out';
-    const fade = lctx.createLinearGradient(0, 0, BW, 0);
-    fade.addColorStop(0, 'rgba(0,0,0,0.92)');
-    fade.addColorStop(0.42, 'rgba(0,0,0,0)');
+    const fade = lctx.createLinearGradient(0, 0, nowX, 0);
+    fade.addColorStop(0, 'rgba(0,0,0,0.95)');
+    fade.addColorStop(0.55, 'rgba(0,0,0,0)');
     lctx.fillStyle = fade;
-    lctx.fillRect(0, 0, BW, BH);
+    lctx.fillRect(0, 0, nowX, BH);
     lctx.globalCompositeOperation = 'source-over';
 
+    // Sharp where it is being made, dissolving as it ages. A single blur pass
+    // cannot vary across the image, so the layer is blitted in three x-zones
+    // with increasing blur: the newest zone is composited with no filter at
+    // all, so the live edge stays genuinely crisp. Zones overlap slightly and
+    // the older ones are drawn at reduced alpha, which hides the seams.
+    // Cost: two blur passes per frame (the newest zone needs none).
+    const zones = [
+      { from: 0.00, to: 0.42, blur: Math.max(3, Math.round(BW / 42)), alpha: 0.85 },
+      { from: 0.38, to: 0.78, blur: Math.max(1, Math.round(BW / 150)), alpha: 0.95 },
+      { from: 0.74, to: 1.00, blur: 0, alpha: 1 },
+    ];
     bctx.globalCompositeOperation = 'lighter';
-    bctx.filter = `blur(${Math.max(2, Math.round(BW / 90))}px)`;
-    bctx.drawImage(lay, 0, 0);
-    bctx.filter = 'none';
+    for (const z of zones) {
+      const x0 = z.from * nowX;
+      const x1 = z.to * nowX;
+      // The newest zone extends to the full buffer width so the live stroke's
+      // wash can bloom right of `nowX` rather than being cut off.
+      const w = (z.to >= 1 ? BW : x1) - x0;
+      if (w <= 0) continue;
+      bctx.save();
+      bctx.beginPath();
+      bctx.rect(x0, 0, w, BH);
+      bctx.clip();
+      bctx.globalAlpha = z.alpha;
+      bctx.filter = z.blur > 0 ? `blur(${z.blur}px)` : 'none';
+      bctx.drawImage(lay, 0, 0);
+      bctx.filter = 'none';
+      bctx.globalAlpha = 1;
+      bctx.restore();
+    }
     bctx.globalCompositeOperation = 'source-over';
   }
 

@@ -140,6 +140,38 @@
   #markDur { width: 96px; font: inherit; font-size: 14px; padding: 11px 12px; border-radius: 10px;
     border: none; background: rgba(255,255,255,.10); color: rgba(255,255,255,.9); }
   #markHint { font-size: 11px; color: rgba(255,255,255,.35); letter-spacing: .04em; }
+
+  /* Readout rows: label, tier light, level bar, value. The bar is the
+     "what am I even looking at" fix — a bare number is hard to read at a
+     glance, a filled bar is not. */
+  .rRow { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+  .rLabel { opacity: .72; }
+  .rBar { width: 42px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.11);
+    overflow: hidden; flex: none; }
+  .rBar i { display: block; height: 100%; border-radius: 3px; transition: width .25s linear; }
+  .rVal { min-width: 26px; text-align: right; color: rgba(255,255,255,.92); font-weight: 500; }
+  .rRow.primary .rLabel { color: rgba(255,255,255,.95); opacity: 1; }
+
+  /* Tier lights. Colour, not just a symbol, so the confidence of a score is
+     legible without reading anything. */
+  .tierLight { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+  .tier-solid { background: #6ee7a8; box-shadow: 0 0 5px rgba(110,231,168,.7); }
+  .tier-moderate { background: #f2c879; box-shadow: 0 0 5px rgba(242,200,121,.55); }
+  .tier-speculative { background: transparent; border: 1px solid rgba(255,255,255,.4); }
+  #tierLegend { display: none; margin-top: 10px; font-size: 10px;
+    color: rgba(255,255,255,.42); justify-content: flex-end; gap: 10px; align-items: center; }
+  #tierLegend.show { display: flex; }
+  #tierLegend .li { display: flex; align-items: center; gap: 4px; }
+  #tierLegend .more { text-decoration: underline; cursor: pointer; }
+
+  /* A real, clickable control bar. Keyboard shortcuts still work, but nothing
+     is keyboard-ONLY — shortcuts you have to remember are not discoverable. */
+  #controls { display: flex; gap: 7px; flex-wrap: wrap; justify-content: center;
+    opacity: 0; transition: opacity .6s; margin-bottom: 10px; }
+  #controls.show { opacity: 1; }
+  #controls .pill kbd { margin-left: 5px; opacity: .5; font-size: 9px; }
+  #controls .pill.mark { background: rgba(255,255,255,.15); color: rgba(255,255,255,.95); }
+  #controls .pill.mark:hover { background: rgba(255,255,255,.26); }
 </style>
 </head>
 <body>
@@ -177,13 +209,17 @@
       <div id="legend"></div>
     </div>
   </div>
-  <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
-    <span id="summaryLink" style="cursor:pointer;text-decoration:underline">session summary</span> ·
-    <span id="cueToggle" style="cursor:pointer;text-decoration:underline">cues: on</span> ·
-    <span id="trainToggle" style="cursor:pointer;text-decoration:underline">training: off</span> ·
-    <kbd>M</kbd> mark + note ·
-    <kbd>V</kbd> changes the visual · <kbd>F</kbd> fullscreen ·
-    <a href="index.html">use Mind Monitor instead →</a></div>
+  <div style="display:flex;flex-direction:column;align-items:center">
+    <div id="controls">
+      <span class="pill mark" id="btnMark">Mark this moment<kbd>M</kbd></span>
+      <span class="pill" id="trainToggle">training: off<kbd>T</kbd></span>
+      <span class="pill" id="cueToggle">cues: on</span>
+      <span class="pill" id="summaryLink">Session summary</span>
+      <span class="pill" id="btnFull">Fullscreen<kbd>F</kbd></span>
+    </div>
+    <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth ·
+      <a href="index.html">use Mind Monitor instead →</a></div>
+  </div>
 </div>
 <script src="dsp.js"></script>
 <script src="viz-core.js"></script>
@@ -485,11 +521,18 @@ function downloadReport(stats) {
 
 document.getElementById('summaryLink').addEventListener('click', openSummary);
 document.getElementById('trainToggle').addEventListener('click', () => setTrainingMode(!trainingMode));
+document.getElementById('btnMark').addEventListener('click', () => openMarkPrompt());
+document.getElementById('btnFull').addEventListener('click', () => {
+  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
+  else document.exitFullscreen();
+});
 const cueToggleEl = document.getElementById('cueToggle');
 cueToggleEl.addEventListener('click', () => {
   const on = cueEngine.setEnabled(!cueEngine.enabled);
   cueToggleEl.textContent = `cues: ${on ? 'on' : 'off'}`;
+  cueToggleEl.classList.toggle('active', on);
 });
+cueToggleEl.classList.add('active');
 summaryEl.addEventListener('click', (e) => { if (e.target === summaryEl) closeSummary(); });
 
 if (!navigator.bluetooth) {
@@ -670,7 +713,7 @@ function setTrainingMode(on) {
   trainClockEl.classList.toggle('show', trainingMode);
   renderMarkCount();
   const el = document.getElementById('trainToggle');
-  if (el) el.textContent = `training: ${trainingMode ? 'on' : 'off'}`;
+  if (el) el.innerHTML = `training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
 }
 
 function markerContextFor(m) {
@@ -1034,6 +1077,7 @@ async function connect() {
     readoutEl.classList.add('show');
     dataPanelEl.classList.add('show');
     modeBarEl.classList.add('show');
+    document.getElementById('controls').classList.add('show');
     renderModeBar();
     renderPatternBar();
   } catch (err) {
@@ -1124,41 +1168,64 @@ setInterval(() => {
   // then the composite/rolled-up metrics built from them.
   const noiseLabel = result.artifactRate > 0.5 ? 'High' : result.artifactRate > 0.15 ? 'Some' : 'Low';
   const brainLabel = result.ratio == null ? '—' : result.alphaSum > result.betaSum ? 'Alpha (restful)' : 'Beta (active)';
-  const breathLine = !ppgAvailable ? null
-    : breathPeriod == null ? 'Breath&nbsp;&nbsp;<b>Reading…</b>'
-    : `Breath&nbsp;&nbsp;<b>${Math.round(60 / breathPeriod)}/min</b>`;
-  let timerLine = null;
+  // A row with a level bar reads at a glance in a way a bare number does not.
+  // `tier` adds a coloured light so the confidence of a score is visible
+  // without having to remember which name is which.
+  const row = (label, value01, { text = null, tier = null, color = null, primary = false } = {}) => {
+    const pct = value01 == null ? 0 : Math.round(Math.max(0, Math.min(1, value01)) * 100);
+    const light = tier ? `<span class="tierLight tier-${tier}" title="${Metrics.tierInfo(tier).label}"></span>` : '';
+    const bar = value01 == null ? '<span class="rBar"></span>'
+      : `<span class="rBar"><i style="width:${pct}%;background:${color || 'rgba(255,255,255,.75)'}"></i></span>`;
+    const val = text != null ? text : (value01 == null ? '—' : pct);
+    return `<div class="rRow${primary ? ' primary' : ''}">`
+      + `<span class="rLabel">${label}</span>${light}${bar}<span class="rVal">${val}</span></div>`;
+  };
+
+  let topRows;
+  if (viewMode === 'sensors') {
+    topRows = channels.map(({ name, label, pct }, i) => {
+      const c = VizCore.CHANNEL_COLORS[i];
+      return row(name, pct, { text: label, color: `rgb(${c[0]},${c[1]},${c[2]})` });
+    });
+  } else {
+    topRows = activeComposites.map((k) => {
+      const m = Metrics.get(k);
+      const v = Metrics.compute(k, features);
+      return row(m.label, v, {
+        tier: Metrics.tierOf(k),
+        color: COMPOSITE_COLORS[k],
+        primary: k === primaryMetric,
+      });
+    });
+  }
+
+  const tail = [];
+  tail.push(row('Visual', null, { text: visual.currentMode().label }));
+  if (viewMode !== 'composites') {
+    tail.push(row('Calm', result.calm, { tier: 'moderate', color: COMPOSITE_COLORS.calm }));
+    tail.push(row('Brainwaves', null, { text: brainLabel }));
+  }
+  if (ppgAvailable) {
+    tail.push(row('Breath', null, {
+      text: breathPeriod == null ? 'reading…' : `${Math.round(60 / breathPeriod)}/min`,
+    }));
+  }
+  tail.push(row('Noise', result.artifactRate, { text: noiseLabel, color: COMPOSITE_COLORS.jaw }));
   if (timerEndAt) {
     const remaining = Math.max(0, timerEndAt - Date.now());
     const mm = Math.floor(remaining / 60000), ss = Math.floor((remaining % 60000) / 1000);
-    timerLine = timerDone ? 'Timer&nbsp;&nbsp;<b>Complete</b>'
-      : `Timer&nbsp;&nbsp;<b>${mm}:${String(ss).padStart(2, '0')}</b>`;
+    tail.push(row('Timer', null, { text: timerDone ? 'complete' : `${mm}:${String(ss).padStart(2, '0')}` }));
   }
+  if (markerLog.length) tail.push(row('Marks', null, { text: String(markerLog.length) }));
 
-  let topLines;
-  if (viewMode === 'sensors') {
-    topLines = channels.map(({ name, label }) => `${name}&nbsp;&nbsp;<b>${label}</b>`);
-  } else {
-    // Composite view: each score with its evidence tier marker, and the one
-    // currently driving the visual marked with a dot.
-    topLines = activeComposites.map((k) => {
-      const m = Metrics.get(k);
-      const v = Metrics.compute(k, features);
-      const t = Metrics.tierOf(k);
-      const mark = t === 'solid' ? '●' : t === 'moderate' ? '◐' : '○';
-      const lead = k === primaryMetric ? '›&nbsp;' : '';
-      return `${lead}${m.label}&nbsp;<span style="opacity:.45">${mark}</span>&nbsp;<b>${v == null ? '—' : Math.round(v * 100)}</b>`;
-    });
-  }
-  const composite = [
-    `Visual&nbsp;&nbsp;<b>${visual.currentMode().label}</b>`,
-    viewMode === 'composites' ? null : `Calm&nbsp;&nbsp;<b>${Math.round(result.calm * 100)}</b>`,
-    viewMode === 'composites' ? null : `Brainwaves&nbsp;&nbsp;<b>${brainLabel}</b>`,
-    breathLine,
-    `Noise&nbsp;&nbsp;<b>${noiseLabel}</b>`,
-    timerLine,
-  ].filter(Boolean);
-  readoutEl.innerHTML = topLines.join('<br>') + '<br><br>' + composite.join('<br>');
+  readoutEl.innerHTML = topRows.join('') + '<div style="height:12px"></div>' + tail.join('')
+    + `<div id="tierLegend" class="${viewMode === 'composites' ? 'show' : ''}">`
+    + `<span class="li"><span class="tierLight tier-solid"></span>measured</span>`
+    + `<span class="li"><span class="tierLight tier-moderate"></span>proxy</span>`
+    + `<span class="li"><span class="tierLight tier-speculative"></span>exploratory</span>`
+    + `<span class="more" id="legendMore">what?</span></div>`;
+  const lm = document.getElementById('legendMore');
+  if (lm) lm.addEventListener('click', showMetricInfo);
 
   if (trainingMode) {
     const t = sessionSeconds();
