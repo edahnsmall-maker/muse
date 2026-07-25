@@ -49,6 +49,17 @@ not to grade their meditation.** Concretely, that means:
 - **Data always points back to felt experience, never replaces it.** The
   failure mode of every meditation app is making people better at the app
   instead of at meditating.
+- **Never present a guess as a measurement.** Added after building the
+  composite scores and asking the obvious question: are they actually valid?
+  They are not — they're literature-informed but hand-tuned and unvalidated.
+  So every metric carries an explicit evidence tier (measured / proxy /
+  exploratory) and a caveat, in code (`public/metrics.js`) and visibly in the
+  UI; a metric with no data reads as "no data", never as zero; and no
+  speculative score is ever a default. Writing more code cannot make a metric
+  valid — only labelled ground truth can, which is what markers exist to
+  collect. This is a non-negotiable, not a nice-to-have: a room full of people
+  at a zen center trusting a number that means nothing would be worse than
+  giving them no number at all.
 
 ## Phase 0 — done: the spike
 
@@ -111,30 +122,60 @@ guess until then and hands off smoothly once real data is available. PPG failure
 degrades gracefully to EEG-only rather than breaking the core experience.
 
 Files: `server.js`, `public/index.html` (Path A), `public/direct.html` (Path B),
-`public/dsp.js` (shared DSP core, environment-agnostic), `public/visual.js`
-(shared visual, used by both pages), `sim.js`, `test.js`, `test-dsp.js`,
-`README.md` (setup + troubleshooting for both paths).
+`public/dsp.js` (shared DSP core, environment-agnostic), `public/visual.js` +
+`public/viz-core.js` (the renderer and its testable pure core), `public/chart.js`,
+`public/metrics.js`, `public/markers.js`, `public/cues.js`, `public/summary.js`,
+`sim.js`, nine test suites, `README.md` (setup + troubleshooting for both paths).
 
-## Phase 1 — next: the two mechanics that answer "I might be failing"
+## Phase 1 — mostly built: the mechanics that answer "I might be failing"
 
 **Goal:** make the prototype's core message, from minute one, "thoughts are
 okay, coming back is the point" — and give people undeniable proof they're
 moving.
 
-- [ ] **Scatter→recover detection.** Identify the down-then-up pattern in the
-      calm signal (attention broke, then returned) and mark/count it — this
-      is the "rep counter" for coming back, not for staying still.
-- [ ] **End-of-session reflection: predict, then reveal.** Ask "how settled
-      did that feel, 1–5?" before showing the trace. Store both.
-- [ ] **Self-relative progress.** Track settling time (how long to first
-      real dip toward calm) and session-to-session trend, compared only to
-      the person's own history.
-- [ ] **Session shape report.** A simple visual trace of the sit (not a
-      grade) — a little landscape/weather-line — with plain-language
-      framing ("a choppy sit is a normal sit").
-- [ ] **Scoreboard mode v1**: an explicit concentration meter (frontal theta)
-      for focused-attention sits, alongside the existing ambient mirror mode
-      for open awareness.
+- [~] **Scatter→recover detection.** Partly there: return-counting feeds the
+      cue engine (`recentReturns` → the "you keep coming back" cue, the one
+      that names returning as the practice). **Not yet surfaced as a visible
+      rep counter in the report**, which is where it earns its keep.
+- [x] **End-of-session reflection: predict, then reveal.** The summary asks
+      "how settled did that feel, 1–5?" *before* showing any numbers, and the
+      report records the felt rating alongside the data.
+- [ ] **Self-relative progress.** Blocked on storage — nothing persists
+      between sessions yet, so "last month 8 minutes to settle, today 3"
+      isn't computable. This is the single highest-value missing piece for
+      the core promise, and the cheapest: it's local storage, not new signal
+      processing.
+- [x] **Session shape report.** A downloadable markdown report with the trace
+      as a sparkline, deliberately non-evaluative phrasing (`summary.describe`
+      never grades), the cue log, and per-marker before/after tables.
+- [x] **Scoreboard mode v1**: `Focus` (frontal theta steadiness) is selectable
+      as a composite, and the visual retunes to whichever composite is
+      selected — so scoreboard and mirror are the same screen pointed at
+      different scores, rather than two separate apps. Honest caveat carried
+      in the UI: true Fz sits *between* our two sensors, so this is a proxy
+      of a proxy, and theta also rises with drowsiness.
+
+**Also built in this phase, unplanned, because live use asked for it:**
+
+- [x] **Six visual modes** (Eclipse, Iris, Flow, Bloom, Field, Breath), each
+      driven by real per-channel data with anatomically-placed sensors, plus
+      four guided breathing patterns. Not scope creep: "which visual actually
+      helps someone settle" is an open question that can only be answered by
+      having several to compare, which is why the instruction was to *add*
+      modes rather than replace them.
+- [x] **In-the-moment cues** — Phase 2's guidance item, pulled forward. Rate
+      limited to one per five minutes, silent for the first minute, never
+      repeating, never scolding.
+- [x] **Markers + training mode** — the labelled-ground-truth capture that
+      validation depends on. Notes are taken at the moment, not deferred,
+      because holding a list of things to remember damages a sit more than
+      briefly typing does.
+- [x] **The honesty layer** — evidence tiers, null-not-zero, and visible
+      caveats on every score (see the new non-negotiable above).
+
+**Next up, concretely:** session storage (unblocks self-relative progress),
+scatter→recover in the report, and HRV steadiness so `Equanimity` stops
+returning `null`.
 
 ## Phase 2 — the real phone app
 
@@ -144,9 +185,10 @@ moving.
 - [ ] Cross-platform app (React Native or Flutter) with direct BLE via
       **BrainFlow** (drop Mind Monitor once this works — it was a Phase 0
       shortcut).
-- [ ] In-the-moment guidance: short, state-triggered cues ("you don't have
-      to control your thinking — just keep returning to the breath"),
-      silent when already settled.
+- [x] ~~In-the-moment guidance: short, state-triggered cues~~ — **built early
+      in Phase 1** (`public/cues.js`), because live use surfaced the opposite
+      problem first: a constant "keep steady" nag. The rules and rate limiting
+      are pure logic and unit-tested, so they port to the app unchanged.
 - [ ] Breath-paced audio/haptic: tone or pulse on inhale/exhale, with tone
       quality itself reflecting physiological state (not just timing). Real
       breath-rate detection (PPG-based, via respiratory sinus arrhythmia)
@@ -240,3 +282,6 @@ view so today's architecture doesn't foreclose it:
 2. Does this compare a person to anyone but their own past?
 3. If this is for shikantaza/open awareness, does it score, or does it mirror?
 4. Does the scaffolding get quieter as the person improves, or louder?
+5. **Does this present a guess as a measurement?** If a number goes on screen,
+   can we say exactly what it's computed from and what it cannot tell us — and
+   does the UI say so too?
