@@ -24,8 +24,8 @@ float fbm(vec2 p){ float v=0.0, amp=0.5; for(int i=0;i<5;i++){ v+=amp*noise(p); 
 void main(){
   vec2 uv = gl_FragCoord.xy / u_res.xy;
   vec2 p = uv; p.x *= u_res.x / u_res.y;
-  float speed = mix(0.34, 0.06, u_calm);
-  float warp  = mix(1.7, 0.55, u_calm);
+  float speed = mix(0.34, 0.012, u_calm);   // near-stillness at high calm, not just "slower"
+  float warp  = mix(1.7, 0.32, u_calm);
   // Feeding raw elapsed time straight into the noise coordinates grows
   // unbounded over a long session and eventually exceeds this GPU's
   // effective float precision, collapsing the smooth field into visible
