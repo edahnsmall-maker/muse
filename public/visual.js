@@ -17,9 +17,11 @@
 function createZenVisual(canvas) {
   const ctx = canvas.getContext('2d');
   const buf = document.createElement('canvas'); // per-frame compose target
-  const lay = document.createElement('canvas'); // scratch layer (Flow ribbons)
+  const lay = document.createElement('canvas'); // scratch layer, drawn unblurred
+  const rec = document.createElement('canvas'); // persistent record layer (Iris)
   const bctx = buf.getContext('2d');
   const lctx = lay.getContext('2d');
+  const rctx = rec.getContext('2d');
 
   const BUF_MAX_W = 560; // small buffer => soft upscale + cheap blur
   let BW = 0, BH = 0;
@@ -72,7 +74,7 @@ function createZenVisual(canvas) {
     const scale = Math.min(1, BUF_MAX_W / canvas.width);
     BW = Math.max(160, Math.round(canvas.width * scale));
     BH = Math.max(90, Math.round(canvas.height * scale));
-    for (const c of [buf, lay]) { c.width = BW; c.height = BH; }
+    for (const c of [buf, lay, rec]) { c.width = BW; c.height = BH; }
   }
   addEventListener('resize', resize); resize();
 
@@ -104,7 +106,11 @@ function createZenVisual(canvas) {
     const voidR = Math.max(2, maxR * (0.28 + 0.34 * clamp01(smooth.voidCalm)));
     const act = clamp01(smooth.activity);
 
-    bctx.filter = `blur(${Math.max(3, Math.round(BW / 34))}px)`;
+    // ctx.filter blurs EVERY draw operation separately, so setting it once and
+    // then issuing four fills costs FOUR full-buffer blur passes. Draw the
+    // lobes unblurred into the scratch layer, then blit that layer ONCE with
+    // blur — one pass instead of four.
+    lctx.clearRect(0, 0, BW, BH);
     for (let i = 0; i < 4; i++) {
       const col = VizCore.CORONA_COLORS[i];
       const lvl = clamp01(smooth.levels[i]);
@@ -112,31 +118,175 @@ function createZenVisual(canvas) {
       // Reach grows with activity and with a spike; a channel sitting in alpha
       // (restful) pulls its own lobe back in toward the void.
       const span = Math.max(1, voidR * (0.26 + 1.25 * act + 0.55 * spike) * (0.55 + 0.65 * (1 - lvl)));
-      const N = 48;
-      bctx.beginPath();
+      const N = 64;
+      lctx.beginPath();
       for (let s = 0; s <= N; s++) {
         const a = (s / N) * Math.PI * 2;
         // Angular variation: this is what makes it peek and move like a real
         // corona rather than sitting as a perfect ring.
         const flare = 0.60 + 0.40 * VizCore.wobble(tSec * (0.20 + 0.05 * i) + a * 2.0, i + 1);
-        const r = voidR * 0.94 + span * flare;
-        const x = cx + Math.cos(a + i * 1.5708) * r;
-        const y = cy + Math.sin(a + i * 1.5708) * r;
-        if (s === 0) bctx.moveTo(x, y); else bctx.lineTo(x, y);
+        // Localise this hue to where the sensor actually is on the head, so
+        // the flaring side of the image tells you WHICH sensor is active.
+        const w = VizCore.lobeWeight(a, i);
+        const r = voidR * 0.94 + span * flare * (0.16 + 0.84 * w);
+        const x = cx + Math.sin(a) * r;
+        const y = cy - Math.cos(a) * r;
+        if (s === 0) lctx.moveTo(x, y); else lctx.lineTo(x, y);
       }
-      bctx.closePath();
-      const rg = bctx.createRadialGradient(cx, cy, voidR * 0.88, cx, cy, Math.max(voidR + 1, voidR + span * 1.25));
+      lctx.closePath();
+      const rg = lctx.createRadialGradient(cx, cy, voidR * 0.88, cx, cy, Math.max(voidR + 1, voidR + span * 1.25));
       rg.addColorStop(0, rgba(col, 0.50 + 0.34 * act));
       rg.addColorStop(0.42, rgba(col, 0.26 * (0.45 + act)));
       rg.addColorStop(1, rgba(col, 0));
-      bctx.fillStyle = rg;
-      bctx.fill();
+      lctx.fillStyle = rg;
+      lctx.fill();
     }
+    bctx.filter = `blur(${Math.max(3, Math.round(BW / 34))}px)`;
+    bctx.drawImage(lay, 0, 0);
     bctx.filter = 'none';
 
     // The void itself: flat, absolute black, hard-edged against the corona.
     bctx.fillStyle = '#050506';
     bctx.beginPath(); bctx.arc(cx, cy, voidR, 0, Math.PI * 2); bctx.fill();
+  }
+
+  // ---- Iris: your session laid down as a rose window --------------------
+  // A mandala oriented like the headband on your head: each sensor owns one
+  // quadrant, at its real anatomical position. Two things happen at once —
+  //   * a LIVE crown at the current radius, scalloped by each sensor's
+  //     alpha/beta balance right now, and
+  //   * every few seconds that crown is DEPOSITED permanently onto a record
+  //     layer and the radius steps outward, like a growth ring.
+  // So the disc accumulates into a readable record of the whole sit: which
+  // minutes were whole and which were broken stay visible afterwards.
+  //
+  // Cheap by construction: the record layer is written on deposit ticks only
+  // (not per frame) and composited back with a single drawImage.
+  const IRIS_DEPOSIT_SEC = 5;
+  const IRIS_MAX_RINGS = 200;   // ~17 minutes at 5s, then it stops growing
+  let irisRing = 0;
+  let irisLastDeposit = 0;
+
+  function irisRadii() {
+    const rMax = Math.min(BW, BH) * 0.46;
+    const r0 = rMax * 0.13;
+    const step = (rMax - r0) / IRIS_MAX_RINGS;
+    return { rMax, r0, step, rNow: Math.min(rMax, r0 + irisRing * step) };
+  }
+
+  // Builds one scalloped annulus into lctx (unblurred). Used for BOTH the live
+  // crown and the permanent deposit, so the two can never drift apart.
+  function irisCrown(rInner, tSec, alphaScale) {
+    const cx = BW / 2, cy = BH / 2;
+    const N = 96;
+    for (let i = 0; i < 4; i++) {
+      const col = VizCore.CHANNEL_COLORS[i];
+      const lvl = clamp01(smooth.levels[i]);
+      // A settled sensor makes a smooth, generous petal; a busy one makes a
+      // thin, agitated, scalloped one. Amplitude scales with (1 - calm), so
+      // the whole crown goes glassy when you settle.
+      const amp = rInner * (0.05 + 0.16 * (1 - lvl)) * (0.35 + 0.9 * (1 - smooth.calm));
+      const thick = rInner * (0.05 + 0.13 * lvl);
+      lctx.beginPath();
+      for (let s = 0; s <= N; s++) {
+        const a = (s / N) * Math.PI * 2;
+        const w = VizCore.lobeWeight(a, i, 0.8);
+        const scallop = VizCore.wobble(tSec * 0.5 + a * 4.0, i + 1);
+        const r = Math.max(1, rInner + (thick + amp * scallop) * w);
+        lctx.lineTo(cx + Math.sin(a) * r, cy - Math.cos(a) * r);
+      }
+      for (let s = N; s >= 0; s--) {
+        const a = (s / N) * Math.PI * 2;
+        lctx.lineTo(cx + Math.sin(a) * rInner, cy - Math.cos(a) * rInner);
+      }
+      lctx.closePath();
+      const g = lctx.createRadialGradient(cx, cy, Math.max(1, rInner * 0.82), cx, cy, Math.max(2, rInner * 1.30));
+      g.addColorStop(0, rgba(col, 0));
+      g.addColorStop(0.45, rgba(col, 0.42 * alphaScale * (0.45 + 0.75 * lvl)));
+      g.addColorStop(1, rgba(col, 0));
+      lctx.fillStyle = g;
+      lctx.fill();
+    }
+  }
+
+  function renderIris(tSec) {
+    const cx = BW / 2, cy = BH / 2;
+    const rad = irisRadii();
+    const rNow = Math.max(2, rad.rNow);
+
+    // Deposit: fossilise the current crown, then step the radius outward.
+    if (sessionSec - irisLastDeposit >= IRIS_DEPOSIT_SEC && irisRing < IRIS_MAX_RINGS) {
+      irisLastDeposit = sessionSec;
+      lctx.clearRect(0, 0, BW, BH);
+      lctx.globalCompositeOperation = 'source-over';
+      irisCrown(rNow, tSec, 1.0);
+      rctx.globalCompositeOperation = 'lighter';
+      rctx.filter = 'blur(3px)';
+      rctx.drawImage(lay, 0, 0);
+      rctx.filter = 'none';
+      rctx.globalCompositeOperation = 'source-over';
+      irisRing++;
+    }
+
+    const bg = bctx.createLinearGradient(0, 0, 0, BH);
+    bg.addColorStop(0, smooth.calm > 0.55 ? '#0d0a1c' : '#070a18');
+    bg.addColorStop(1, '#03040c');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    // The record: a whole session's structure in one composited call.
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.globalAlpha = 0.85;
+    bctx.drawImage(rec, 0, 0);
+    bctx.globalAlpha = 1;
+
+    // The live crown: drawn unblurred, blitted once with blur.
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'source-over';
+    irisCrown(rNow, tSec, 1.0);
+    bctx.filter = `blur(${Math.max(2, Math.round(BW / 110))}px)`;
+    bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
+
+    // Breath tide: a soft ring sweeping between aperture and rim — the
+    // metronome of the piece, and the one thing that never stops.
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * smooth.calm;
+    const tide = 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / Math.max(1, period));
+    const tideR = Math.max(2, rNow * (0.25 + 0.85 * tide));
+    const tg = bctx.createRadialGradient(cx, cy, Math.max(1, tideR * 0.72), cx, cy, Math.max(2, tideR * 1.28));
+    tg.addColorStop(0, 'rgba(255,255,255,0)');
+    tg.addColorStop(0.5, `rgba(232,240,255,${0.12 + 0.10 * smooth.calm})`);
+    tg.addColorStop(1, 'rgba(255,255,255,0)');
+    bctx.fillStyle = tg;
+    bctx.beginPath(); bctx.arc(cx, cy, Math.max(2, tideR * 1.28), 0, Math.PI * 2); bctx.fill();
+
+    // The aperture: a small, perfectly still warm centre. The one thing in the
+    // image that never reacts to anything at all.
+    const ap = Math.max(2, Math.min(BW, BH) * 0.055);
+    const ag = bctx.createRadialGradient(cx, cy, 0, cx, cy, ap * 2.4);
+    ag.addColorStop(0, 'rgba(255,236,198,0.92)');
+    ag.addColorStop(0.4, 'rgba(255,214,150,0.35)');
+    ag.addColorStop(1, 'rgba(255,200,130,0)');
+    bctx.fillStyle = ag;
+    bctx.beginPath(); bctx.arc(cx, cy, ap * 2.4, 0, Math.PI * 2); bctx.fill();
+
+    // Spike comets: a bright dart flung outward from the sensor that shifted.
+    for (let i = 0; i < 4; i++) {
+      const sp = clamp01(state.bands[i].spike);
+      if (sp < 0.2) continue;
+      const a = VizCore.CHANNEL_ANGLES[i];
+      const r1 = rNow * 1.02, r2 = rNow * (1.10 + 0.30 * sp);
+      const x1 = cx + Math.sin(a) * r1, y1 = cy - Math.cos(a) * r1;
+      const x2 = cx + Math.sin(a) * r2, y2 = cy - Math.cos(a) * r2;
+      const cg = bctx.createLinearGradient(x1, y1, x2, y2);
+      cg.addColorStop(0, `rgba(255,255,255,${0.55 * sp})`);
+      cg.addColorStop(1, 'rgba(255,255,255,0)');
+      bctx.strokeStyle = cg;
+      bctx.lineWidth = Math.max(1, rad.rMax * 0.02);
+      bctx.lineCap = 'round';
+      bctx.beginPath(); bctx.moveTo(x1, y1); bctx.lineTo(x2, y2); bctx.stroke();
+    }
+    bctx.globalCompositeOperation = 'source-over';
   }
 
   // ---- Flow: chronological watercolour ribbons --------------------------
@@ -146,7 +296,8 @@ function createZenVisual(canvas) {
 
     lctx.clearRect(0, 0, BW, BH);
     lctx.globalCompositeOperation = 'lighter';
-    lctx.filter = `blur(${Math.max(2, Math.round(BW / 90))}px)`;
+    // Unblurred here; the single blur happens on the blit to `buf` below.
+    // Blurring per-stroke would cost ~12 full-buffer passes per frame.
     lctx.lineCap = 'round';
     lctx.lineJoin = 'round';
 
@@ -184,8 +335,6 @@ function createZenVisual(canvas) {
         }
       }
     }
-    lctx.filter = 'none';
-
     // Age fade: erase progressively toward the left so older paint dissolves.
     lctx.globalCompositeOperation = 'destination-out';
     const fade = lctx.createLinearGradient(0, 0, BW, 0);
@@ -196,7 +345,9 @@ function createZenVisual(canvas) {
     lctx.globalCompositeOperation = 'source-over';
 
     bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(2, Math.round(BW / 90))}px)`;
     bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
     bctx.globalCompositeOperation = 'source-over';
   }
 
@@ -225,9 +376,10 @@ function createZenVisual(canvas) {
   // ---- Field: one soft wavy coloured band per sensor --------------------
   function renderField(tSec) {
     paintBase(bctx);
-    bctx.globalCompositeOperation = 'lighter';
-    bctx.filter = `blur(${Math.max(3, Math.round((BW / 46) * (0.55 + 0.9 * smooth.calm)))}px)`;
-    bctx.lineCap = 'round';
+    // Unblurred into `lay`, then one blurred blit — see the note in Eclipse.
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'lighter';
+    lctx.lineCap = 'round';
     for (let i = 0; i < 4; i++) {
       const col = VizCore.CHANNEL_COLORS[i];
       const lvl = clamp01(smooth.levels[i]);
@@ -246,29 +398,33 @@ function createZenVisual(canvas) {
       }
       // A faint wash filled downward from the ribbon gives the bands depth
       // and lets them bleed into each other instead of floating separately.
-      const wash = bctx.createLinearGradient(0, baseY - thick, 0, baseY + thick * 3);
+      const wash = lctx.createLinearGradient(0, baseY - thick, 0, baseY + thick * 3);
       wash.addColorStop(0, rgba(col, 0.13 * (0.4 + lvl)));
       wash.addColorStop(1, rgba(col, 0));
-      bctx.beginPath();
-      pts.forEach(([x, y], s) => (s === 0 ? bctx.moveTo(x, y) : bctx.lineTo(x, y)));
-      bctx.lineTo(BW, baseY + thick * 3);
-      bctx.lineTo(0, baseY + thick * 3);
-      bctx.closePath();
-      bctx.fillStyle = wash;
-      bctx.fill();
+      lctx.beginPath();
+      pts.forEach(([x, y], s) => (s === 0 ? lctx.moveTo(x, y) : lctx.lineTo(x, y)));
+      lctx.lineTo(BW, baseY + thick * 3);
+      lctx.lineTo(0, baseY + thick * 3);
+      lctx.closePath();
+      lctx.fillStyle = wash;
+      lctx.fill();
 
-      bctx.beginPath();
-      pts.forEach(([x, y], s) => (s === 0 ? bctx.moveTo(x, y) : bctx.lineTo(x, y)));
-      bctx.strokeStyle = rgba(col, 0.28 + 0.4 * lvl);
-      bctx.lineWidth = Math.max(1, thick);
-      bctx.stroke();
+      lctx.beginPath();
+      pts.forEach(([x, y], s) => (s === 0 ? lctx.moveTo(x, y) : lctx.lineTo(x, y)));
+      lctx.strokeStyle = rgba(col, 0.28 + 0.4 * lvl);
+      lctx.lineWidth = Math.max(1, thick);
+      lctx.stroke();
 
       if (state.bands[i].spike > 0.25) {
-        bctx.strokeStyle = `rgba(255,255,255,${0.5 * state.bands[i].spike})`;
-        bctx.lineWidth = Math.max(1, thick * 0.3);
-        bctx.stroke();
+        lctx.strokeStyle = `rgba(255,255,255,${0.5 * state.bands[i].spike})`;
+        lctx.lineWidth = Math.max(1, thick * 0.3);
+        lctx.stroke();
       }
     }
+    lctx.globalCompositeOperation = 'source-over';
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(3, Math.round((BW / 46) * (0.55 + 0.9 * smooth.calm)))}px)`;
+    bctx.drawImage(lay, 0, 0);
     bctx.filter = 'none';
     bctx.globalCompositeOperation = 'source-over';
   }
@@ -337,6 +493,7 @@ function createZenVisual(canvas) {
 
     const mode = VizCore.MODES[modeIndex].key;
     if (mode === 'eclipse') renderEclipse((now - start) / 1000);
+    else if (mode === 'iris') renderIris((now - start) / 1000);
     else if (mode === 'flow') renderFlow();
     else if (mode === 'bloom') renderBloom(now);
     else if (mode === 'field') renderField((now - start) / 1000);
@@ -412,6 +569,8 @@ function createZenVisual(canvas) {
     setNoise(v) { this.setState({ noise: v == null ? 0 : v }); },
     setMode(i) {
       if (i >= 0 && i < VizCore.MODES.length) modeIndex = i;
+      // Only the scratch layer. `rec` holds Iris's session record and must
+      // survive switching away and back, or the record is not a record.
       lctx.clearRect(0, 0, BW, BH);
       return VizCore.MODES[modeIndex];
     },

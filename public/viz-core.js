@@ -39,8 +39,35 @@
     [255, 80, 120],  // TP10 — rose
   ];
 
+  // Where each sensor actually sits on the head. The screen is treated as a
+  // plan view from above with the nose toward the top, so the left forehead
+  // sensor appears upper-left, and so on. Angles are radians CLOCKWISE FROM
+  // 12 O'CLOCK; convert with x = cx + r*sin(a), y = cy - r*cos(a).
+  // Order matches DSP.CHANNEL_NAMES: [TP9, AF7, AF8, TP10].
+  //
+  // Worth doing because it converts an arbitrary decoration into a readable
+  // map: when the left side of the image reacts, that IS your left forehead.
+  const CHANNEL_ANGLES = [-135, -45, 45, 135].map((d) => (d * Math.PI) / 180);
+
+  // Shortest signed angular distance between two angles, in radians.
+  function angleDelta(a, b) {
+    let d = (a - b) % (Math.PI * 2);
+    if (d > Math.PI) d -= Math.PI * 2;
+    if (d < -Math.PI) d += Math.PI * 2;
+    return d;
+  }
+
+  // Weight 0..1 for "how much does this angle belong to that sensor" — a
+  // gaussian lobe, so each hue is localised to its own quadrant instead of
+  // being smeared evenly around the whole ring.
+  function lobeWeight(angle, channelIndex, width = 0.95) {
+    const d = angleDelta(angle, CHANNEL_ANGLES[channelIndex]);
+    return Math.exp(-(d * d) / (width * width));
+  }
+
   const MODES = [
     { key: 'eclipse', label: 'Eclipse', blurb: 'stillness grows as a void; thinking flares at its edge' },
+    { key: 'iris',    label: 'Iris',    blurb: 'your session laid down as a rose window' },
     { key: 'flow',   label: 'Flow',   blurb: 'your data, painted as it happens' },
     { key: 'bloom',  label: 'Bloom',  blurb: 'gradients that appear on real events' },
     { key: 'field',  label: 'Field',  blurb: 'one soft band of colour per sensor' },
@@ -165,7 +192,8 @@
   }
 
   return {
-    CHANNEL_COLORS, CORONA_COLORS, MODES, nextMode, EventDetector, BloomField, wobble,
+    CHANNEL_COLORS, CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
+    MODES, nextMode, EventDetector, BloomField, wobble,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
   };
 });

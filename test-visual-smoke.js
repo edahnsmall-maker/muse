@@ -16,6 +16,11 @@ const vm = require('vm');
 
 const calls = [];
 let badNumbers = [];
+// Counts draw operations issued while a blur filter is active. ctx.filter
+// blurs EVERY draw op separately, so N fills under an active filter cost N
+// full-buffer blur passes. Keeping this at ~1 per frame is a real perf
+// invariant: earlier versions issued 4-12 and this is how that regresses.
+let blurredDraws = 0;
 
 function checkNums(method, args) {
   args.forEach((a, i) => {
@@ -64,6 +69,8 @@ function makeCtx() {
   }
   const record = (name, requirePositive = []) => (...args) => {
     calls.push(name);
+    const DRAW_OPS = ['fill', 'stroke', 'fillRect', 'drawImage'];
+    if (DRAW_OPS.includes(name) && ctx.filter && ctx.filter !== 'none') blurredDraws++;
     checkNums(name, args);
     requirePositive.forEach((idx) => {
       if (typeof args[idx] === 'number' && args[idx] < 0) {
@@ -148,6 +155,7 @@ const adversarial = [
 for (let m = 0; m < modeCount; m++) {
   const mode = visual.currentMode();
   const before = calls.length;
+  blurredDraws = 0;
   for (let i = 0; i < 60; i++) {
     visual.setState(adversarial[i % adversarial.length]);
     nowMs += 16;
@@ -156,7 +164,12 @@ for (let m = 0; m < modeCount; m++) {
     assert.ok(rafCb, 'each frame must schedule the next one');
   }
   assert.ok(calls.length > before, `mode "${mode.label}" should issue draw calls`);
-  console.log(`✓ mode "${mode.label}" rendered 60 frames with adversarial state, no errors`);
+  // At most ~2 blurred draw ops per frame, averaged over the run.
+  const perFrame = blurredDraws / 60;
+  assert.ok(perFrame <= 2.2,
+    `mode "${mode.label}" issues ${perFrame.toFixed(1)} blurred draw ops per frame — ` +
+    `draw unblurred into the scratch layer and blit ONCE with a filter instead`);
+  console.log(`✓ mode "${mode.label}" rendered 60 frames, ${perFrame.toFixed(2)} blur passes/frame, no errors`);
   visual.cycleMode();
 }
 
