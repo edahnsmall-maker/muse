@@ -110,4 +110,29 @@ const log = (n, fn) => Array.from({ length: n }, (_, i) => Object.assign({ t: i 
   console.log('✓ marker kinds are a short, typing-free vocabulary');
 }
 
+// 9) Duration is optional, supplied by the person, and never inferred.
+{
+  const m = new Markers.MarkerLog();
+  const plain = m.add(60, { note: 'a thought' });
+  assert.strictEqual(plain.durationSec, null, 'no duration means null, not 0');
+
+  const held = m.add(90, { note: 'fear', durationSec: 25 });
+  assert.strictEqual(held.durationSec, 25);
+
+  // Nonsense durations are rejected rather than stored.
+  assert.strictEqual(m.add(10, { durationSec: -5 }).durationSec, null, 'negative duration rejected');
+  assert.strictEqual(m.add(11, { durationSec: 0 }).durationSec, null, 'zero duration rejected');
+  assert.strictEqual(m.add(12, { durationSec: NaN }).durationSec, null, 'NaN duration rejected');
+
+  // annotate can set it later, and can clear it.
+  m.annotate(plain.id, 'a thought', 40);
+  assert.strictEqual(m.list().find((x) => x.id === plain.id).durationSec, 40);
+  m.annotate(plain.id, 'a thought', null);
+  assert.strictEqual(m.list().find((x) => x.id === plain.id).durationSec, null, 'duration can be cleared');
+  // Omitting the argument entirely must leave it untouched.
+  m.annotate(held.id, 'fear again');
+  assert.strictEqual(m.list().find((x) => x.id === held.id).durationSec, 25, 'omitted duration is left alone');
+  console.log('✓ marker duration is optional, validated, and never inferred');
+}
+
 console.log('\nAll marker tests passed.');

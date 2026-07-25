@@ -118,6 +118,28 @@
     color: rgba(255,255,255,.92); }
   .markRow input { flex: 1; }
   .markRow select { background: rgba(255,255,255,.10); }
+
+  /* Inline marker prompt — appears the instant M is pressed, so the note is
+     written at the moment rather than recalled later. Kept visually quiet:
+     it must not feel like an alarm going off mid-sit. */
+  #markPrompt { position: fixed; left: 50%; bottom: 12vmin; transform: translateX(-50%);
+    z-index: 18; display: none; flex-direction: column; gap: 10px; align-items: center;
+    padding: 18px 22px; border-radius: 16px; min-width: min(560px, 88vw);
+    background: rgba(10,12,22,.80); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+    box-shadow: 0 6px 40px rgba(0,0,0,.45); }
+  #markPrompt.show { display: flex; }
+  #markPromptHead { font-size: 12px; letter-spacing: .12em; text-transform: uppercase;
+    color: rgba(255,255,255,.45); }
+  #markPromptHead b { color: rgba(255,255,255,.85); font-variant-numeric: tabular-nums; }
+  #markKinds { display: flex; gap: 6px; flex-wrap: wrap; justify-content: center; }
+  #markKinds .pill { font-size: 11px; padding: 5px 11px; }
+  #markInputRow { display: flex; gap: 8px; width: 100%; }
+  #markNote { flex: 1; font: inherit; font-size: 15px; padding: 11px 14px; border-radius: 10px;
+    border: none; background: rgba(255,255,255,.12); color: rgba(255,255,255,.95); }
+  #markNote::placeholder { color: rgba(255,255,255,.35); }
+  #markDur { width: 96px; font: inherit; font-size: 14px; padding: 11px 12px; border-radius: 10px;
+    border: none; background: rgba(255,255,255,.10); color: rgba(255,255,255,.9); }
+  #markHint { font-size: 11px; color: rgba(255,255,255,.35); letter-spacing: .04em; }
 </style>
 </head>
 <body>
@@ -128,6 +150,15 @@
 <div id="trainClock"><span id="clockTime">0:00</span><small>press M to mark</small></div>
 <div id="markCount"></div>
 <div id="markFlash"></div>
+<div id="markPrompt">
+  <div id="markPromptHead">marked at <b id="markStamp">0:00</b></div>
+  <div id="markKinds"></div>
+  <div id="markInputRow">
+    <input id="markNote" placeholder="what's happening? how did it feel?" autocomplete="off" />
+    <input id="markDur" placeholder="secs" inputmode="numeric" autocomplete="off" />
+  </div>
+  <div id="markHint">enter saves · esc saves without a note · 1-6 picks a kind</div>
+</div>
 <div id="summary">
   <h2 id="summaryTitle">Session</h2>
   <div id="summaryBody"></div>
@@ -150,7 +181,7 @@
     <span id="summaryLink" style="cursor:pointer;text-decoration:underline">session summary</span> ·
     <span id="cueToggle" style="cursor:pointer;text-decoration:underline">cues: on</span> ·
     <span id="trainToggle" style="cursor:pointer;text-decoration:underline">training: off</span> ·
-    <kbd>M</kbd> marks a moment ·
+    <kbd>M</kbd> mark + note ·
     <kbd>V</kbd> changes the visual · <kbd>F</kbd> fullscreen ·
     <a href="index.html">use Mind Monitor instead →</a></div>
 </div>
@@ -218,6 +249,9 @@ function selectMode(index) {
 }
 
 addEventListener('keydown', (e) => {
+  // While a text field has focus, the global shortcuts must stay out of the
+  // way entirely — otherwise typing a note fires them.
+  if (isTyping()) return;
   if (e.key === 'f' || e.key === 'F') {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();
     else document.exitFullscreen();
@@ -229,14 +263,7 @@ addEventListener('keydown', (e) => {
     statusLockUntil = Date.now() + 2200;
     renderModeBar();
   }
-  if (e.key === 'm' || e.key === 'M') {
-    const m = dropMarker();
-    if (m) {
-      const mm = Math.floor(m.tSec / 60), ss = Math.round(m.tSec % 60);
-      setStatus(`marked ${mm}:${String(ss).padStart(2, '0')} — say what it was afterwards`);
-      statusLockUntil = Date.now() + 2600;
-    }
-  }
+  if (e.key === 'm' || e.key === 'M') { e.preventDefault(); openMarkPrompt(); }
   if (e.key === 't' || e.key === 'T') setTrainingMode(!trainingMode);
   if (e.key === 'Escape') closeSummary();
 });
@@ -389,9 +416,9 @@ function renderMarkerEditor() {
   const marks = markerLog.list();
   if (!marks.length) {
     return `<div class="subtle" style="margin-top:18px">`
-      + `No marked moments this sit. Press <b>M</b> during a sit to flag anything worth `
-      + `remembering — a noise, a wave of fear, catching yourself thinking. You label them `
-      + `here afterwards, and they go into the report next to what the data was doing.`
+      + `No marked moments this sit. Press <b>M</b> during a sit to flag and describe anything `
+      + `worth remembering — a noise, a wave of fear, catching yourself thinking. Each one goes `
+      + `into the report next to what the data was doing at that moment.`
       + `</div>`;
   }
   const kinds = Markers.KINDS.map((k) => `<option value="${k.key}">${k.label}</option>`).join('');
@@ -401,6 +428,7 @@ function renderMarkerEditor() {
       + `<span class="stamp">${mm}:${String(ss).padStart(2, '0')}</span>`
       + `<select data-role="kind">${kinds}</select>`
       + `<input data-role="note" placeholder="what was happening?" value="${(m.note || '').replace(/"/g, '&quot;')}">`
+      + `<input data-role="dur" placeholder="secs" style="width:70px" value="${m.durationSec || ''}">`
       + `<span class="pill" data-role="del" title="remove this mark">×</span>`
       + `</div>`;
   }).join('');
@@ -417,7 +445,13 @@ function wireMarkerEditor() {
     if (kindSel && m) kindSel.value = m.kind;
     kindSel.addEventListener('change', () => markerLog.setKind(id, kindSel.value));
     const note = row.querySelector('[data-role="note"]');
-    note.addEventListener('input', () => markerLog.annotate(id, note.value.trim() || null));
+    const dur = row.querySelector('[data-role="dur"]');
+    const save = () => {
+      const d = parseFloat(dur.value);
+      markerLog.annotate(id, note.value.trim() || null, Number.isFinite(d) ? d : null);
+    };
+    note.addEventListener('input', save);
+    dur.addEventListener('input', save);
     row.querySelector('[data-role="del"]').addEventListener('click', () => {
       markerLog.remove(id);
       renderMarkCount();
@@ -537,16 +571,93 @@ function sessionSeconds() {
   return sessionStartedAt == null ? 0 : (Date.now() - sessionStartedAt) / 1000;
 }
 
-function dropMarker(kind = 'note') {
+const markPromptEl = document.getElementById('markPrompt');
+const markStampEl = document.getElementById('markStamp');
+const markKindsEl = document.getElementById('markKinds');
+const markNoteEl = document.getElementById('markNote');
+const markDurEl = document.getElementById('markDur');
+let pendingMark = null;   // { tSec, kind } — timestamp frozen at keypress
+
+// True while a text field owns the keyboard. Without this, typing a note
+// containing "m", "t", "v" or "f" would fire the global hotkeys and drop
+// extra marks or switch the visual mid-sentence.
+function isTyping() {
+  const el = document.activeElement;
+  return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT');
+}
+
+function renderMarkKinds() {
+  markKindsEl.innerHTML = Markers.KINDS.map((k, i) =>
+    `<span class="pill${pendingMark && pendingMark.kind === k.key ? ' active' : ''}" ` +
+    `data-kind="${k.key}" title="${k.hint}">${i + 1}. ${k.label}</span>`).join('');
+  markKindsEl.querySelectorAll('[data-kind]').forEach((el) => {
+    el.addEventListener('click', () => {
+      if (pendingMark) pendingMark.kind = el.dataset.kind;
+      renderMarkKinds();
+      markNoteEl.focus();
+    });
+  });
+}
+
+// Opens the prompt. The timestamp is frozen NOW, at the keypress, so however
+// long the note takes to type the mark still points at the right moment.
+function openMarkPrompt() {
   if (sessionStartedAt == null) return null;
-  const m = markerLog.add(sessionSeconds(), { kind });
-  // A brief flash, no text and no sound: acknowledgement without becoming an
-  // event in its own right.
+  if (pendingMark) { markNoteEl.focus(); return pendingMark; }
+  const tSec = sessionSeconds();
+  pendingMark = { tSec, kind: 'note' };
+  markStampEl.textContent = `${Math.floor(tSec / 60)}:${String(Math.floor(tSec % 60)).padStart(2, '0')}`;
+  markNoteEl.value = '';
+  markDurEl.value = '';
+  renderMarkKinds();
+  markPromptEl.classList.add('show');
   markFlashEl.classList.add('on');
   setTimeout(() => markFlashEl.classList.remove('on'), 60);
-  renderMarkCount();
-  return m;
+  markNoteEl.focus();
+  return pendingMark;
 }
+
+function commitMark() {
+  if (!pendingMark) return;
+  const note = markNoteEl.value.trim() || null;
+  const durRaw = parseFloat(markDurEl.value);
+  const m = markerLog.add(pendingMark.tSec, {
+    kind: pendingMark.kind,
+    note,
+    durationSec: Number.isFinite(durRaw) ? durRaw : null,
+  });
+  pendingMark = null;
+  markPromptEl.classList.remove('show');
+  markNoteEl.blur();
+  renderMarkCount();
+  const mm = Math.floor(m.tSec / 60), ss = Math.round(m.tSec % 60);
+  setStatus(`marked ${mm}:${String(ss).padStart(2, '0')}${note ? '' : ' (no note)'}`);
+  statusLockUntil = Date.now() + 1800;
+}
+
+function cancelMarkPrompt() {
+  // Escape still SAVES — the timestamp is the valuable part, and someone
+  // hitting escape mid-sit wants out of the box, not the mark discarded.
+  commitMark();
+}
+
+markNoteEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); commitMark(); }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelMarkPrompt(); }
+  else if (/^[1-6]$/.test(e.key) && markNoteEl.value === '') {
+    // Number keys pick a kind, but only while the note is still empty so they
+    // never swallow a digit someone is actually trying to type.
+    e.preventDefault();
+    const k = Markers.KINDS[Number(e.key) - 1];
+    if (k && pendingMark) { pendingMark.kind = k.key; renderMarkKinds(); }
+  }
+  e.stopPropagation();
+});
+markDurEl.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') { e.preventDefault(); commitMark(); }
+  else if (e.key === 'Escape') { e.preventDefault(); cancelMarkPrompt(); }
+  e.stopPropagation();
+});
 
 function renderMarkCount() {
   const n = markerLog.length;

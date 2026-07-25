@@ -210,7 +210,8 @@
         const mm = Math.floor(m.tSec / 60), ss = Math.round(m.tSec % 60);
         const stamp = `${mm}:${String(ss).padStart(2, '0')}`;
         const kind = m.kind && m.kind !== 'note' ? ` _(${m.kind})_` : '';
-        L.push(`### \`${stamp}\`${kind} ${m.note ? m.note : '_no note_'}`);
+        const dur = m.durationSec ? ` — lasted ~${Math.round(m.durationSec)}s` : '';
+        L.push(`### \`${stamp}\`${kind} ${m.note ? m.note : '_no note_'}${dur}`);
         L.push('');
         const ctx = markerContext ? markerContext(m) : null;
         if (!ctx) {

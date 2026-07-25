@@ -1,6 +1,6 @@
 /*
- * Markers — timestamped moments the meditator flags during a sit, annotated
- * afterwards, and paired with what the data was doing around them.
+ * Markers — moments the meditator flags and describes during a sit, paired
+ * with what the data was doing around them.
  *
  * WHY THIS IS THE IMPORTANT FILE
  * Every interpretive score in this app is currently unvalidated (see
@@ -8,10 +8,12 @@
  * moments where a human says what was actually happening, lined up against
  * what the algorithms claimed at that same moment. That is what this produces.
  *
- * A deliberate UX choice: dropping a marker takes one keypress and no typing.
- * The timestamp is the perishable part — the words are not. Typing mid-sit
- * would end the sit, so annotation happens afterwards, when a note costs
- * nothing. Marks are cheap and unlabelled marks are still useful.
+ * Notes are written AT THE MOMENT, not afterwards. That was a considered
+ * decision by the person actually using this: when you intend to leave many
+ * marks in one sit, deferring the words means spending the sit rehearsing a
+ * list of things to remember, which damages the sit far more than a few
+ * seconds of typing does. Interrupting once, briefly, and then letting go is
+ * cheaper than holding a growing burden of recall.
  */
 (function (root, factory) {
   if (typeof module !== 'undefined' && module.exports) module.exports = factory();
@@ -33,17 +35,24 @@
     constructor() { this.markers = []; this.nextId = 1; }
 
     // tSec = seconds since session start. Returns the created marker.
-    add(tSec, { kind = 'note', note = null } = {}) {
-      const m = { id: this.nextId++, tSec: Math.max(0, tSec || 0), kind, note };
+    // durationSec is optional and describes how long the thing being marked
+    // lasted, which the meditator supplies — it is not inferred from data.
+    add(tSec, { kind = 'note', note = null, durationSec = null } = {}) {
+      const safeT = Number.isFinite(tSec) ? Math.max(0, tSec) : 0;
+      const dur = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null;
+      const m = { id: this.nextId++, tSec: safeT, kind, note, durationSec: dur };
       this.markers.push(m);
       this.markers.sort((a, b) => a.tSec - b.tSec);
       return m;
     }
 
-    annotate(id, note) {
+    annotate(id, note, durationSec) {
       const m = this.markers.find((x) => x.id === id);
       if (!m) return null;
       m.note = note;
+      if (durationSec !== undefined) {
+        m.durationSec = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null;
+      }
       return m;
     }
 
