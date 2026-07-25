@@ -128,6 +128,35 @@
     return out;
   }
 
+  // ---- Artifact detection ------------------------------------------------
+  // Blinks, jaw clenching, talking, and head movement produce much larger
+  // electrical swings than resting cortical EEG, especially at frontal
+  // electrodes (AF7/AF8 sit right above the eyes and near the jaw). A
+  // simple mean-removed peak-to-peak amplitude check catches most of this —
+  // not a clinical-grade rejection method, just enough to stop obvious
+  // noise from reading as "less calm". Threshold is a rough heuristic
+  // (typical resting frontal EEG is well under 100µV peak-to-peak; blinks
+  // and jaw/facial muscle activity commonly exceed 150-300µV) — tune per
+  // your own signal if it feels too trigger-happy or too lax.
+  const ARTIFACT_PTP_UV = 150;
+
+  function peakToPeak(samples) {
+    let mean = 0;
+    for (const s of samples) mean += s;
+    mean /= samples.length;
+    let lo = Infinity, hi = -Infinity;
+    for (const s of samples) {
+      const c = s - mean;
+      if (c < lo) lo = c;
+      if (c > hi) hi = c;
+    }
+    return hi - lo;
+  }
+
+  function isArtifact(samples, thresholdUv = ARTIFACT_PTP_UV) {
+    return peakToPeak(samples) > thresholdUv;
+  }
+
   // ---- Adaptive "calm" scoring (same math as server.js's step(), --------
   // ---- generalized into a reusable, testable class) ----------------------
   class CalmTracker {
@@ -154,6 +183,7 @@
     EEG_FREQUENCY, EEG_SAMPLES_PER_PACKET,
     encodeCommand, decode12Bit, samplesToMicrovolts,
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
+    ARTIFACT_PTP_UV, peakToPeak, isArtifact,
     CalmTracker,
   };
 });

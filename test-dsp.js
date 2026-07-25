@@ -102,4 +102,30 @@ function naiveDFT(real) {
   console.log('✓ command encoding matches the Muse serial protocol');
 }
 
+// 8) Artifact detection: a clean small-amplitude signal should pass; a
+//    blink/jaw-sized transient should be flagged.
+{
+  const n = 256;
+  const clean = Array.from({ length: n }, (_, i) => 15 * Math.sin((2 * Math.PI * 10 * i) / 256)); // ~30µV p-p
+  assert.strictEqual(DSP.isArtifact(clean), false, 'a clean 30µV p-p signal should not be flagged as artifact');
+
+  const spiky = clean.slice();
+  spiky[100] += 250; // a single blink/jaw-sized transient
+  assert.strictEqual(DSP.isArtifact(spiky), true, 'a 250µV transient should be flagged as artifact');
+  console.log('✓ artifact detection distinguishes clean signal from a blink/jaw-sized transient');
+}
+
+// 9) CalmTracker freezes exactly (no drift) when fed a null ratio, so an
+//    artifact-flagged window can be skipped without disturbing the display.
+{
+  const tracker = new DSP.CalmTracker();
+  for (let i = 0; i < 50; i++) tracker.update(0.6); // settle to some non-default value
+  const held = tracker.calm;
+  for (let i = 0; i < 20; i++) {
+    const out = tracker.update(null);
+    assert.strictEqual(out, held, 'calm must not drift while ratio is null (artifact frozen)');
+  }
+  console.log('✓ CalmTracker holds steady through a run of artifact-flagged (null) windows');
+}
+
 console.log('\nAll DSP tests passed.');

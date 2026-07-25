@@ -79,6 +79,10 @@ const packetCounts = DSP.CHANNEL_NAMES.map(() => 0);
 const tracker = new DSP.CalmTracker();
 let lastDataAt = 0;
 
+// Tracks what fraction of recent windows were artifact-flagged, so a single
+// blink doesn't flash a warning but sustained talking/jaw tension does.
+let artifactRate = 0;
+
 function pushSamples(channelIndex, microvolts) {
   const buf = buffers[channelIndex];
   buf.push(...microvolts);
@@ -90,14 +94,20 @@ function pushSamples(channelIndex, microvolts) {
 function computeCalm() {
   const ready = FRONTAL.every((ch) => buffers[ch].length >= WINDOW);
   if (!ready) return null;
+
+  const windows = FRONTAL.map((ch) => buffers[ch].slice(-WINDOW));
+  const artifact = windows.some((w) => DSP.isArtifact(w));
+  artifactRate += 0.2 * ((artifact ? 1 : 0) - artifactRate);
+
+  if (artifact) return { calm: tracker.update(null), ratio: null, artifact, artifactRate };
+
   let alphaSum = 0, betaSum = 0;
-  for (const ch of FRONTAL) {
-    const window = buffers[ch].slice(-WINDOW);
+  for (const window of windows) {
     const powers = DSP.bandPowers(window, DSP.EEG_FREQUENCY);
     alphaSum += powers.alpha; betaSum += powers.beta;
   }
   const ratio = Math.log(alphaSum / FRONTAL.length + 1e-6) - Math.log(betaSum / FRONTAL.length + 1e-6);
-  return { calm: tracker.update(ratio), ratio };
+  return { calm: tracker.update(ratio), ratio, artifact, artifactRate };
 }
 
 let device = null;
@@ -168,10 +178,12 @@ setInterval(() => {
   visual.setCalm(result.calm);
   const stale = Date.now() - lastDataAt > 2000;
   if (stale) setStatus('signal lost — check the headband fit');
+  else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
   else setStatus('', { hide: true });
   if (showHud) hudEl.innerHTML =
     `calm&nbsp;&nbsp;${(result.calm * 100).toFixed(0)}%<br>` +
-    `α/β&nbsp;&nbsp;&nbsp;&nbsp;${result.ratio.toFixed(3)}<br>` +
+    `α/β&nbsp;&nbsp;&nbsp;&nbsp;${result.ratio == null ? '— (artifact)' : result.ratio.toFixed(3)}<br>` +
+    `noise&nbsp;&nbsp;${(result.artifactRate * 100).toFixed(0)}%<br>` +
     `packets&nbsp;${DSP.CHANNEL_NAMES.map((n, i) => `${n}:${packetCounts[i]}`).join(' ')}`;
 }, 250);
 </script>

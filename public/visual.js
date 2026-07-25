@@ -65,7 +65,7 @@ void main(){
   let calm = 0.5, targetCalm = 0.5;
   const start = performance.now();
   function frame(now) {
-    calm += 0.06 * (targetCalm - calm);
+    calm += 0.035 * (targetCalm - calm); // gentle inertia so shifts settle rather than snap
     gl.uniform2f(uRes, canvas.width, canvas.height);
     gl.uniform1f(uTime, (now - start) / 1000);
     gl.uniform1f(uCalm, calm);
