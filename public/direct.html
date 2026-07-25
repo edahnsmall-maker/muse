@@ -16,17 +16,17 @@
     background: rgba(0,0,0,.28); padding: 10px 18px; border-radius: 999px;
     backdrop-filter: blur(6px); transition: opacity .6s; max-width: 80vw; }
   .status.hidden { opacity: 0; }
-  #hud { align-self: flex-start; color: rgba(255,255,255,.55); font-size: 12px;
-    font-variant-numeric: tabular-nums; line-height: 1.7; text-shadow: 0 1px 8px rgba(0,0,0,.7);
-    opacity: 0; transition: opacity .4s; }
-  #hud.show { opacity: 1; }
-  #chips { position: absolute; right: 5vmin; bottom: 5vmin;
-    display: flex; flex-direction: column; gap: 8px; align-items: flex-end; }
-  .chip { display: inline-flex; align-items: baseline; gap: 10px;
-    background: rgba(18,20,28,.5); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
-    padding: 9px 16px; border-radius: 12px; box-shadow: 0 1px 12px rgba(0,0,0,.25); }
-  .chip .label { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: rgba(255,255,255,.5); }
-  .chip .value { font-size: 18px; color: rgba(255,255,255,.92); font-variant-numeric: tabular-nums; }
+  /* One understated readout — small, translucent, no card/pill chrome.
+     Plain-English content (calm, brainwaves, breathing, noise, timer). */
+  #readout { position: absolute; right: 5vmin; bottom: 5vmin; text-align: right;
+    color: rgba(255,255,255,.6); font-size: 13px; font-variant-numeric: tabular-nums;
+    line-height: 1.9; text-shadow: 0 1px 8px rgba(0,0,0,.7);
+    opacity: 0; transition: opacity .6s; }
+  #readout.show { opacity: 1; }
+  #readout b { color: rgba(255,255,255,.92); font-weight: 500; }
+  #timerPicker { display: flex; gap: 8px; }
+  #timerPicker button { font-size: 13px; padding: 8px 16px;
+    background: rgba(255,255,255,.12); color: rgba(255,255,255,.85); }
   #hint { color: rgba(255,255,255,.4); font-size: 12px; letter-spacing: .05em; text-align: center; }
   kbd { background: rgba(255,255,255,.12); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
   button { pointer-events: auto; font: inherit; font-size: 16px; letter-spacing: .03em;
@@ -39,34 +39,47 @@
 <body>
 <canvas id="gl"></canvas>
 <div id="overlay">
-  <div id="hud"></div>
+  <div></div>
   <div class="status" id="status" style="align-self:center">
     <button id="connect">Connect to Muse</button>
   </div>
-  <div id="chips"></div>
+  <div id="timerPicker"></div>
+  <div id="readout"></div>
   <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
-    press <kbd>D</kbd> for the technical readout · <kbd>F</kbd> for fullscreen ·
-    <a href="index.html">use Mind Monitor instead →</a></div>
+    press <kbd>F</kbd> for fullscreen · <a href="index.html">use Mind Monitor instead →</a></div>
 </div>
 <script src="dsp.js"></script>
 <script src="visual.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
-const hudEl = document.getElementById('hud');
-const chipsEl = document.getElementById('chips');
+const readoutEl = document.getElementById('readout');
+const timerPickerEl = document.getElementById('timerPicker');
 const connectBtn = document.getElementById('connect');
 
-function chip(label, value) { return `<div class="chip"><span class="label">${label}</span><span class="value">${value}</span></div>`; }
-
-let showHud = false;
 addEventListener('keydown', (e) => {
-  if (e.key === 'd' || e.key === 'D') { showHud = !showHud; hudEl.classList.toggle('show', showHud); }
   if (e.key === 'f' || e.key === 'F') {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();
     else document.exitFullscreen();
   }
 });
+
+// Session timer — optional, understated. Pick a duration once connected;
+// a plain "session complete" message shows at the end, nothing jarring.
+const TIMER_OPTIONS_MIN = [5, 10, 20, 30];
+let timerEndAt = null, timerDone = false;
+
+function renderTimerPicker() {
+  timerPickerEl.innerHTML = TIMER_OPTIONS_MIN
+    .map((min) => `<button data-min="${min}">${min} min</button>`).join('');
+  timerPickerEl.querySelectorAll('button').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      timerEndAt = Date.now() + Number(btn.dataset.min) * 60000;
+      timerDone = false;
+      timerPickerEl.innerHTML = '';
+    });
+  });
+}
 
 function setStatus(html, opts = {}) {
   statusEl.innerHTML = html;
@@ -86,7 +99,6 @@ const FRONTAL = [1, 2];
 const WINDOW = 256; // 1s of samples at 256Hz — exactly 1Hz per FFT bin
 
 const buffers = DSP.CHANNEL_NAMES.map(() => []);
-const packetCounts = DSP.CHANNEL_NAMES.map(() => 0);
 const tracker = new DSP.CalmTracker();
 let lastDataAt = 0;
 
@@ -127,7 +139,6 @@ function pushSamples(channelIndex, microvolts) {
   const buf = buffers[channelIndex];
   buf.push(...microvolts);
   if (buf.length > WINDOW * 2) buf.splice(0, buf.length - WINDOW * 2); // bound memory
-  packetCounts[channelIndex]++;
   lastDataAt = Date.now();
 }
 
@@ -147,7 +158,24 @@ function computeCalm() {
     alphaSum += powers.alpha; betaSum += powers.beta;
   }
   const ratio = Math.log(alphaSum / FRONTAL.length + 1e-6) - Math.log(betaSum / FRONTAL.length + 1e-6);
-  return { calm: tracker.update(ratio), ratio, artifact, artifactRate };
+  return { calm: tracker.update(ratio), ratio, artifact, artifactRate, alphaSum, betaSum };
+}
+
+// Raw per-sensor readout — all 4 electrodes individually (TP9/TP10 behind
+// the ears, AF7/AF8 frontal), not just the frontal pair the composite Calm
+// score is built from. Purely informational: which band currently
+// dominates at each electrode, or "Noisy" if that channel's own window is
+// artifact-flagged. TP9/TP10 sit near the jaw/ear and are more artifact
+// prone than the frontal pair — expect them to say "Noisy" more often.
+function computeChannelLabels() {
+  return DSP.CHANNEL_NAMES.map((name, ch) => {
+    const buf = buffers[ch];
+    if (buf.length < WINDOW) return { name, label: '…' };
+    const window = buf.slice(-WINDOW);
+    if (DSP.isArtifact(window)) return { name, label: 'Noisy' };
+    const powers = DSP.bandPowers(window, DSP.EEG_FREQUENCY);
+    return { name, label: powers.alpha > powers.beta ? 'Alpha' : 'Beta' };
+  });
 }
 
 let device = null;
@@ -218,6 +246,8 @@ async function connect() {
     }
 
     setStatus('gathering signal— sit still for a moment…');
+    renderTimerPicker();
+    readoutEl.classList.add('show');
   } catch (err) {
     connectBtn.disabled = false;
     if (err.name === 'NotFoundError') setStatus('no device selected. <button id="connect2">try again</button>');
@@ -228,7 +258,9 @@ async function connect() {
 
 function onDisconnected() {
   setStatus('disconnected. <button id="connect2">reconnect</button>');
-  chipsEl.innerHTML = '';
+  readoutEl.classList.remove('show');
+  timerPickerEl.innerHTML = '';
+  timerEndAt = null; timerDone = false;
   rewireRetry();
 }
 
@@ -253,28 +285,37 @@ setInterval(() => {
   const stale = Date.now() - lastDataAt > 2000;
   if (stale) setStatus('signal lost — check the headband fit');
   else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
-  else setStatus('', { hide: true });
+  else if (timerEndAt && !timerDone && Date.now() >= timerEndAt) {
+    timerDone = true;
+    setStatus('session complete');
+  } else if (!timerDone) setStatus('', { hide: true });
 
-  // Plain-English chips — always visible once connected, no jargon.
-  const signalLabel = stale ? 'Reconnecting…' : result.artifactRate > 0.5 ? 'Settling' : 'Steady';
-  const breathChipLabel = !ppgAvailable ? null
-    : breathPeriod == null ? `Reading… (${Math.round(ppgBuffer.length / DSP.PPG_FREQUENCY)}s)`
-    : `${Math.round(60 / breathPeriod)}/min`;
-  chipsEl.innerHTML =
-    chip('Calm', Math.round(result.calm * 100)) +
-    (breathChipLabel ? chip('Breath', breathChipLabel) : '') +
-    chip('Signal', signalLabel);
+  // One understated, plain-English readout. No jargon, no Greek letters,
+  // no raw ratios — this is the only interface; there is no separate
+  // technical/debug view anymore. Two groups: the raw per-sensor readings,
+  // then the composite/rolled-up metrics built from them.
+  const noiseLabel = result.artifactRate > 0.5 ? 'High' : result.artifactRate > 0.15 ? 'Some' : 'Low';
+  const brainLabel = result.ratio == null ? '—' : result.alphaSum > result.betaSum ? 'Alpha (restful)' : 'Beta (active)';
+  const breathLine = !ppgAvailable ? null
+    : breathPeriod == null ? 'Breath&nbsp;&nbsp;<b>Reading…</b>'
+    : `Breath&nbsp;&nbsp;<b>${Math.round(60 / breathPeriod)}/min</b>`;
+  let timerLine = null;
+  if (timerEndAt) {
+    const remaining = Math.max(0, timerEndAt - Date.now());
+    const mm = Math.floor(remaining / 60000), ss = Math.floor((remaining % 60000) / 1000);
+    timerLine = timerDone ? 'Timer&nbsp;&nbsp;<b>Complete</b>'
+      : `Timer&nbsp;&nbsp;<b>${mm}:${String(ss).padStart(2, '0')}</b>`;
+  }
 
-  const breathLabel = !ppgAvailable ? 'n/a'
-    : breathPeriod == null ? `gathering (${Math.round(ppgBuffer.length / DSP.PPG_FREQUENCY)}s)`
-    : `${(60 / breathPeriod).toFixed(1)}/min`;
-  if (showHud) hudEl.innerHTML =
-    `calm&nbsp;&nbsp;${(result.calm * 100).toFixed(0)}%${stale ? ' (stale)' : ''}<br>` +
-    `α/β&nbsp;&nbsp;&nbsp;&nbsp;${result.ratio == null ? '— (artifact)' : result.ratio.toFixed(3)}<br>` +
-    `noise&nbsp;&nbsp;${(result.artifactRate * 100).toFixed(0)}%<br>` +
-    `breathing&nbsp;${breathLabel}<br>` +
-    `packets&nbsp;${DSP.CHANNEL_NAMES.map((n, i) => `${n}:${packetCounts[i]}`).join(' ')}` +
-    `${stale ? `<br>last data ${((Date.now()-lastDataAt)/1000).toFixed(1)}s ago` : ''}`;
+  const sensorLines = computeChannelLabels().map(({ name, label }) => `${name}&nbsp;&nbsp;<b>${label}</b>`);
+  const composite = [
+    `Calm&nbsp;&nbsp;<b>${Math.round(result.calm * 100)}</b>`,
+    `Brainwaves&nbsp;&nbsp;<b>${brainLabel}</b>`,
+    breathLine,
+    `Noise&nbsp;&nbsp;<b>${noiseLabel}</b>`,
+    timerLine,
+  ].filter(Boolean);
+  readoutEl.innerHTML = sensorLines.join('<br>') + '<br><br>' + composite.join('<br>');
 }, 250);
 </script>
 </body>

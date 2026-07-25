@@ -20,12 +20,20 @@ float hash(vec2 p){ vec2 q=fract(p*vec2(0.1031,0.1030)); q+=dot(q,q.yx+19.19); r
 float noise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
   float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
   return mix(mix(a,b,u.x), mix(c,d,u.x), u.y); }
-float fbm(vec2 p){ float v=0.0, amp=0.5; for(int i=0;i<5;i++){ v+=amp*noise(p); p*=2.02; amp*=0.5; } return v; }
+// Two fixed-octave-count noises (WebGL1 loop bounds must stay compile-time
+// constant on some GPU drivers, so this can't just be one fbm() with a
+// calm-dependent octave count) — fbmDetail is busy/small-scale, fbmSoft is
+// a few big soft shapes. Blending BETWEEN THE FIELDS THEMSELVES (not just
+// slowing down or overlaying effects on the busy one) is what actually
+// removes the "marbled clouds" look at high calm rather than just freezing
+// it in place.
+float fbmDetail(vec2 p){ float v=0.0, amp=0.5; for(int i=0;i<5;i++){ v+=amp*noise(p); p*=2.02; amp*=0.5; } return v; }
+float fbmSoft(vec2 p){ float v=0.0, amp=0.6; for(int i=0;i<2;i++){ v+=amp*noise(p); p*=1.8; amp*=0.5; } return v; }
 void main(){
   vec2 uv = gl_FragCoord.xy / u_res.xy;
   vec2 p = uv; p.x *= u_res.x / u_res.y;
-  float speed = mix(0.34, 0.012, u_calm);   // near-stillness at high calm, not just "slower"
-  float warp  = mix(1.7, 0.32, u_calm);
+  float speed = mix(0.30, 0.012, u_calm);   // near-stillness at high calm, not just "slower"
+  float warp  = mix(1.5, 0.55, u_calm);
   // Feeding raw elapsed time straight into the noise coordinates grows
   // unbounded over a long session and eventually exceeds this GPU's
   // effective float precision, collapsing the smooth field into visible
@@ -35,28 +43,25 @@ void main(){
   float t = loopedTime * speed;
   vec2 clockA = vec2(cos(t), sin(t)) * 1.6;
   vec2 clockB = vec2(cos(t*0.63 + 1.7), sin(t*0.63 + 1.7)) * 1.6;
-  vec2 q = vec2(fbm(p*warp + clockA), fbm(p*warp + clockB));
-  float n = fbm(p*warp*1.5 + q*1.5 + clockA*0.5);
+
+  vec2 q = vec2(fbmDetail(p*warp + clockA), fbmDetail(p*warp + clockB));
+  float detail = fbmDetail(p*warp*1.5 + q*1.5 + clockA*0.5);
+  float soft = fbmSoft(p*warp*0.35 + clockA*0.35);
+  // At low calm: busy detailed field (as before). At high calm: replaced by
+  // a few large, soft shapes — this is the actual "gradients, not marble" fix.
+  float detailAmount = mix(1.0, 0.0, smoothstep(0.1, 0.85, u_calm));
+  float n = mix(soft, detail, detailAmount);
+
   vec3 coolA=vec3(0.04,0.06,0.11), coolB=vec3(0.18,0.30,0.47), coolC=vec3(0.42,0.28,0.55);
   vec3 warmA=vec3(0.10,0.06,0.08), warmB=vec3(0.86,0.55,0.30), warmC=vec3(0.96,0.82,0.58);
   vec3 cool = mix(coolA, mix(coolB,coolC, smoothstep(0.4,0.9,n)), smoothstep(0.1,0.7,n));
   vec3 warm = mix(warmA, mix(warmB,warmC, smoothstep(0.4,0.95,n)), smoothstep(0.1,0.7,n));
   vec3 col = mix(cool, warm, smoothstep(0.0,1.0,u_calm));
-  float contrast = mix(1.25, 0.9, u_calm);
+  // Contrast also fades toward flat as calm rises — a soft field can't read
+  // as "gradient-like" if it's still being pushed toward high contrast.
+  float contrast = mix(1.2, 0.55, u_calm);
   col = (col-0.5)*contrast + 0.5;
 
-  // Thin bright ridge lines where the field crosses its midpoint — these
-  // fade out as calm rises, per the "lines decrease, glow increases" brief.
-  float ridge = pow(1.0 - abs(n*2.0 - 1.0), 4.0);
-  float lineAmount = mix(0.85, 0.0, smoothstep(0.0, 0.85, u_calm));
-  col += ridge * lineAmount * vec3(0.75, 0.82, 0.95);
-
-  // A much lower-detail field (fewer effective octaves' worth of warp) as a
-  // soft glow base — strengthens as calm rises, replacing the linework
-  // rather than just sitting alongside it.
-  float glowField = fbm(p*warp*0.4 + clockA*0.5);
-  float glowAmount = mix(0.05, 0.9, smoothstep(0.1, 1.0, u_calm));
-  col += glowField * glowAmount * mix(vec3(0.5,0.6,0.9), vec3(0.95,0.85,0.65), u_calm);
   // Use a real measured breathing period once one exists (u_breathPeriod > 0);
   // fall back to a calm-linked guess until then (0 is the "no estimate yet" sentinel).
   float period = u_breathPeriod > 0.5 ? u_breathPeriod : mix(6.0, 11.0, u_calm);

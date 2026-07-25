@@ -131,8 +131,9 @@ hardware (`test-dsp.js`): recovers a 5.00s true period as 4.92s.
 **This needs ~40 seconds of steady heartbeat data before it produces an estimate**
 (fewer than a handful of breath cycles isn't trustworthy), so the visual runs on the
 calm-linked guess at first and smoothly hands off to your real measured rate once
-there's enough data. Press `D` to see `breathing` in the readout — it shows
-"gathering (Ns)" until then, then breaths/min once estimated.
+there's enough data. The readout just says "Reading…" until then, then shows
+breaths/min once estimated — deliberately not a live-ticking counter, since a number
+that just climbs while you wait isn't meaningful information.
 
 This is a best-effort estimate, not a clinical measurement — motion, poor sensor
 contact, or an irregular pulse waveform can all degrade it. If PPG doesn't work on
@@ -148,23 +149,54 @@ more precise processing, and Muse's PPG sensor (temple/forehead) is a noisier
 location for this than a fingertip, where real pulse oximeters go. We judged that
 not worth chasing — rate-matching is the honest ceiling here for now.
 
-## Plain-English readout (Path B)
+## The readout (Path B) — one interface, plain English, two tiers
 
-Once connected, small chips in the bottom-right corner show your **calm score**,
-**breathing rate**, and **signal quality** in plain language (no jargon, no raw
-ratios) — this is the "friendly" always-visible display. Press `D` for the
-technical readout (raw α/β ratio, per-channel packet counts, artifact %) if you
-want the underlying numbers instead.
+There is a single overlay (bottom-right), always visible once connected. No hidden
+technical mode, no separate debug view — just this. It's deliberately understated:
+small translucent text, no card/pill chrome.
 
-## The visual: lines fade, glow strengthens as you settle
+Two tiers, both visible at once:
+- **Sensors** — the 4 raw electrodes individually (`TP9`/`AF7`/`AF8`/`TP10`), each
+  showing whichever band currently dominates at that specific electrode (`Alpha` /
+  `Beta`), or `Noisy` if that channel's own signal is artifact-flagged right now.
+  TP9/TP10 sit near the jaw/ear and will say `Noisy` more often than the frontal
+  pair — that's expected, not a bug.
+- **Composite** — the rolled-up metrics actually built from those sensors: `Calm`
+  (0–100, from the frontal pair, adaptively normalized), `Brainwaves` (the frontal
+  pair's dominant band, in plain language), `Breath` (breaths/min once ~40s of PPG
+  data exists, otherwise "Reading…" — deliberately not a live-ticking counter, since
+  a number that just climbs while you wait isn't meaningful information), `Noise`
+  (Low/Some/High, from the artifact rate), and `Timer` if one's running.
 
-As calm rises, thin bright ridge-lines in the field fade out while a soft, low-detail
-glow strengthens to take their place — the intent is that a calmer state reads as
-"softening into light," not just "different colors, same busyness." This was a
-direct response to feedback that the field looked too visually busy/psychedelic for
-a contemplative context — the goal is closer to a slow color field than a generative
-art piece. Tunable in `public/visual.js`: `lineAmount`/`glowAmount` control how much
-of each is present at low vs. high calm.
+## Session timer (Path B)
+
+Once connected, pick a duration (5/10/20/30 min) or skip it. A plain "session
+complete" message shows at the end — no alarm, no sound, just text — and the
+countdown lives in the same readout as everything else.
+
+## The visual — this went through two real iterations
+
+**First attempt (didn't work):** added bright ridge-lines and a soft glow *on top
+of* the existing busy, multi-detail noise field, fading the lines out and the glow
+in as calm rose. Live feedback: "it looks like the old one" — correctly. Slowing a
+busy field down, or layering effects onto it, doesn't remove the busyness — the
+field's *spatial* detail was completely unchanged underneath.
+
+**Second attempt (the actual fix):** two separately-defined noise fields —
+`fbmDetail` (5 octaves, small-scale, the original busy field) and `fbmSoft` (2
+octaves, large-scale, a few soft shapes) — and *blend between the fields
+themselves* as calm rises, not just their speed or an overlay on top. At low calm
+you see the original busy field; at high calm you're looking almost entirely at
+the soft field — genuinely fewer, larger, smoother shapes, closer to the "gradients,
+not marble" brief. Contrast also fades toward flat at high calm, for the same reason.
+
+(Why two fixed-octave functions instead of one with a calm-dependent octave count:
+WebGL1 shader loop bounds have to be compile-time constants on some GPU drivers —
+a dynamically-variable octave count isn't portable.)
+
+This is still my best guess translated into shader math without being able to see
+it render — tell me plainly if it's closer, and in what specific way it's still
+wrong, so the next pass is aimed at the actual gap rather than another guess.
 
 Knobs:
 - `server.js` (Path A) / `DSP.CalmTracker` in `public/dsp.js` (Path B) — `adapt`/`aStat`
