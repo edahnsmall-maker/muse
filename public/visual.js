@@ -21,9 +21,17 @@ void main(){
   vec2 p = uv; p.x *= u_res.x / u_res.y;
   float speed = mix(0.34, 0.06, u_calm);
   float warp  = mix(1.7, 0.55, u_calm);
-  float t = u_time * speed;
-  vec2 q = vec2(fbm(p*warp + vec2(0.0, t)), fbm(p*warp + vec2(5.2, -t)));
-  float n = fbm(p*warp*1.5 + q*1.5 + t*0.5);
+  // Feeding raw elapsed time straight into the noise coordinates grows
+  // unbounded over a long session and eventually exceeds this GPU's
+  // effective float precision, collapsing the smooth field into visible
+  // blocky tiles. Route motion through bounded sin/cos "clocks" instead —
+  // same flowing look, but the coordinates fed into fbm() never grow.
+  float loopedTime = mod(u_time, 100000.0);
+  float t = loopedTime * speed;
+  vec2 clockA = vec2(cos(t), sin(t)) * 1.6;
+  vec2 clockB = vec2(cos(t*0.63 + 1.7), sin(t*0.63 + 1.7)) * 1.6;
+  vec2 q = vec2(fbm(p*warp + clockA), fbm(p*warp + clockB));
+  float n = fbm(p*warp*1.5 + q*1.5 + clockA*0.5);
   vec3 coolA=vec3(0.04,0.06,0.11), coolB=vec3(0.18,0.30,0.47), coolC=vec3(0.42,0.28,0.55);
   vec3 warmA=vec3(0.10,0.06,0.08), warmB=vec3(0.86,0.55,0.30), warmC=vec3(0.96,0.82,0.58);
   vec3 cool = mix(coolA, mix(coolB,coolC, smoothstep(0.4,0.9,n)), smoothstep(0.1,0.7,n));
@@ -32,7 +40,7 @@ void main(){
   float contrast = mix(1.25, 0.9, u_calm);
   col = (col-0.5)*contrast + 0.5;
   float period = mix(6.0, 11.0, u_calm);        // breathing luminance slows as you settle
-  float breath = 0.5 + 0.5*sin(u_time*6.2831853/period);
+  float breath = 0.5 + 0.5*sin(loopedTime*6.2831853/period);
   col *= mix(1.0, 0.9 + 0.18*breath, 0.6);
   float d = distance(uv, vec2(0.5));
   col *= 1.0 - 0.35*d*d;                          // soft vignette
