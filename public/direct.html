@@ -92,6 +92,32 @@
   #ratingRow { display: flex; gap: 10px; }
   #ratingRow .pill { font-size: 15px; padding: 12px 20px; }
   .subtle { color: rgba(255,255,255,.45); font-size: 13px; max-width: 480px; line-height: 1.7; }
+
+  /* Training mode: a visible clock so you can make mental notes of when
+     things happen, plus a marker affordance. Off by default — a clock is a
+     distraction unless you are deliberately gathering data. */
+  #trainClock { position: absolute; top: 3.5vmin; right: 5vmin; text-align: right;
+    color: rgba(255,255,255,.55); font-variant-numeric: tabular-nums;
+    font-size: 26px; letter-spacing: .04em; display: none; }
+  #trainClock.show { display: block; }
+  #trainClock small { display: block; font-size: 11px; letter-spacing: .12em;
+    text-transform: uppercase; opacity: .5; margin-top: 2px; }
+  #markFlash { position: fixed; inset: 0; pointer-events: none; opacity: 0;
+    background: radial-gradient(circle at 50% 50%, rgba(255,255,255,.16), transparent 62%);
+    transition: opacity .45s; z-index: 15; }
+  #markFlash.on { opacity: 1; transition: opacity .05s; }
+  #markCount { position: absolute; top: calc(3.5vmin + 52px); right: 5vmin;
+    color: rgba(255,255,255,.4); font-size: 11px; letter-spacing: .1em;
+    text-align: right; display: none; }
+  #markCount.show { display: block; }
+  .markRow { display: flex; gap: 8px; align-items: center; width: 100%;
+    max-width: 620px; margin-bottom: 8px; }
+  .markRow .stamp { font-variant-numeric: tabular-nums; opacity: .6; font-size: 12px; min-width: 42px; }
+  .markRow select, .markRow input { font: inherit; font-size: 13px; padding: 7px 10px;
+    border-radius: 8px; border: none; background: rgba(255,255,255,.10);
+    color: rgba(255,255,255,.92); }
+  .markRow input { flex: 1; }
+  .markRow select { background: rgba(255,255,255,.10); }
 </style>
 </head>
 <body>
@@ -99,6 +125,9 @@
 <div id="modeBar"></div>
 <div id="patternBar"></div>
 <div id="breathCue"></div>
+<div id="trainClock"><span id="clockTime">0:00</span><small>press M to mark</small></div>
+<div id="markCount"></div>
+<div id="markFlash"></div>
 <div id="summary">
   <h2 id="summaryTitle">Session</h2>
   <div id="summaryBody"></div>
@@ -120,6 +149,8 @@
   <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
     <span id="summaryLink" style="cursor:pointer;text-decoration:underline">session summary</span> ·
     <span id="cueToggle" style="cursor:pointer;text-decoration:underline">cues: on</span> ·
+    <span id="trainToggle" style="cursor:pointer;text-decoration:underline">training: off</span> ·
+    <kbd>M</kbd> marks a moment ·
     <kbd>V</kbd> changes the visual · <kbd>F</kbd> fullscreen ·
     <a href="index.html">use Mind Monitor instead →</a></div>
 </div>
@@ -130,6 +161,7 @@
 <script src="summary.js"></script>
 <script src="cues.js"></script>
 <script src="metrics.js"></script>
+<script src="markers.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -197,6 +229,15 @@ addEventListener('keydown', (e) => {
     statusLockUntil = Date.now() + 2200;
     renderModeBar();
   }
+  if (e.key === 'm' || e.key === 'M') {
+    const m = dropMarker();
+    if (m) {
+      const mm = Math.floor(m.tSec / 60), ss = Math.round(m.tSec % 60);
+      setStatus(`marked ${mm}:${String(ss).padStart(2, '0')} — say what it was afterwards`);
+      statusLockUntil = Date.now() + 2600;
+    }
+  }
+  if (e.key === 't' || e.key === 'T') setTrainingMode(!trainingMode);
   if (e.key === 'Escape') closeSummary();
 });
 
@@ -234,13 +275,21 @@ const summaryTitleEl = document.getElementById('summaryTitle');
 
 function logSessionSample(result, channels) {
   if (sessionStartedAt == null) sessionStartedAt = Date.now();
-  sessionLog.push({
+  const row = {
     t: (Date.now() - sessionStartedAt) / 1000,
     calm: result.calm,
     noise: result.artifactRate,
     levels: channels.map((c) => (c.pct == null ? null : c.pct)),
     spikes: bandState.filter((s) => s.spike > 0.9).length,
-  });
+  };
+  // Composites too, so a marked moment can be compared against every score
+  // that was on screen at the time — that comparison is the whole point.
+  for (const k of activeComposites) {
+    if (k === 'calm') continue;
+    const v = Metrics.compute(k, features);
+    if (v != null) row[k] = v;
+  }
+  sessionLog.push(row);
 }
 
 function closeSummary() { summaryEl.classList.remove('show'); }
@@ -301,12 +350,14 @@ function showSummaryStats(stats) {
     + `<div id="summaryLines" style="margin-top:6px">${lines}</div>`
     + yours
     + `<div id="summaryChannels" style="margin-top:16px">${chan}</div>`
+    + renderMarkerEditor()
     + `<div style="margin-top:22px;display:flex;gap:10px;justify-content:center">`
     + `<span class="pill" id="sumDownload">Download report (.md)</span>`
     + `<span class="pill" id="sumClose">Close</span></div>`;
   summaryEl.classList.add('show');
   document.getElementById('sumClose').addEventListener('click', closeSummary);
   document.getElementById('sumDownload').addEventListener('click', () => downloadReport(stats));
+  wireMarkerEditor();
 
   // Sparkline of the whole sit — the "shape", not a grade.
   const c = document.getElementById('summaryTrace');
@@ -331,6 +382,51 @@ function showSummaryStats(stats) {
   }
 }
 
+// Annotate marks AFTER the sit. This is the half of the marker feature that
+// deliberately does not happen during meditation: the timestamp had to be
+// captured live, the words did not.
+function renderMarkerEditor() {
+  const marks = markerLog.list();
+  if (!marks.length) {
+    return `<div class="subtle" style="margin-top:18px">`
+      + `No marked moments this sit. Press <b>M</b> during a sit to flag anything worth `
+      + `remembering — a noise, a wave of fear, catching yourself thinking. You label them `
+      + `here afterwards, and they go into the report next to what the data was doing.`
+      + `</div>`;
+  }
+  const kinds = Markers.KINDS.map((k) => `<option value="${k.key}">${k.label}</option>`).join('');
+  const rows = marks.map((m) => {
+    const mm = Math.floor(m.tSec / 60), ss = Math.round(m.tSec % 60);
+    return `<div class="markRow" data-id="${m.id}">`
+      + `<span class="stamp">${mm}:${String(ss).padStart(2, '0')}</span>`
+      + `<select data-role="kind">${kinds}</select>`
+      + `<input data-role="note" placeholder="what was happening?" value="${(m.note || '').replace(/"/g, '&quot;')}">`
+      + `<span class="pill" data-role="del" title="remove this mark">×</span>`
+      + `</div>`;
+  }).join('');
+  return `<div style="margin-top:20px;width:100%;display:flex;flex-direction:column;align-items:center">`
+    + `<div class="subtle" style="margin-bottom:10px">Your marked moments — say what each one was.</div>`
+    + rows + `</div>`;
+}
+
+function wireMarkerEditor() {
+  summaryBodyEl.querySelectorAll('.markRow').forEach((row) => {
+    const id = Number(row.dataset.id);
+    const m = markerLog.list().find((x) => x.id === id);
+    const kindSel = row.querySelector('[data-role="kind"]');
+    if (kindSel && m) kindSel.value = m.kind;
+    kindSel.addEventListener('change', () => markerLog.setKind(id, kindSel.value));
+    const note = row.querySelector('[data-role="note"]');
+    note.addEventListener('input', () => markerLog.annotate(id, note.value.trim() || null));
+    row.querySelector('[data-role="del"]').addEventListener('click', () => {
+      markerLog.remove(id);
+      renderMarkCount();
+      const stats = Summary.summarize(sessionLog);
+      showSummaryStats(stats);
+    });
+  });
+}
+
 function downloadReport(stats) {
   const md = Summary.toMarkdown(stats, {
     selfRating: selfRating || null,
@@ -338,6 +434,9 @@ function downloadReport(stats) {
     dateISO: new Date().toISOString().slice(0, 16).replace('T', ' '),
     visualMode: visual.currentMode().label,
     breathPattern: visual.currentPattern().label,
+    markers: markerLog.list(),
+    samples: sessionLog,
+    markerContext: markerContextFor,
   });
   const blob = new Blob([md], { type: 'text/markdown' });
   const url = URL.createObjectURL(blob);
@@ -351,6 +450,7 @@ function downloadReport(stats) {
 }
 
 document.getElementById('summaryLink').addEventListener('click', openSummary);
+document.getElementById('trainToggle').addEventListener('click', () => setTrainingMode(!trainingMode));
 const cueToggleEl = document.getElementById('cueToggle');
 cueToggleEl.addEventListener('click', () => {
   const on = cueEngine.setEnabled(!cueEngine.enabled);
@@ -421,6 +521,49 @@ function computeFeatures(result) {
   }
   features = f;
   return f;
+}
+
+// Marked moments — the raw material for ever validating any of the
+// interpretive scores. One keypress, no typing: the timestamp is the
+// perishable part, the words are not.
+const markerLog = new Markers.MarkerLog();
+let trainingMode = false;
+const trainClockEl = document.getElementById('trainClock');
+const clockTimeEl = document.getElementById('clockTime');
+const markCountEl = document.getElementById('markCount');
+const markFlashEl = document.getElementById('markFlash');
+
+function sessionSeconds() {
+  return sessionStartedAt == null ? 0 : (Date.now() - sessionStartedAt) / 1000;
+}
+
+function dropMarker(kind = 'note') {
+  if (sessionStartedAt == null) return null;
+  const m = markerLog.add(sessionSeconds(), { kind });
+  // A brief flash, no text and no sound: acknowledgement without becoming an
+  // event in its own right.
+  markFlashEl.classList.add('on');
+  setTimeout(() => markFlashEl.classList.remove('on'), 60);
+  renderMarkCount();
+  return m;
+}
+
+function renderMarkCount() {
+  const n = markerLog.length;
+  markCountEl.textContent = n ? `${n} mark${n === 1 ? '' : 's'}` : '';
+  markCountEl.classList.toggle('show', trainingMode && n > 0);
+}
+
+function setTrainingMode(on) {
+  trainingMode = !!on;
+  trainClockEl.classList.toggle('show', trainingMode);
+  renderMarkCount();
+  const el = document.getElementById('trainToggle');
+  if (el) el.textContent = `training: ${trainingMode ? 'on' : 'off'}`;
+}
+
+function markerContextFor(m) {
+  return Markers.contextAround(m, sessionLog, { windowSec: 30 });
 }
 
 let settledStreakFrom = 0;  // when the current settled stretch began
@@ -905,6 +1048,11 @@ setInterval(() => {
     timerLine,
   ].filter(Boolean);
   readoutEl.innerHTML = topLines.join('<br>') + '<br><br>' + composite.join('<br>');
+
+  if (trainingMode) {
+    const t = sessionSeconds();
+    clockTimeEl.textContent = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  }
 
   tickCount++;
   if (tickCount % 4 === 0) {

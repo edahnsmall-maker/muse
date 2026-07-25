@@ -133,7 +133,7 @@
   // keeps its meaning without the app, and easy to paste into a journal.
   // Includes the honesty caveats inline, because a file outlives the session
   // and will eventually be read without any of this conversation's context.
-  function toMarkdown(stats, { selfRating = null, cueLog = [], dateISO = null, visualMode = null, breathPattern = null } = {}) {
+  function toMarkdown(stats, { selfRating = null, cueLog = [], dateISO = null, visualMode = null, breathPattern = null, markers = [], samples = [], markerContext = null, practice = null } = {}) {
     if (!stats) return '# Meditation session\n\nNot enough signal was recorded to summarise this sit.\n';
     const mins = Math.floor(stats.durationSec / 60);
     const secs = Math.round(stats.durationSec % 60);
@@ -146,6 +146,7 @@
     L.push(`**Length:** ${mins}m ${String(secs).padStart(2, '0')}s`);
     if (visualMode) L.push(`**Visual:** ${visualMode}`);
     if (breathPattern) L.push(`**Breathing:** ${breathPattern}`);
+    if (practice) L.push(`**Practice:** ${practice}`);
     L.push('');
 
     L.push('## In plain language');
@@ -197,6 +198,37 @@
       L.push('');
     }
 
+    if (markers && markers.length) {
+      L.push('## Marked moments');
+      L.push('');
+      L.push('Moments flagged during the sit, with what the metrics were doing in the');
+      L.push('window before versus after each mark. Note that people mark a beat LATE —');
+      L.push('you notice, then you press — so the interesting signal is often in the');
+      L.push('"before" column. No causal claim is made either way.');
+      L.push('');
+      for (const m of markers) {
+        const mm = Math.floor(m.tSec / 60), ss = Math.round(m.tSec % 60);
+        const stamp = `${mm}:${String(ss).padStart(2, '0')}`;
+        const kind = m.kind && m.kind !== 'note' ? ` _(${m.kind})_` : '';
+        L.push(`### \`${stamp}\`${kind} ${m.note ? m.note : '_no note_'}`);
+        L.push('');
+        const ctx = markerContext ? markerContext(m) : null;
+        if (!ctx) {
+          L.push('_No surrounding data captured for this mark._');
+          L.push('');
+          continue;
+        }
+        L.push(`| Metric | ${ctx.windowSec}s before | ${ctx.windowSec}s after | change |`);
+        L.push('| --- | --- | --- | --- |');
+        for (const [k, f] of Object.entries(ctx.fields)) {
+          const fmt = (v) => (v == null ? '—' : Math.round(v * 100));
+          const d = f.delta == null ? '—' : (f.delta >= 0 ? '+' : '') + Math.round(f.delta * 100);
+          L.push(`| ${k} | ${fmt(f.before)} | ${fmt(f.after)} | ${d} |`);
+        }
+        L.push('');
+      }
+    }
+
     L.push('## Calm over the sit');
     L.push('');
     L.push('Earliest on the left, latest on the right. Each character is one slice of the');
@@ -221,6 +253,17 @@
     L.push('  all affect it. Where "signal noise" is high, read everything loosely.');
     L.push('- A choppy sit is a normal sit. Nothing here is a grade.');
     L.push('');
+    if (markers && markers.length) {
+      L.push('### Why the marked moments matter');
+      L.push('');
+      L.push('The interpretive scores in this app (calm, thinking, focus) are hand-built');
+      L.push('proxies that have never been validated against ground truth. Marked moments');
+      L.push('are the raw material for fixing that: a human saying what actually happened,');
+      L.push('lined up against what the algorithm claimed at that same moment. Enough of');
+      L.push('these, across enough sits, is what would let the scores be checked, corrected,');
+      L.push('or thrown out — which is not something more code can do on its own.');
+      L.push('');
+    }
     return L.join('\n');
   }
 
