@@ -211,17 +211,25 @@ function computeChannelLabels() {
 // fast change in that electrode's brainwave balance, not a guess. Artifact-
 // flagged ticks are excluded from spike detection on purpose — a blink or
 // jaw clench isn't a thought, and treating it like one would be dishonest.
-const SPIKE_THRESHOLD = 0.12;
-const SPIKE_DECAY = 0.85;
-const bandState = DSP.CHANNEL_NAMES.map(() => ({ level: 0.5, spike: 0 }));
+// DSP.SpikeDetector (tested — see test-dsp.js) compares against a slow
+// baseline rather than the raw previous tick, which is what fixed a real
+// bug: at 250ms sampling, ordinary tick-to-tick EEG jitter alone cleared a
+// naive previous-tick threshold almost every tick (a wall of white/black
+// static on real hardware, not the occasional flash it was meant to be).
+const bandLevel = DSP.CHANNEL_NAMES.map(() => 0.5);
+const bandSpikeDetector = DSP.CHANNEL_NAMES.map(() => new DSP.SpikeDetector());
+const bandState = DSP.CHANNEL_NAMES.map((_, i) => ({
+  get level() { return bandLevel[i]; },
+  get spike() { return bandSpikeDetector[i].spike; },
+}));
 
 function updateBandState(channels) {
   channels.forEach((ch, i) => {
-    const st = bandState[i];
-    st.spike *= SPIKE_DECAY;
     if (ch.pct != null && !ch.artifact) {
-      if (Math.abs(ch.pct - st.level) > SPIKE_THRESHOLD) st.spike = 1.0;
-      st.level = ch.pct;
+      bandLevel[i] = ch.pct;
+      bandSpikeDetector[i].update(ch.pct);
+    } else {
+      bandSpikeDetector[i].update(null); // still decays the spike, just doesn't move the baseline
     }
   });
 }

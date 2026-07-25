@@ -280,6 +280,31 @@
     }
   }
 
+  // ---- Spike detection against a slow baseline, not the previous tick ----
+  // A real bug lived here once: comparing each reading to the immediately
+  // preceding one, at a 250ms sample rate, means ordinary tick-to-tick
+  // measurement jitter alone clears most thresholds almost every tick — the
+  // detector reads as "always spiking" instead of catching genuine, sudden,
+  // sustained shifts. Comparing to a slow-moving baseline (baselineRate is
+  // the fraction it catches up per tick — small, so ~seconds of time
+  // constant) means routine jitter self-cancels around that baseline and
+  // only a real, sustained departure from it counts as a spike.
+  class SpikeDetector {
+    constructor({ threshold = 0.16, baselineRate = 0.08, decay = 0.85 } = {}) {
+      this.threshold = threshold; this.baselineRate = baselineRate; this.decay = decay;
+      this.baseline = null; this.spike = 0;
+    }
+    update(value) {
+      this.spike *= this.decay;
+      if (value != null && !Number.isNaN(value)) {
+        if (this.baseline === null) this.baseline = value;
+        if (Math.abs(value - this.baseline) > this.threshold) this.spike = 1.0;
+        this.baseline += this.baselineRate * (value - this.baseline);
+      }
+      return this.spike;
+    }
+  }
+
   return {
     MUSE_SERVICE, CONTROL_CHARACTERISTIC, EEG_CHARACTERISTICS, CHANNEL_NAMES,
     EEG_FREQUENCY, EEG_SAMPLES_PER_PACKET,
@@ -288,6 +313,6 @@
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
     ARTIFACT_PTP_UV, peakToPeak, isArtifact,
     detectBeats, estimateBreathingPeriod,
-    AdaptiveNormalizer,
+    AdaptiveNormalizer, SpikeDetector,
   };
 });

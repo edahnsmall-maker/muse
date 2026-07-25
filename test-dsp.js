@@ -180,4 +180,33 @@ function naiveDFT(real) {
   console.log('✓ breathing estimate declines to guess when there is not enough data');
 }
 
+// 13) SpikeDetector: this is a regression test for a real bug — comparing
+//     each reading to the raw previous tick instead of a slow baseline
+//     meant ordinary measurement jitter alone triggered "spike" on almost
+//     every tick (a wall of white/black static, live on real hardware).
+//     Noisy-but-stationary data (oscillating within the threshold) should
+//     essentially never spike; a genuine sustained jump should.
+{
+  const det = new DSP.SpikeDetector({ threshold: 0.16, baselineRate: 0.08, decay: 0.85 });
+  let spikesWhileStationary = 0;
+  for (let i = 0; i < 200; i++) {
+    const jitter = 0.5 + 0.06 * Math.sin(i * 1.3); // bounded well under the 0.16 threshold
+    const spike = det.update(jitter);
+    if (spike >= 0.999) spikesWhileStationary++; // only true immediately after a fresh trigger
+  }
+  assert.strictEqual(spikesWhileStationary, 0,
+    `stationary jitter under the threshold should never spike (got ${spikesWhileStationary} triggers) — ` +
+    `this is exactly the bug where tick-to-tick noise alone caused constant spiking`);
+  console.log('✓ SpikeDetector ignores stationary jitter that stays under threshold');
+}
+{
+  const det = new DSP.SpikeDetector({ threshold: 0.16, baselineRate: 0.08, decay: 0.85 });
+  for (let i = 0; i < 40; i++) det.update(0.3); // let the baseline settle at 0.3
+  const beforeJump = det.spike;
+  const atJump = det.update(0.7); // a real, sustained 0.4 shift — well over threshold
+  assert.ok(beforeJump < 0.5, 'should be quiet before the jump');
+  assert.ok(atJump > 0.9, `a genuine sustained shift should trigger a spike (got ${atJump.toFixed(2)})`);
+  console.log('✓ SpikeDetector catches a genuine sustained shift away from baseline');
+}
+
 console.log('\nAll DSP tests passed.');

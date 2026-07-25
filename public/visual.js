@@ -79,10 +79,13 @@ void main(){
     // The spike: a sharp, bright, fast-decaying white flash distinct from
     // the soft ambient band — a real, sudden shift in that electrode's own
     // alpha/beta balance, not artifact (blinks/jaw are excluded upstream).
+    // jitter depends on BOTH uv.x and uv.y (not just x) so a spike reads as
+    // a compact, localized flash — the earlier version's jitter didn't vary
+    // with uv.y at all, so any spike painted a full-height vertical bar.
     if (spike > 0.01) {
-      float jitter = hash(vec2(uv.x*420.0, fi*7.0) + clockA*30.0 + clockB*17.0);
-      float spikeGlow = exp(-dist*dist*110.0) * spike * jitter;
-      col += vec3(1.0) * spikeGlow * 1.5;
+      float jitter = hash(vec2(uv.x*420.0 + clockA.x*30.0, uv.y*300.0 + fi*7.0 + clockB.y*17.0));
+      float spikeGlow = exp(-dist*dist*160.0) * spike * jitter;
+      col += vec3(1.0) * spikeGlow * 1.2;
     }
   }
 
