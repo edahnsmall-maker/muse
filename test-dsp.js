@@ -266,4 +266,67 @@ function naiveDFT(real) {
   console.log('✓ ActivityTracker stays finite and in-range with no usable input');
 }
 
+// 17) Blink vs jaw discrimination — these are the only two metrics in the app
+//     presented as MEASURED rather than inferred, so they need to actually
+//     discriminate. Synthetic signals with known character.
+{
+  const fs = DSP.EEG_FREQUENCY, n = 256;
+  const rest = (i) => 12 * Math.sin((2 * Math.PI * 10 * i) / fs); // calm ~24uV p-p alpha
+
+  const clean = { a: [], b: [] };
+  for (let i = 0; i < n; i++) { clean.a.push(rest(i)); clean.b.push(rest(i) + 3); }
+  const rc = DSP.classifyArtifact(clean.a, clean.b, fs);
+  assert.ok(rc.blink < 0.05 && rc.jaw < 0.05, `clean signal must claim neither (blink ${rc.blink}, jaw ${rc.jaw})`);
+
+  // A blink: large, slow (~3Hz), and the SAME on both forehead sensors.
+  const bl = { a: [], b: [] };
+  for (let i = 0; i < n; i++) {
+    const t = i / fs;
+    const d = (t > 0.3 && t < 0.65) ? 200 * Math.sin((Math.PI * (t - 0.3)) / 0.35) : 0;
+    bl.a.push(rest(i) + d); bl.b.push(rest(i) + d * 0.95);
+  }
+  const rb = DSP.classifyArtifact(bl.a, bl.b, fs);
+  assert.ok(rb.blink > 0.3, `a blink-shaped event should register as a blink (got ${rb.blink.toFixed(2)})`);
+  assert.ok(rb.blink > rb.jaw * 3, `and must not be mistaken for jaw (blink ${rb.blink.toFixed(2)} vs jaw ${rb.jaw.toFixed(2)})`);
+
+  // Jaw/muscle: high-frequency burst of comparable amplitude.
+  const jw = { a: [], b: [] };
+  for (let i = 0; i < n; i++) {
+    const t = i / fs;
+    const e = (t > 0.2 && t < 0.8) ? 90 * Math.sin((2 * Math.PI * 40 * i) / fs) : 0;
+    jw.a.push(rest(i) + e); jw.b.push(rest(i) + e * 0.8);
+  }
+  const rj = DSP.classifyArtifact(jw.a, jw.b, fs);
+  assert.ok(rj.jaw > 0.3, `a high-frequency burst should register as jaw/muscle (got ${rj.jaw.toFixed(2)})`);
+  assert.ok(rj.jaw > rj.blink * 3, `and must not be mistaken for a blink (jaw ${rj.jaw.toFixed(2)} vs blink ${rj.blink.toFixed(2)})`);
+  console.log('✓ blink and jaw are told apart from each other and from clean signal');
+}
+
+// 18) A large slow deflection on only ONE side is not a blink. Blinks come from
+//     a common frontal source and appear on both sensors together; a one-sided
+//     drift is far more likely a loose electrode.
+{
+  const fs = DSP.EEG_FREQUENCY, n = 256;
+  const a = [], b = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / fs;
+    const d = (t > 0.3 && t < 0.65) ? 220 * Math.sin((Math.PI * (t - 0.3)) / 0.35) : 0;
+    a.push(12 * Math.sin((2 * Math.PI * 10 * i) / fs) + d);   // only channel A
+    b.push(12 * Math.sin((2 * Math.PI * 9 * i) / fs));
+  }
+  const r = DSP.classifyArtifact(a, b, fs);
+  assert.ok(r.blink < 0.25, `a one-sided deflection should not be confidently called a blink (got ${r.blink.toFixed(2)})`);
+  console.log('✓ a one-sided deflection is not claimed as a blink');
+}
+
+// 19) pearson(): correct on the textbook cases, and safe on degenerate input.
+{
+  const x = [1, 2, 3, 4, 5, 6, 7, 8];
+  assert.ok(Math.abs(DSP.pearson(x, x) - 1) < 1e-9, 'identical series correlate at +1');
+  assert.ok(Math.abs(DSP.pearson(x, x.map((v) => -v)) + 1) < 1e-9, 'inverted series correlate at -1');
+  assert.strictEqual(DSP.pearson([1, 1, 1, 1, 1, 1, 1, 1], x), 0, 'a flat series has no correlation, not NaN');
+  assert.strictEqual(DSP.pearson([1, 2], [1, 2]), 0, 'too-short input returns 0 rather than a bogus 1');
+  console.log('✓ pearson is correct and degrades safely');
+}
+
 console.log('\nAll DSP tests passed.');

@@ -48,6 +48,11 @@
     user-select: none; font-size: 11px; transition: opacity .2s; }
   .legendItem.off { opacity: .3; }
   .legendItem .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+  .tierMark { opacity: .45; font-size: 9px; margin-left: 3px; }
+  #viewSwitch { display: flex; gap: 6px; width: 100%; margin-bottom: 4px; }
+  #viewSwitch .pill { font-size: 11px; padding: 5px 12px; }
+  #tierKey { width: 100%; margin-top: 6px; font-size: 10px; color: rgba(255,255,255,.35); }
+  #whatsThis { text-decoration: underline; cursor: pointer; }
 
   /* Visual-mode pills, top centre — light, clickable, unobtrusive. */
   #modeBar { position: absolute; top: 3.5vmin; left: 50%; transform: translateX(-50%);
@@ -124,6 +129,7 @@
 <script src="chart.js"></script>
 <script src="summary.js"></script>
 <script src="cues.js"></script>
+<script src="metrics.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -371,6 +377,52 @@ const tracker = new DSP.AdaptiveNormalizer();
 // only from artifact-free windows, so a jaw clench is never read as a thought.
 const activityTracker = new DSP.ActivityTracker();
 const cueEngine = new Cues.CueEngine({ minIntervalSec: 300 });
+// Per-band normalisers, so each composite is expressed relative to this
+// person's own session rather than an invented absolute scale.
+const bandNorms = {
+  delta: new DSP.AdaptiveNormalizer(), theta: new DSP.AdaptiveNormalizer(),
+  alpha: new DSP.AdaptiveNormalizer(), beta: new DSP.AdaptiveNormalizer(),
+};
+let features = {};
+
+// Which view the graph / readout / visual are all keyed to, and which
+// composite drives the visual when in composite view.
+let viewMode = 'sensors';          // 'sensors' | 'composites'
+let primaryMetric = 'calm';
+const activeComposites = ['calm', 'thinking', 'focus', 'drowsy', 'blink', 'jaw'];
+
+function computeFeatures(result) {
+  const wins = FRONTAL.map((ch) => buffers[ch].slice(-WINDOW)).filter((w) => w.length >= WINDOW);
+  if (wins.length < 2) return features;
+  const clean = !wins.some((w) => DSP.isArtifact(w));
+  const bp = wins.map((w) => DSP.bandPowers(w, DSP.EEG_FREQUENCY));
+  const avg = (k) => bp.reduce((sum, pw) => sum + pw[k], 0) / bp.length;
+  // wins[0] is AF7 (left forehead), wins[1] is AF8 (right).
+  const art = DSP.classifyArtifact(wins[0], wins[1], DSP.EEG_FREQUENCY);
+
+  const f = {
+    calm: result.calm, activity: result.activity,
+    blink: art.blink, jaw: art.jaw,
+    variability: activityTracker.varNorm ? activityTracker.varNorm.value : 0.5,
+    hrvSteadiness: null, // deliberately absent: see the equanimity caveat
+  };
+  if (clean) {
+    f.deltaLevel = bandNorms.delta.update(Math.log(avg('delta') + 1e-6));
+    f.thetaLevel = bandNorms.theta.update(Math.log(avg('theta') + 1e-6));
+    f.alphaLevel = bandNorms.alpha.update(Math.log(avg('alpha') + 1e-6));
+    f.betaLevel = bandNorms.beta.update(Math.log(avg('beta') + 1e-6));
+    f.alphaLeft = Math.log(bp[0].alpha + 1e-6);
+    f.alphaRight = Math.log(bp[1].alpha + 1e-6);
+  } else {
+    // Hold the last known levels rather than learning from unusable data.
+    for (const k of ['deltaLevel', 'thetaLevel', 'alphaLevel', 'betaLevel', 'alphaLeft', 'alphaRight']) {
+      f[k] = features[k];
+    }
+  }
+  features = f;
+  return f;
+}
+
 let settledStreakFrom = 0;  // when the current settled stretch began
 let recentReturns = 0;      // spikes since the last cue — "coming back" count
 let lastDataAt = 0;
@@ -499,7 +551,9 @@ function updateBandState(channels) {
 // Data visualization: every metric, over time, with everything toggleable
 // and the whole module collapsible. Sampled at ~1/sec (not every 250ms
 // tick) so a few minutes of history fits legibly on one small chart.
-const CHART_SERIES = [
+// Two series sets. Sensors = what the hardware actually reports. Composites =
+// interpreted scores, each carrying its evidence tier (see metrics.js).
+const SENSOR_SERIES = [
   { key: 'calm', label: 'Calm', color: '#f2c879' },
   { key: 'noise', label: 'Noise', color: '#e0697a' },
   { key: 'TP9', label: 'TP9', color: '#7dd3fc' },
@@ -507,6 +561,19 @@ const CHART_SERIES = [
   { key: 'AF8', label: 'AF8', color: '#34d399' },
   { key: 'TP10', label: 'TP10', color: '#60a5fa' },
 ];
+const COMPOSITE_COLORS = {
+  calm: '#f2c879', thinking: '#ff7dab', focus: '#7dd3fc', drowsy: '#9b8cff',
+  blink: '#7ce8c0', jaw: '#e0697a', asymmetry: '#c0b3ff', equanimity: '#8fe3a8',
+  openness: '#ffd9a0',
+};
+const COMPOSITE_SERIES = activeComposites.map((k) => ({
+  key: k, label: Metrics.get(k).label, color: COMPOSITE_COLORS[k] || '#cccccc',
+}));
+const CHART_SERIES = [...SENSOR_SERIES, ...COMPOSITE_SERIES.filter(
+  (c) => !SENSOR_SERIES.some((s) => s.key === c.key))];
+function visibleSeries() {
+  return viewMode === 'sensors' ? SENSOR_SERIES : COMPOSITE_SERIES;
+}
 const HISTORY_LEN = 180; // ~3 minutes at 1 sample/sec
 const histories = {};
 CHART_SERIES.forEach((s) => { histories[s.key] = new Chart.History(HISTORY_LEN); });
@@ -521,18 +588,76 @@ const dataBodyEl = document.getElementById('dataBody');
 const dataPanelEl = document.getElementById('dataPanel');
 
 function renderLegend() {
-  legendEl.innerHTML = CHART_SERIES.map((s) =>
-    `<span class="legendItem" data-key="${s.key}">` +
-    `<span class="swatch" style="background:${s.color}"></span>${s.label}</span>`
-  ).join('');
+  const tierBadge = (key) => {
+    const t = Metrics.tierOf(key);
+    if (!t) return '';
+    const mark = t === 'solid' ? '●' : t === 'moderate' ? '◐' : '○';
+    return `<span class="tierMark" title="${Metrics.tierInfo(t).label}">${mark}</span>`;
+  };
+  legendEl.innerHTML =
+    `<div id="viewSwitch">`
+    + `<span class="pill${viewMode === 'sensors' ? ' active' : ''}" data-view="sensors">Sensors</span>`
+    + `<span class="pill${viewMode === 'composites' ? ' active' : ''}" data-view="composites">Composites</span>`
+    + `</div>`
+    + visibleSeries().map((s) =>
+      `<span class="legendItem${seriesEnabled[s.key] ? '' : ' off'}" data-key="${s.key}">` +
+      `<span class="swatch" style="background:${s.color}"></span>${s.label}${tierBadge(s.key)}</span>`
+    ).join('')
+    + (viewMode === 'composites'
+      ? `<div id="tierKey">● measured · ◐ proxy · ○ exploratory — <span id="whatsThis">what do these mean?</span></div>`
+      : '');
+
+  legendEl.querySelectorAll('[data-view]').forEach((el) => {
+    el.addEventListener('click', () => {
+      viewMode = el.dataset.view;
+      // The visual follows the view: in composite view it is tuned to the
+      // selected composite, not to the raw sensor-derived calm score.
+      renderLegend(); renderChart();
+    });
+  });
   legendEl.querySelectorAll('.legendItem').forEach((el) => {
     el.addEventListener('click', () => {
       const key = el.dataset.key;
-      seriesEnabled[key] = !seriesEnabled[key];
-      el.classList.toggle('off', !seriesEnabled[key]);
-      renderChart();
+      if (viewMode === 'composites') {
+        // In composite view, clicking picks which one drives the visual.
+        primaryMetric = key;
+        seriesEnabled[key] = true;
+      } else {
+        seriesEnabled[key] = !seriesEnabled[key];
+      }
+      renderLegend(); renderChart();
     });
   });
+  const wt = document.getElementById('whatsThis');
+  if (wt) wt.addEventListener('click', showMetricInfo);
+}
+
+// The honesty panel: what each score is computed from, and what it cannot tell
+// you. Reachable from the legend so it is never more than one click away from
+// the number itself.
+function showMetricInfo() {
+  summaryTitleEl.textContent = 'What these scores are — and are not';
+  const rows = Metrics.METRICS.map((m) => {
+    const t = Metrics.tierInfo(m.tier);
+    const mark = m.tier === 'solid' ? '●' : m.tier === 'moderate' ? '◐' : '○';
+    return `<div style="text-align:left;margin-bottom:16px;max-width:620px">`
+      + `<div><b>${mark} ${m.label}</b> <span style="opacity:.55">— ${t.label}</span>`
+      + `${m.key === primaryMetric ? ' <span style="opacity:.5">(driving the visual)</span>' : ''}</div>`
+      + `<div class="subtle" style="max-width:620px">From: ${m.source}</div>`
+      + `<div class="subtle" style="max-width:620px">Caveat: ${m.caveat}</div></div>`;
+  }).join('');
+  summaryBodyEl.innerHTML =
+    `<div class="subtle" style="max-width:620px;margin-bottom:18px">`
+    + `Nothing here is a validated instrument. "Calm" is alpha minus beta at the two `
+    + `forehead sensors, normalised to your own session — a common relaxation index, `
+    + `but the weights and thresholds were chosen by hand and have never been checked `
+    + `against ground truth. Only the blink and jaw signatures are direct measurements. `
+    + `Establishing real validity would need labelled sessions to compare against, `
+    + `which is a project rather than a code change.</div>`
+    + rows
+    + `<div style="margin-top:10px"><span class="pill" id="sumClose">Close</span></div>`;
+  summaryEl.classList.add('show');
+  document.getElementById('sumClose').addEventListener('click', closeSummary);
 }
 
 function renderChart() {
@@ -544,7 +669,7 @@ function renderChart() {
     const y = h * f;
     chartCtx.beginPath(); chartCtx.moveTo(0, y); chartCtx.lineTo(w, y); chartCtx.stroke();
   });
-  for (const s of CHART_SERIES) {
+  for (const s of visibleSeries()) {
     if (!seriesEnabled[s.key]) continue;
     const pts = Chart.seriesToPoints(histories[s.key].values, w, h, HISTORY_LEN);
     if (pts.length < 2) continue;
@@ -563,6 +688,16 @@ function sampleHistory(result, channels) {
     const h = histories[ch.name];
     const prev = h.values.length ? h.values[h.values.length - 1] : 50;
     h.push(ch.pct != null ? Math.round(ch.pct * 100) : prev); // hold last value if unavailable this tick
+  }
+  // Composites. A metric with no inputs yields null, and we hold the previous
+  // value rather than graphing a fabricated zero.
+  for (const c of COMPOSITE_SERIES) {
+    if (c.key === 'calm' || c.key === 'noise') continue;
+    const h = histories[c.key];
+    if (!h) continue;
+    const v = Metrics.compute(c.key, features);
+    const prev = h.values.length ? h.values[h.values.length - 1] : 50;
+    h.push(v == null ? prev : Math.round(v * 100));
   }
   renderChart();
 }
@@ -686,8 +821,13 @@ setInterval(() => {
   updateBandState(channels);
   recentReturns += bandState.filter((b) => b.spike > 0.9).length;
 
+  computeFeatures(result);
+
+  // In composite view the visual is tuned to the SELECTED composite, not to
+  // the raw sensor-derived calm score — that was the point of the toggle.
+  const driver = viewMode === 'composites' ? Metrics.compute(primaryMetric, features) : null;
   visual.setState({
-    calm: result.calm,
+    calm: driver == null ? result.calm : driver,
     noise: result.artifactRate,
     activity: result.activity,
     bands: bandState.map((s) => ({ level: s.level, spike: s.spike })),
@@ -741,17 +881,30 @@ setInterval(() => {
       : `Timer&nbsp;&nbsp;<b>${mm}:${String(ss).padStart(2, '0')}</b>`;
   }
 
-  const sensorLines = channels.map(({ name, label }) => `${name}&nbsp;&nbsp;<b>${label}</b>`);
+  let topLines;
+  if (viewMode === 'sensors') {
+    topLines = channels.map(({ name, label }) => `${name}&nbsp;&nbsp;<b>${label}</b>`);
+  } else {
+    // Composite view: each score with its evidence tier marker, and the one
+    // currently driving the visual marked with a dot.
+    topLines = activeComposites.map((k) => {
+      const m = Metrics.get(k);
+      const v = Metrics.compute(k, features);
+      const t = Metrics.tierOf(k);
+      const mark = t === 'solid' ? '●' : t === 'moderate' ? '◐' : '○';
+      const lead = k === primaryMetric ? '›&nbsp;' : '';
+      return `${lead}${m.label}&nbsp;<span style="opacity:.45">${mark}</span>&nbsp;<b>${v == null ? '—' : Math.round(v * 100)}</b>`;
+    });
+  }
   const composite = [
     `Visual&nbsp;&nbsp;<b>${visual.currentMode().label}</b>`,
-    `Calm&nbsp;&nbsp;<b>${Math.round(result.calm * 100)}</b>`,
-    `Brainwaves&nbsp;&nbsp;<b>${brainLabel}</b>`,
-    `Thinking&nbsp;&nbsp;<b>${result.activity == null ? '—' : Math.round(result.activity * 100)}</b>`,
+    viewMode === 'composites' ? null : `Calm&nbsp;&nbsp;<b>${Math.round(result.calm * 100)}</b>`,
+    viewMode === 'composites' ? null : `Brainwaves&nbsp;&nbsp;<b>${brainLabel}</b>`,
     breathLine,
     `Noise&nbsp;&nbsp;<b>${noiseLabel}</b>`,
     timerLine,
   ].filter(Boolean);
-  readoutEl.innerHTML = sensorLines.join('<br>') + '<br><br>' + composite.join('<br>');
+  readoutEl.innerHTML = topLines.join('<br>') + '<br><br>' + composite.join('<br>');
 
   tickCount++;
   if (tickCount % 4 === 0) {

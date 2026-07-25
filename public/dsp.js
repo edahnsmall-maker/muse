@@ -176,6 +176,52 @@
     return peakToPeak(samples) > thresholdUv;
   }
 
+  // ---- Blink vs jaw discrimination ---------------------------------------
+  // Unlike the interpretive scores, these two are genuinely well-characterised
+  // and worth treating as measured rather than inferred:
+  //
+  //  * A BLINK is a large, slow deflection (roughly 1-4Hz, i.e. delta band)
+  //    driven by a single common source in front of the head, so it appears
+  //    with the SAME sign on both forehead sensors — strongly positively
+  //    correlated between AF7 and AF8.
+  //  * JAW / facial MUSCLE is high-frequency broadband activity (EMG, well
+  //    above the EEG bands of interest) and is not required to correlate.
+  //
+  // Separating them matters for two reasons: they need different advice
+  // ("soften your jaw" is useless for blinking), and each one explains sudden
+  // jumps in every other metric while it is happening.
+  function pearson(a, b) {
+    const n = Math.min(a.length, b.length);
+    if (n < 8) return 0;
+    let ma = 0, mb = 0;
+    for (let i = 0; i < n; i++) { ma += a[i]; mb += b[i]; }
+    ma /= n; mb /= n;
+    let num = 0, da = 0, db = 0;
+    for (let i = 0; i < n; i++) {
+      const x = a[i] - ma, y = b[i] - mb;
+      num += x * y; da += x * x; db += y * y;
+    }
+    const den = Math.sqrt(da * db);
+    return den < 1e-12 ? 0 : num / den;
+  }
+
+  function classifyArtifact(chA, chB, sampleRate) {
+    const clamp = (v) => Math.max(0, Math.min(1, v));
+    const ptp = Math.max(peakToPeak(chA), peakToPeak(chB));
+    const pa = bandPowers(chA, sampleRate), pb = bandPowers(chB, sampleRate);
+    const total = (p) => p.delta + p.theta + p.alpha + p.beta + p.gamma + 1e-12;
+    const deltaShare = 0.5 * (pa.delta / total(pa) + pb.delta / total(pb));
+    const gammaShare = 0.5 * (pa.gamma / total(pa) + pb.gamma / total(pb));
+    const corr = pearson(chA, chB);
+
+    // Amplitude gate: resting frontal EEG sits well under ~60µV peak-to-peak,
+    // so neither event is claimed at all until the signal is genuinely large.
+    const amp = clamp((ptp - 60) / 220);
+    const blink = clamp(amp * clamp((deltaShare - 0.32) / 0.40) * clamp((corr - 0.15) / 0.55));
+    const jaw = clamp(amp * clamp((gammaShare - 0.08) / 0.22));
+    return { blink, jaw, corr, ptp, deltaShare, gammaShare };
+  }
+
   // ---- Heartbeat detection from a raw PPG channel ------------------------
   // Not clinical-grade (a real pulse oximeter does far more), but enough to
   // recover approximate beat timing from a reasonable signal: detrend with
@@ -369,7 +415,7 @@
     PPG_CHARACTERISTICS, PPG_CHANNEL_NAMES, PPG_FREQUENCY, PPG_SAMPLES_PER_PACKET,
     encodeCommand, decode12Bit, decode24Bit, samplesToMicrovolts,
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
-    ARTIFACT_PTP_UV, peakToPeak, isArtifact,
+    ARTIFACT_PTP_UV, peakToPeak, isArtifact, pearson, classifyArtifact,
     detectBeats, estimateBreathingPeriod,
     AdaptiveNormalizer, SpikeDetector, ActivityTracker,
   };
