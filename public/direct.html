@@ -34,6 +34,20 @@
     background: rgba(255,255,255,.92); color: #111; }
   button:disabled { opacity: .5; cursor: default; }
   a { color: inherit; }
+
+  /* Data visualization — a collapsible graph of everything over time. */
+  #dataPanel { position: absolute; left: 5vmin; bottom: 5vmin;
+    color: rgba(255,255,255,.6); font-size: 12px; opacity: 0; transition: opacity .6s; }
+  #dataPanel.show { opacity: 1; }
+  #dataToggle { cursor: pointer; user-select: none; letter-spacing: .05em; margin-bottom: 8px; }
+  #dataToggle:hover { color: rgba(255,255,255,.9); }
+  #dataBody.collapsed { display: none; }
+  #chartCanvas { display: block; background: rgba(255,255,255,.03); border-radius: 8px; }
+  #legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; max-width: 320px; }
+  .legendItem { display: flex; align-items: center; gap: 5px; cursor: pointer;
+    user-select: none; font-size: 11px; transition: opacity .2s; }
+  .legendItem.off { opacity: .3; }
+  .legendItem .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
 </style>
 </head>
 <body>
@@ -45,11 +59,19 @@
   </div>
   <div id="timerPicker"></div>
   <div id="readout"></div>
+  <div id="dataPanel">
+    <div id="dataToggle">▾ Data</div>
+    <div id="dataBody">
+      <canvas id="chartCanvas" width="320" height="140"></canvas>
+      <div id="legend"></div>
+    </div>
+  </div>
   <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
     press <kbd>F</kbd> for fullscreen · <a href="index.html">use Mind Monitor instead →</a></div>
 </div>
 <script src="dsp.js"></script>
 <script src="visual.js"></script>
+<script src="chart.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -99,7 +121,7 @@ const FRONTAL = [1, 2];
 const WINDOW = 256; // 1s of samples at 256Hz — exactly 1Hz per FFT bin
 
 const buffers = DSP.CHANNEL_NAMES.map(() => []);
-const tracker = new DSP.CalmTracker();
+const tracker = new DSP.AdaptiveNormalizer();
 let lastDataAt = 0;
 
 // Breathing, from the Muse's PPG (heart) sensor rather than EEG — heart
@@ -167,16 +189,119 @@ function computeCalm() {
 // dominates at each electrode, or "Noisy" if that channel's own window is
 // artifact-flagged. TP9/TP10 sit near the jaw/ear and are more artifact
 // prone than the frontal pair — expect them to say "Noisy" more often.
+// `pct` is alpha's share of alpha+beta power (0-1) — already a bounded
+// ratio, so it doubles as this channel's "band level" for the visual
+// without needing a separate adaptive normalizer.
 function computeChannelLabels() {
   return DSP.CHANNEL_NAMES.map((name, ch) => {
     const buf = buffers[ch];
-    if (buf.length < WINDOW) return { name, label: '…' };
+    if (buf.length < WINDOW) return { name, label: '…', pct: null, artifact: false };
     const window = buf.slice(-WINDOW);
-    if (DSP.isArtifact(window)) return { name, label: 'Noisy' };
+    if (DSP.isArtifact(window)) return { name, label: 'Noisy', pct: null, artifact: true };
     const powers = DSP.bandPowers(window, DSP.EEG_FREQUENCY);
-    return { name, label: powers.alpha > powers.beta ? 'Alpha' : 'Beta' };
+    const pct = powers.alpha / (powers.alpha + powers.beta + 1e-9);
+    return { name, label: powers.alpha > powers.beta ? 'Alpha' : 'Beta', pct, artifact: false };
   });
 }
+
+// Per-channel "band" state for the visual: a smoothed level (0-1, how
+// alpha-heavy that electrode currently reads) and a decaying spike value —
+// triggered by a sudden, large shift in that channel's own alpha/beta
+// balance. This is what "a spike that reflects thinking" maps onto: a real,
+// fast change in that electrode's brainwave balance, not a guess. Artifact-
+// flagged ticks are excluded from spike detection on purpose — a blink or
+// jaw clench isn't a thought, and treating it like one would be dishonest.
+const SPIKE_THRESHOLD = 0.12;
+const SPIKE_DECAY = 0.85;
+const bandState = DSP.CHANNEL_NAMES.map(() => ({ level: 0.5, spike: 0 }));
+
+function updateBandState(channels) {
+  channels.forEach((ch, i) => {
+    const st = bandState[i];
+    st.spike *= SPIKE_DECAY;
+    if (ch.pct != null && !ch.artifact) {
+      if (Math.abs(ch.pct - st.level) > SPIKE_THRESHOLD) st.spike = 1.0;
+      st.level = ch.pct;
+    }
+  });
+}
+
+// Data visualization: every metric, over time, with everything toggleable
+// and the whole module collapsible. Sampled at ~1/sec (not every 250ms
+// tick) so a few minutes of history fits legibly on one small chart.
+const CHART_SERIES = [
+  { key: 'calm', label: 'Calm', color: '#f2c879' },
+  { key: 'noise', label: 'Noise', color: '#e0697a' },
+  { key: 'TP9', label: 'TP9', color: '#7dd3fc' },
+  { key: 'AF7', label: 'AF7', color: '#a78bfa' },
+  { key: 'AF8', label: 'AF8', color: '#34d399' },
+  { key: 'TP10', label: 'TP10', color: '#60a5fa' },
+];
+const HISTORY_LEN = 180; // ~3 minutes at 1 sample/sec
+const histories = {};
+CHART_SERIES.forEach((s) => { histories[s.key] = new Chart.History(HISTORY_LEN); });
+const seriesEnabled = {};
+CHART_SERIES.forEach((s) => { seriesEnabled[s.key] = true; });
+
+const chartCanvas = document.getElementById('chartCanvas');
+const chartCtx = chartCanvas.getContext('2d');
+const legendEl = document.getElementById('legend');
+const dataToggleEl = document.getElementById('dataToggle');
+const dataBodyEl = document.getElementById('dataBody');
+const dataPanelEl = document.getElementById('dataPanel');
+
+function renderLegend() {
+  legendEl.innerHTML = CHART_SERIES.map((s) =>
+    `<span class="legendItem" data-key="${s.key}">` +
+    `<span class="swatch" style="background:${s.color}"></span>${s.label}</span>`
+  ).join('');
+  legendEl.querySelectorAll('.legendItem').forEach((el) => {
+    el.addEventListener('click', () => {
+      const key = el.dataset.key;
+      seriesEnabled[key] = !seriesEnabled[key];
+      el.classList.toggle('off', !seriesEnabled[key]);
+      renderChart();
+    });
+  });
+}
+
+function renderChart() {
+  const w = chartCanvas.width, h = chartCanvas.height;
+  chartCtx.clearRect(0, 0, w, h);
+  chartCtx.strokeStyle = 'rgba(255,255,255,.08)';
+  chartCtx.lineWidth = 1;
+  [0, 0.5, 1].forEach((f) => {
+    const y = h * f;
+    chartCtx.beginPath(); chartCtx.moveTo(0, y); chartCtx.lineTo(w, y); chartCtx.stroke();
+  });
+  for (const s of CHART_SERIES) {
+    if (!seriesEnabled[s.key]) continue;
+    const pts = Chart.seriesToPoints(histories[s.key].values, w, h, HISTORY_LEN);
+    if (pts.length < 2) continue;
+    chartCtx.strokeStyle = s.color;
+    chartCtx.lineWidth = 1.5;
+    chartCtx.beginPath();
+    pts.forEach(([x, y], i) => (i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y)));
+    chartCtx.stroke();
+  }
+}
+
+function sampleHistory(result, channels) {
+  histories.calm.push(Math.round(result.calm * 100));
+  histories.noise.push(Math.round(result.artifactRate * 100));
+  for (const ch of channels) {
+    const h = histories[ch.name];
+    const prev = h.values.length ? h.values[h.values.length - 1] : 50;
+    h.push(ch.pct != null ? Math.round(ch.pct * 100) : prev); // hold last value if unavailable this tick
+  }
+  renderChart();
+}
+
+dataToggleEl.addEventListener('click', () => {
+  const collapsed = dataBodyEl.classList.toggle('collapsed');
+  dataToggleEl.textContent = (collapsed ? '▸' : '▾') + ' Data';
+});
+renderLegend();
 
 let device = null;
 
@@ -248,6 +373,7 @@ async function connect() {
     setStatus('gathering signal— sit still for a moment…');
     renderTimerPicker();
     readoutEl.classList.add('show');
+    dataPanelEl.classList.add('show');
   } catch (err) {
     connectBtn.disabled = false;
     if (err.name === 'NotFoundError') setStatus('no device selected. <button id="connect2">try again</button>');
@@ -259,6 +385,7 @@ async function connect() {
 function onDisconnected() {
   setStatus('disconnected. <button id="connect2">reconnect</button>');
   readoutEl.classList.remove('show');
+  dataPanelEl.classList.remove('show');
   timerPickerEl.innerHTML = '';
   timerEndAt = null; timerDone = false;
   rewireRetry();
@@ -275,13 +402,21 @@ connectBtn.addEventListener('click', connect, { once: true });
 
 setInterval(updateBreathing, 2000);
 
+let tickCount = 0;
 setInterval(() => {
   const result = computeCalm();
   if (!result) {
     if (lastDataAt) setStatus('gathering signal— sit still for a moment…');
     return;
   }
+  const channels = computeChannelLabels(); // one call, reused for readout + bands + chart
+  updateBandState(channels);
+
   visual.setCalm(result.calm);
+  visual.setNoise(result.artifactRate);
+  visual.setBandLevels(bandState.map((s) => s.level));
+  visual.setBandSpikes(bandState.map((s) => s.spike));
+
   const stale = Date.now() - lastDataAt > 2000;
   if (stale) setStatus('signal lost — check the headband fit');
   else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
@@ -307,7 +442,7 @@ setInterval(() => {
       : `Timer&nbsp;&nbsp;<b>${mm}:${String(ss).padStart(2, '0')}</b>`;
   }
 
-  const sensorLines = computeChannelLabels().map(({ name, label }) => `${name}&nbsp;&nbsp;<b>${label}</b>`);
+  const sensorLines = channels.map(({ name, label }) => `${name}&nbsp;&nbsp;<b>${label}</b>`);
   const composite = [
     `Calm&nbsp;&nbsp;<b>${Math.round(result.calm * 100)}</b>`,
     `Brainwaves&nbsp;&nbsp;<b>${brainLabel}</b>`,
@@ -316,6 +451,9 @@ setInterval(() => {
     timerLine,
   ].filter(Boolean);
   readoutEl.innerHTML = sensorLines.join('<br>') + '<br><br>' + composite.join('<br>');
+
+  tickCount++;
+  if (tickCount % 4 === 0) sampleHistory(result, channels); // ~1 sample/sec at a 250ms tick rate
 }, 250);
 </script>
 </body>

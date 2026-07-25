@@ -255,24 +255,28 @@
     return freqHz > 0 ? 1 / freqHz : null;
   }
 
-  // ---- Adaptive "calm" scoring (same math as server.js's step(), --------
-  // ---- generalized into a reusable, testable class) ----------------------
-  class CalmTracker {
+  // ---- Adaptive 0..1 normalization (same math server.js's step() uses for
+  // ---- "calm", generalized into a reusable class) ------------------------
+  // Not calm-specific: normalizes ANY unbounded signal against a slow
+  // running mean/variance of the wearer's own session — used for calm, and
+  // equally for independent alpha-level/beta-level tracking so the visual
+  // can respond to more than one blended number.
+  class AdaptiveNormalizer {
     constructor({ adapt = 0.001, slope = 0.9, smoothing = 0.05 } = {}) {
       this.adapt = adapt; this.slope = slope; this.smoothing = smoothing;
-      this.mu = null; this.varr = 0.25; this.calm = 0.5;
+      this.mu = null; this.varr = 0.25; this.value = 0.5;
     }
-    update(ratio) {
-      let target = this.calm;
-      if (ratio != null && !Number.isNaN(ratio)) {
-        if (this.mu === null) this.mu = ratio;
-        this.mu += this.adapt * (ratio - this.mu);
-        this.varr += this.adapt * ((ratio - this.mu) * (ratio - this.mu) - this.varr);
-        const z = (ratio - this.mu) / Math.sqrt(this.varr + 1e-6);
+    update(raw) {
+      let target = this.value;
+      if (raw != null && !Number.isNaN(raw)) {
+        if (this.mu === null) this.mu = raw;
+        this.mu += this.adapt * (raw - this.mu);
+        this.varr += this.adapt * ((raw - this.mu) * (raw - this.mu) - this.varr);
+        const z = (raw - this.mu) / Math.sqrt(this.varr + 1e-6);
         target = 1 / (1 + Math.exp(-z * this.slope));
       }
-      this.calm += this.smoothing * (target - this.calm);
-      return this.calm;
+      this.value += this.smoothing * (target - this.value);
+      return this.value;
     }
   }
 
@@ -284,6 +288,6 @@
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
     ARTIFACT_PTP_UV, peakToPeak, isArtifact,
     detectBeats, estimateBreathingPeriod,
-    CalmTracker,
+    AdaptiveNormalizer,
   };
 });

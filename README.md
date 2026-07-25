@@ -168,54 +168,86 @@ Two tiers, both visible at once:
   a number that just climbs while you wait isn't meaningful information), `Noise`
   (Low/Some/High, from the artifact rate), and `Timer` if one's running.
 
+## The visual — a spectrum-style "band per sensor" design (third real iteration)
+
+Two earlier attempts didn't work, for instructive reasons:
+1. Adding bright ridge-lines and a glow *on top of* the existing busy noise field —
+   "it looks like the old one," correctly. Slowing or decorating a busy field
+   doesn't remove the busyness underneath.
+2. Blending between a busy field and a soft low-detail field as calm rose — a real,
+   structural improvement, but still built around one blended noise field. "No white,
+   colors are really off... not intelligently reflecting the data."
+
+**Current design:** 4 soft horizontal bands of light, one per EEG electrode
+(TP9/AF7/AF8/TP10) — closer to a spectrum analyzer (or the classic Winamp
+visualizer) than a single cloud. Each band's gentle undulation reflects that
+electrode's *own* alpha-vs-beta balance in real time — not one composite score
+driving everything. A dark navy base is always present underneath (this is the
+direct fix for "no white" — the earlier version replaced the base with a hue shift
+into brown instead of layering brightness on top of a base that never disappears).
+
+**The spike mechanic:** a sudden, large shift in a channel's own alpha/beta balance
+triggers a sharp, bright, fast-decaying white flash in that specific band —
+distinct from the soft ambient motion around it. This is the real signal behind
+"a spike that reflects thinking, white sharp fluctuations": genuine, fast movement
+in that electrode's brainwave balance, not a guess, and explicitly *not* triggered
+by blink/jaw artifact (those are excluded upstream — conflating noise with "a
+thought" would be dishonest).
+
+**Calm still controls dissolving.** As calm rises, the bands widen and soften
+(lower `sharpness`) and blend into a bright shared glow where they overlap, rather
+than staying crisp and separate — "everything's kinda dissolving" at higher calm,
+more distinct and separable at lower calm.
+
+A real bug worth recording: a from-scratch rewrite briefly reintroduced the exact
+precision bug from iteration 2 (multiplying raw elapsed time by large constants
+before feeding `noise()`/`hash()`) — caught on manual re-review before it ever
+reached the page, by re-applying the same bounded sin/cos "clock" technique used
+everywhere else in this shader for anything time-varying.
+
+Knobs, all in `public/visual.js`:
+- `sharpness = mix(520.0, 130.0, u_calm)` — how tightly-defined vs. soft/dissolved
+  the bands are.
+- `SPIKE_THRESHOLD` / `SPIKE_DECAY` in `direct.html` — how large a shift counts as
+  "sudden," and how fast the flash fades.
+- `u_noise` drives a visible grain overlay — honest feedback that the signal itself
+  is noisy right now, instead of hiding it inside a smoothed score.
+
+This is still translated into shader math without being able to see it render on
+real hardware — tell me plainly what's still off, and in what specific way, so the
+next pass targets the actual gap.
+
+Knobs shared with the calm score itself:
+- `server.js` (Path A) / `DSP.AdaptiveNormalizer` in `public/dsp.js` (Path B) —
+  `adapt` (how fast it learns your baseline, lower = steadier), the logistic
+  `slope` (higher = more dramatic swings), `smoothing` (lower = slower response).
+
+## Data visualization (Path B)
+
+A collapsible panel (bottom-left, "▾ Data") graphs everything over time: Calm,
+Noise, and each of the 4 electrodes' alpha-share individually — ~3 minutes of
+history at 1 sample/sec, all on a shared 0–100 scale. Click a legend item to
+toggle that series on/off; click "Data" to hide the whole panel. The data/scaling
+math (`public/chart.js`) is unit-tested independent of the canvas drawing itself
+(`test-chart.js`) — ring-buffer capping and the right-aligned "scrolls in from
+empty" coordinate mapping are both verified before ever touching a canvas.
+
 ## Session timer (Path B)
 
-Once connected, pick a duration (5/10/20/30 min) or skip it. A plain "session
-complete" message shows at the end — no alarm, no sound, just text — and the
-countdown lives in the same readout as everything else.
-
-## The visual — this went through two real iterations
-
-**First attempt (didn't work):** added bright ridge-lines and a soft glow *on top
-of* the existing busy, multi-detail noise field, fading the lines out and the glow
-in as calm rose. Live feedback: "it looks like the old one" — correctly. Slowing a
-busy field down, or layering effects onto it, doesn't remove the busyness — the
-field's *spatial* detail was completely unchanged underneath.
-
-**Second attempt (the actual fix):** two separately-defined noise fields —
-`fbmDetail` (5 octaves, small-scale, the original busy field) and `fbmSoft` (2
-octaves, large-scale, a few soft shapes) — and *blend between the fields
-themselves* as calm rises, not just their speed or an overlay on top. At low calm
-you see the original busy field; at high calm you're looking almost entirely at
-the soft field — genuinely fewer, larger, smoother shapes, closer to the "gradients,
-not marble" brief. Contrast also fades toward flat at high calm, for the same reason.
-
-(Why two fixed-octave functions instead of one with a calm-dependent octave count:
-WebGL1 shader loop bounds have to be compile-time constants on some GPU drivers —
-a dynamically-variable octave count isn't portable.)
-
-This is still my best guess translated into shader math without being able to see
-it render — tell me plainly if it's closer, and in what specific way it's still
-wrong, so the next pass is aimed at the actual gap rather than another guess.
-
-Knobs:
-- `server.js` (Path A) / `DSP.CalmTracker` in `public/dsp.js` (Path B) — `adapt`/`aStat`
-  (how fast it learns your baseline, lower = steadier), the logistic `slope` (higher =
-  more dramatic swings), `smoothing` (lower = slower visual response).
-- To use **theta** (absorption/focus) instead of/alongside alpha: Path A already
-  receives `S.abs.theta` from Mind Monitor; Path B gets it free from `DSP.bandPowers()`.
-
-Visual mapping is shared by both pages in `public/visual.js` (`u_calm` drives speed,
-color warmth, contrast, and a breathing luminance pulse that slows as you settle).
+Pick a duration (5/10/20/30 min) once connected, or skip it. A plain "session
+complete" message shows at the end — no alarm, no sound — and the countdown lives
+in the same readout as everything else.
 
 ## Test
 
 ```bash
-node test.js       # Path A: OSC parsing + the calm math, no hardware needed
-node test-dsp.js   # Path B: FFT (checked against brute-force DFT), band-power
-                    # isolation on synthetic tones, 12-bit decode, calm math,
-                    # artifact detection, and breathing-rate recovery from a
-                    # synthetic PPG signal with a known, embedded breath rate
+node test.js        # Path A: OSC parsing + the calm math, no hardware needed
+node test-dsp.js    # Path B: FFT (checked against brute-force DFT), band-power
+                     # isolation on synthetic tones, 12-bit decode, calm math,
+                     # artifact detection, and breathing-rate recovery from a
+                     # synthetic PPG signal with a known, embedded breath rate
+node test-chart.js  # data-viz panel: ring-buffer capping, coordinate scaling,
+                     # right-aligned partial-series layout
 ```
 
 ## Troubleshooting

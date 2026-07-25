@@ -77,10 +77,10 @@ function naiveDFT(real) {
   console.log('✓ microvolt scaling correct');
 }
 
-// 6) CalmTracker: same "rises across a calming session" behavior as the
-//    server-side version this was generalized from.
+// 6) AdaptiveNormalizer: same "rises across a calming session" behavior as
+//    the server-side version this was generalized from.
 {
-  const tracker = new DSP.CalmTracker();
+  const tracker = new DSP.AdaptiveNormalizer();
   let first = null, last = null;
   for (let i = 0; i <= 400; i++) {
     const prog = Math.min(1, i / 300);
@@ -89,9 +89,9 @@ function naiveDFT(real) {
     if (i === 20) first = calm;
     last = calm;
   }
-  console.log(`  CalmTracker: start≈${first.toFixed(2)} end≈${last.toFixed(2)}`);
-  assert.ok(last > first + 0.15, `calm should climb meaningfully (${first.toFixed(2)} -> ${last.toFixed(2)})`);
-  console.log('✓ CalmTracker tracks a calming session (client-side reimplementation)');
+  console.log(`  AdaptiveNormalizer: start≈${first.toFixed(2)} end≈${last.toFixed(2)}`);
+  assert.ok(last > first + 0.15, `value should climb meaningfully (${first.toFixed(2)} -> ${last.toFixed(2)})`);
+  console.log('✓ AdaptiveNormalizer tracks a calming session (client-side reimplementation)');
 }
 
 // 7) encodeCommand: length-prefix must equal byte length of "cmd\n" (i.e. total-1).
@@ -115,17 +115,17 @@ function naiveDFT(real) {
   console.log('✓ artifact detection distinguishes clean signal from a blink/jaw-sized transient');
 }
 
-// 9) CalmTracker freezes exactly (no drift) when fed a null ratio, so an
-//    artifact-flagged window can be skipped without disturbing the display.
+// 9) AdaptiveNormalizer freezes exactly (no drift) when fed a null value, so
+//    an artifact-flagged window can be skipped without disturbing the display.
 {
-  const tracker = new DSP.CalmTracker();
+  const tracker = new DSP.AdaptiveNormalizer();
   for (let i = 0; i < 50; i++) tracker.update(0.6); // settle to some non-default value
-  const held = tracker.calm;
+  const held = tracker.value;
   for (let i = 0; i < 20; i++) {
     const out = tracker.update(null);
-    assert.strictEqual(out, held, 'calm must not drift while ratio is null (artifact frozen)');
+    assert.strictEqual(out, held, 'value must not drift while input is null (artifact frozen)');
   }
-  console.log('✓ CalmTracker holds steady through a run of artifact-flagged (null) windows');
+  console.log('✓ AdaptiveNormalizer holds steady through a run of artifact-flagged (null) windows');
 }
 
 // 10) 24-bit decode round-trip.
