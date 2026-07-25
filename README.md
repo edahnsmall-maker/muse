@@ -168,54 +168,68 @@ Two tiers, both visible at once:
   a number that just climbs while you wait isn't meaningful information), `Noise`
   (Low/Some/High, from the artifact rate), and `Timer` if one's running.
 
-## The visual — a spectrum-style "band per sensor" design (third real iteration)
+## The visuals — four modes, press `V` to cycle
 
-Two earlier attempts didn't work, for instructive reasons:
-1. Adding bright ridge-lines and a glow *on top of* the existing busy noise field —
-   "it looks like the old one," correctly. Slowing or decorating a busy field
-   doesn't remove the busyness underneath.
-2. Blending between a busy field and a soft low-detail field as calm rose — a real,
-   structural improvement, but still built around one blended noise field. "No white,
-   colors are really off... not intelligently reflecting the data."
+**Why there was "still no color", definitively:** every WebGL version computed a
+*single* highlight colour and added that same colour for all four bands. The image
+was structurally monochrome — dark navy plus one blue-white — so no amount of
+tuning could make it colourful. Each electrode now has its own genuinely distinct,
+saturated hue (`VizCore.CHANNEL_COLORS`, kept in sync with the data-graph legend so
+a ribbon in the visual and its line on the graph are recognisably the same channel).
+`test-viz.js` asserts all four hues differ and are actually saturated, so this can't
+silently regress.
 
-**Current design:** 4 soft horizontal bands of light, one per EEG electrode
-(TP9/AF7/AF8/TP10) — closer to a spectrum analyzer (or the classic Winamp
-visualizer) than a single cloud. Each band's gentle undulation reflects that
-electrode's *own* alpha-vs-beta balance in real time — not one composite score
-driving everything. A dark navy base is always present underneath (this is the
-direct fix for "no white" — the earlier version replaced the base with a hue shift
-into brown instead of layering brightness on top of a base that never disappears).
+**Why Canvas 2D instead of a WebGL shader:** three shader iterations failed to
+produce colour or legible data-correspondence. Shader colour grading had to be
+written blind (nothing here can compile or view GLSL), and it twice hit GPU
+float-precision bugs that only showed up on real hardware. Canvas 2D uses explicit
+rgba colours, real blur, and eliminates that entire bug class. It also made the
+renderer testable — see "Testing the untestable" below.
 
-**The spike mechanic:** a sudden, large shift in a channel's own alpha/beta balance
-triggers a sharp, bright, fast-decaying white flash in that specific band —
-distinct from the soft ambient motion around it. This is the real signal behind
-"a spike that reflects thinking, white sharp fluctuations": genuine, fast movement
-in that electrode's brainwave balance, not a guess, and explicitly *not* triggered
-by blink/jaw artifact (those are excluded upstream — conflating noise with "a
-thought" would be dishonest).
+The four modes:
 
-**Calm still controls dissolving.** As calm rises, the bands widen and soften
-(lower `sharpness`) and blend into a bright shared glow where they overlap, rather
-than staying crisp and separate — "everything's kinda dissolving" at higher calm,
-more distinct and separable at lower calm.
+| Mode | What it is | What drives it |
+|---|---|---|
+| **Flow** | Chronological watercolour. Your history scrolls right→left, one coloured ribbon per electrode, paint accumulating and softly bleeding. | Ribbon height = that electrode's alpha share. Spikes = bright bursts. Data-correspondence is literal: the picture *is* the history. |
+| **Bloom** | No lines at all. Soft colour gradients emerge, expand, and fade — but only when something significant actually happens. | A per-channel spike (bloom in that channel's colour), or a calm-zone transition: settling (warm) / stirring (cool). |
+| **Field** | One soft wavy band of colour per sensor — the "reference image" look, now with real per-channel hue. | Band brightness/thickness = that electrode's alpha share; blur and width grow with calm ("dissolving"). |
+| **Breath** | Austere. One slow gradient breathing in and out. Nothing per-channel, nothing to read or chase. | Your *measured* breathing rate (or a calm-linked estimate before one exists). This is the "mirror mode" of the roadmap's Zen framing. |
 
-A real bug worth recording: a from-scratch rewrite briefly reintroduced the exact
-precision bug from iteration 2 (multiplying raw elapsed time by large constants
-before feeding `noise()`/`hash()`) — caught on manual re-review before it ever
-reached the page, by re-applying the same bounded sin/cos "clock" technique used
-everywhere else in this shader for anything time-varying.
+**Significant-event detection** (Bloom) uses hysteresis on purpose: you must cross
+*above* 0.62 or *below* 0.42 to change zone, so ordinary wobble around a single
+threshold can't fire events forever — the same bug class as the spike detector
+firing every tick. Spike blooms fire on a fresh trigger only, never on the decay
+tail. Both behaviours are unit-tested.
 
-Knobs, all in `public/visual.js`:
-- `sharpness = mix(520.0, 130.0, u_calm)` — how tightly-defined vs. soft/dissolved
-  the bands are.
-- `SPIKE_THRESHOLD` / `SPIKE_DECAY` in `direct.html` — how large a shift counts as
-  "sudden," and how fast the flash fades.
-- `u_noise` drives a visible grain overlay — honest feedback that the signal itself
-  is noisy right now, instead of hiding it inside a smoothed score.
+A real bug found by those tests: starting at a mid-range calm never established a
+zone, so `zone` stayed `null` and the **first genuine transition was swallowed** by
+the don't-fire-on-startup guard. Fixed by classifying the opening value into a
+`mid` zone.
 
-This is still translated into shader math without being able to see it render on
-real hardware — tell me plainly what's still off, and in what specific way, so the
-next pass targets the actual gap.
+### Testing the untestable
+
+`visual.js` draws to a canvas, which can't run here — but the thing most likely to
+break it isn't the pixels, it's a plain runtime error in a render path that would
+otherwise surface only as a blank screen on your machine. `test-visual-smoke.js`
+stubs a minimal Canvas2D context and runs **every mode for 60 frames** with
+adversarial state (nulls, out-of-range values, malformed/empty band arrays),
+failing on any thrown error or any NaN/Infinity/negative geometry reaching a draw
+call.
+
+That test initially had a blind spot worth recording: it only validated *method
+arguments*, so an injected `Infinity` reaching `ctx.lineWidth` — a **property
+assignment** — sailed straight through and the suite still passed. Found by
+deliberately injecting the bug to check the test wasn't vacuous. It now validates
+property assignments too, and has been re-verified to fail on that injected bug and
+pass on clean code.
+
+Knobs, in `public/visual.js` / `public/viz-core.js`:
+- `CHANNEL_COLORS` — the per-electrode hues.
+- `MODES` — order of the cycle; add one here and it's automatically reachable.
+- `EventDetector({hi, lo})` — how far calm must move to count as settling/stirring.
+- `BloomField({max, life})` — how many blooms coexist and how long each lasts.
+- `BUF_MAX_W` — render-buffer width; smaller is softer and faster.
+- `SPIKE_THRESHOLD` / `SPIKE_DECAY` via `DSP.SpikeDetector` in `direct.html`.
 
 Knobs shared with the calm score itself:
 - `server.js` (Path A) / `DSP.AdaptiveNormalizer` in `public/dsp.js` (Path B) —
@@ -248,6 +262,12 @@ node test-dsp.js    # Path B: FFT (checked against brute-force DFT), band-power
                      # synthetic PPG signal with a known, embedded breath rate
 node test-chart.js  # data-viz panel: ring-buffer capping, coordinate scaling,
                      # right-aligned partial-series layout
+node test-viz.js    # visual logic: distinct per-channel hues, mode cycling,
+                     # event hysteresis, bloom lifecycle, bounded wobble
+node test-visual-smoke.js
+                    # runs every visual mode for 60 frames against a stubbed
+                    # canvas with adversarial state; fails on any thrown error
+                    # or NaN/Infinity/negative geometry reaching a draw call
 ```
 
 ## Troubleshooting
@@ -282,6 +302,11 @@ node test-chart.js  # data-viz panel: ring-buffer capping, coordinate scaling,
 - **This path has no headband-fit indicator like Path A's "poor contact" message** —
   it isn't available over raw Bluetooth. If the calm value looks stuck or erratic,
   check the physical fit yourself before assuming the app is wrong.
+- **A visual looks static / nothing seems to happen** → check which mode you're in
+  (the readout's `Visual` line; press `V` to cycle). **Bloom** is *meant* to be
+  mostly still — it only shows something when a genuinely significant event occurs,
+  which can be a while apart. **Breath** is deliberately austere and has no
+  per-channel response at all. **Flow** and **Field** react continuously.
 
 ## What's next (Phase 1+)
 

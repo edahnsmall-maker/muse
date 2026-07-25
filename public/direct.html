@@ -67,9 +67,11 @@
     </div>
   </div>
   <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth.<br>
-    press <kbd>F</kbd> for fullscreen · <a href="index.html">use Mind Monitor instead →</a></div>
+    press <kbd>V</kbd> to change the visual · <kbd>F</kbd> for fullscreen ·
+    <a href="index.html">use Mind Monitor instead →</a></div>
 </div>
 <script src="dsp.js"></script>
+<script src="viz-core.js"></script>
 <script src="visual.js"></script>
 <script src="chart.js"></script>
 <script>
@@ -79,10 +81,19 @@ const readoutEl = document.getElementById('readout');
 const timerPickerEl = document.getElementById('timerPicker');
 const connectBtn = document.getElementById('connect');
 
+// When a transient message is showing (e.g. the visual-mode name), the
+// 250ms status loop must not immediately overwrite it.
+let statusLockUntil = 0;
+
 addEventListener('keydown', (e) => {
   if (e.key === 'f' || e.key === 'F') {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();
     else document.exitFullscreen();
+  }
+  if (e.key === 'v' || e.key === 'V') {
+    const mode = visual.cycleMode();
+    setStatus(`${mode.label} — ${mode.blurb}`);
+    statusLockUntil = Date.now() + 2200;
   }
 });
 
@@ -420,18 +431,22 @@ setInterval(() => {
   const channels = computeChannelLabels(); // one call, reused for readout + bands + chart
   updateBandState(channels);
 
-  visual.setCalm(result.calm);
-  visual.setNoise(result.artifactRate);
-  visual.setBandLevels(bandState.map((s) => s.level));
-  visual.setBandSpikes(bandState.map((s) => s.spike));
+  visual.setState({
+    calm: result.calm,
+    noise: result.artifactRate,
+    bands: bandState.map((s) => ({ level: s.level, spike: s.spike })),
+  });
 
   const stale = Date.now() - lastDataAt > 2000;
-  if (stale) setStatus('signal lost — check the headband fit');
-  else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
-  else if (timerEndAt && !timerDone && Date.now() >= timerEndAt) {
+  const statusLocked = Date.now() < statusLockUntil;
+  if (timerEndAt && !timerDone && Date.now() >= timerEndAt) {
     timerDone = true;
     setStatus('session complete');
-  } else if (!timerDone) setStatus('', { hide: true });
+  } else if (statusLocked) {
+    /* a transient message (visual mode name) owns the status line right now */
+  } else if (stale) setStatus('signal lost — check the headband fit');
+  else if (result.artifactRate > 0.5) setStatus('steadying — try relaxing your jaw and eyes');
+  else if (!timerDone) setStatus('', { hide: true });
 
   // One understated, plain-English readout. No jargon, no Greek letters,
   // no raw ratios — this is the only interface; there is no separate
@@ -452,6 +467,7 @@ setInterval(() => {
 
   const sensorLines = channels.map(({ name, label }) => `${name}&nbsp;&nbsp;<b>${label}</b>`);
   const composite = [
+    `Visual&nbsp;&nbsp;<b>${visual.currentMode().label}</b>`,
     `Calm&nbsp;&nbsp;<b>${Math.round(result.calm * 100)}</b>`,
     `Brainwaves&nbsp;&nbsp;<b>${brainLabel}</b>`,
     breathLine,

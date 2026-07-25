@@ -1,173 +1,276 @@
 /*
- * Shared reactive-field visual — used by both the Mind Monitor/OSC page
- * (index.html) and the direct-Bluetooth page (direct.html) so the visual
- * language stays identical regardless of how the data got there.
+ * Reactive visuals — four modes the user can cycle through.
  *
- * Design: 4 soft horizontal "bands" of light, one per EEG electrode
- * (TP9/AF7/AF8/TP10) — a spectrum-analyzer-style mapping where each real
- * data stream gets its own visible line, rather than one blended score
- * driving a single field. Each band's undulation reflects that channel's
- * own alpha-vs-beta balance; a sudden shift in that balance ("a spike that
- * reflects thinking") triggers a sharp, bright, fast-decaying flash
- * distinct from the otherwise soft ambient motion. As calm rises, the
- * bands widen and soften ("dissolving") and blend into a bright shared
- * glow where they overlap, rather than staying sharply separated.
+ * Deliberately Canvas 2D, not a WebGL shader. Three shader iterations failed
+ * to produce colour or legible data-correspondence, because shader colour
+ * grading had to be written blind (no way to compile or view GLSL here) and
+ * it twice hit GPU float-precision bugs. Canvas 2D uses explicit rgba
+ * colours, real blur (ctx.filter — fine, since Web Bluetooth already
+ * restricts this page to Chrome/Edge), and removes that whole bug class.
+ * Rendering happens into a small offscreen buffer that is then upscaled,
+ * which is both fast and gives soft, watercolour-ish edges for free.
+ *
+ * The modes:
+ *   Flow   — chronological. Your data painted as it happens, scrolling right
+ *            to left, one coloured ribbon per electrode. Data-correspondence
+ *            is literal: the picture IS the history.
+ *   Bloom  — no lines at all. Soft colour gradients emerge only when
+ *            something significant actually happens in the data.
+ *   Field  — one soft wavy band of colour per sensor (the "reference image"
+ *            look), now with a genuinely distinct hue per electrode.
+ *   Breath — austere. Slow breathing only, nothing per-channel, nothing to
+ *            read or chase. The "mirror mode" of the roadmap's Zen framing.
+ *
+ * Exposed as createZenVisual() with a setCalm() method so the older Mind
+ * Monitor page (index.html) keeps working unchanged.
  */
 function createZenVisual(canvas) {
-  const gl = canvas.getContext('webgl');
-  const VERT = `attribute vec2 p; void main(){ gl_Position = vec4(p, 0.0, 1.0); }`;
-  const FRAG = `
-precision highp float;
-uniform vec2 u_res; uniform float u_time; uniform float u_calm; uniform float u_breathPeriod;
-uniform float u_noise;
-uniform float u_bandLevel[4]; // per-electrode alpha share (0..1), TP9/AF7/AF8/TP10
-uniform float u_bandSpike[4]; // per-electrode decaying "sudden shift" flash (0..1)
-// Multiplying by large constants (123.34, 345.45) before taking fract()
-// requires the GPU to resolve the fractional part of a *large* number —
-// exactly where "highp" silently degrades to lower precision on some
-// GPUs, collapsing this into visible blocky tiles. Small constants keep
-// every intermediate value near [0,1), which stays precise everywhere.
-float hash(vec2 p){ vec2 q=fract(p*vec2(0.1031,0.1030)); q+=dot(q,q.yx+19.19); return fract((q.x+q.y)*q.x); }
-float noise(vec2 p){ vec2 i=floor(p), f=fract(p); vec2 u=f*f*(3.0-2.0*f);
-  float a=hash(i), b=hash(i+vec2(1,0)), c=hash(i+vec2(0,1)), d=hash(i+vec2(1,1));
-  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y); }
-void main(){
-  vec2 uv = gl_FragCoord.xy / u_res.xy;
-  float aspect = u_res.x / u_res.y;
-  // Feeding raw elapsed time (even multiplied by a modest speed) straight
-  // into noise()/hash() calls eventually exceeds this GPU's effective float
-  // precision and collapses the field into visible blocky tiles — the
-  // exact bug hit earlier. t itself stays bounded (mod caps it hard), but
-  // it's ONLY ever used as a phase fed into sin()/cos() below, never
-  // multiplied by a further large constant and passed into noise()/hash()
-  // directly — those instead use the bounded clockA/clockB vectors, whose
-  // magnitude cannot grow no matter how long the session runs.
-  float loopedTime = mod(u_time, 100000.0);
-  float speed = mix(0.5, 0.06, u_calm); // bands flow slower as calm rises
-  float t = loopedTime * speed;
-  vec2 clockA = vec2(cos(t), sin(t)) * 1.6;
-  vec2 clockB = vec2(cos(t*0.63 + 1.7), sin(t*0.63 + 1.7)) * 1.6;
+  const ctx = canvas.getContext('2d');
+  const buf = document.createElement('canvas'); // per-frame compose target
+  const acc = document.createElement('canvas'); // persistent accumulation (Flow)
+  const tmp = document.createElement('canvas'); // scroll helper for Flow
+  const bctx = buf.getContext('2d');
+  const actx = acc.getContext('2d');
+  const tctx = tmp.getContext('2d');
 
-  // Dark navy base, always present — this never fully disappears into a
-  // hue shift (that was the earlier bug that read as "muddy brown"). Only
-  // the bands and their glow add real brightness on top of it.
-  vec3 deep = vec3(0.020, 0.028, 0.062);
-  vec3 mid  = vec3(0.045, 0.075, 0.145);
-  float haze = 0.05 * (noise(uv*vec2(aspect,1.0)*1.4 + clockA*0.4) - 0.5);
-  vec3 col = mix(deep, mid, clamp(uv.y + haze, 0.0, 1.0));
+  const BUF_MAX_W = 560; // small buffer => soft upscale + cheap blur
+  let BW = 0, BH = 0;
 
-  vec3 coolHighlight = vec3(0.55, 0.70, 0.98);
-  vec3 warmHighlight  = vec3(0.99, 0.94, 0.82);
-  vec3 highlight = mix(coolHighlight, warmHighlight, u_calm);
+  const clamp01 = (v) => Math.max(0, Math.min(1, v == null || Number.isNaN(v) ? 0 : v));
+  const rgba = (c, a) => `rgba(${c[0] | 0},${c[1] | 0},${c[2] | 0},${Math.max(0, Math.min(1, a))})`;
+  const mixColor = (a, b, t) => [
+    a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t,
+  ];
 
-  // Softer, wider, more overlapping bands at high calm ("everything's kinda
-  // dissolving"); tighter and more distinct at low calm.
-  float sharpness = mix(520.0, 130.0, u_calm);
+  let state = {
+    calm: 0.5, noise: 0, breathPeriod: 0,
+    bands: [0, 1, 2, 3].map(() => ({ level: 0.5, spike: 0 })),
+  };
+  let smooth = { calm: 0.5, noise: 0, breathPeriod: 0, levels: [0.5, 0.5, 0.5, 0.5] };
 
-  for (int i = 0; i < 4; i++) {
-    float fi = float(i);
-    float lvl = u_bandLevel[i];
-    float spike = u_bandSpike[i];
-    float baseY = mix(0.66, 0.34, fi / 3.0); // spread the 4 bands vertically, overlapping toward center
-    float wob = (0.11 - 0.04*lvl) * sin(uv.x*aspect*3.0 + t*(1.2 + fi*0.29) + fi*2.3)
-              + 0.045 * (noise(vec2(uv.x*aspect*2.0, fi*11.0) + clockB*(0.3 + fi*0.15)) - 0.5);
-    float dist = uv.y - (baseY + wob);
-    float glow = exp(-dist*dist*sharpness);
-    float brightness = glow * mix(0.30, 0.85, lvl) * mix(0.55, 1.15, u_calm);
-    col += highlight * brightness;
-
-    // The spike: a sharp, bright, fast-decaying white flash distinct from
-    // the soft ambient band — a real, sudden shift in that electrode's own
-    // alpha/beta balance, not artifact (blinks/jaw are excluded upstream).
-    // jitter depends on BOTH uv.x and uv.y (not just x) so a spike reads as
-    // a compact, localized flash — the earlier version's jitter didn't vary
-    // with uv.y at all, so any spike painted a full-height vertical bar.
-    if (spike > 0.01) {
-      float jitter = hash(vec2(uv.x*420.0 + clockA.x*30.0, uv.y*300.0 + fi*7.0 + clockB.y*17.0));
-      float spikeGlow = exp(-dist*dist*160.0) * spike * jitter;
-      col += vec3(1.0) * spikeGlow * 1.2;
-    }
-  }
-
-  // Noise shows up as visible grain — honest feedback that the signal
-  // itself is noisy right now, rather than hiding it inside a smoothed
-  // score. Coordinates kept bounded, same float-precision reason as above.
-  float grain = hash(uv * u_res.xy * 0.7 + clockB*50.0 + clockA*13.0);
-  col = mix(col, vec3(grain), 0.10 * clamp(u_noise, 0.0, 1.0));
-
-  // Use a real measured breathing period once one exists (u_breathPeriod > 0);
-  // fall back to a calm-linked guess until then (0 is the "no estimate yet" sentinel).
-  float period = u_breathPeriod > 0.5 ? u_breathPeriod : mix(6.0, 11.0, u_calm);
-  float breath = 0.5 + 0.5*sin(loopedTime*6.2831853/period);
-  col *= mix(1.0, 0.92 + 0.14*breath, 0.6);
-  float d = distance(uv, vec2(0.5));
-  col *= 1.0 - 0.25*d*d;                          // soft vignette
-  gl_FragColor = vec4(col, 1.0);
-}`;
-  function compile(type, src) {
-    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
-    if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
-    return s;
-  }
-  const prog = gl.createProgram();
-  gl.attachShader(prog, compile(gl.VERTEX_SHADER, VERT));
-  gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FRAG));
-  gl.linkProgram(prog); gl.useProgram(prog);
-  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
-  const loc = gl.getAttribLocation(prog, 'p'); gl.enableVertexAttribArray(loc);
-  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
-  const uRes = gl.getUniformLocation(prog, 'u_res');
-  const uTime = gl.getUniformLocation(prog, 'u_time');
-  const uCalm = gl.getUniformLocation(prog, 'u_calm');
-  const uBreathPeriod = gl.getUniformLocation(prog, 'u_breathPeriod');
-  const uNoise = gl.getUniformLocation(prog, 'u_noise');
-  const uBandLevel = gl.getUniformLocation(prog, 'u_bandLevel');
-  const uBandSpike = gl.getUniformLocation(prog, 'u_bandSpike');
+  let modeIndex = 0;
+  const detector = new VizCore.EventDetector();
+  const blooms = new VizCore.BloomField();
 
   function resize() {
     const dpr = Math.min(devicePixelRatio || 1, 2);
-    canvas.width = innerWidth * dpr; canvas.height = innerHeight * dpr;
-    gl.viewport(0, 0, canvas.width, canvas.height);
+    canvas.width = Math.max(1, Math.round(innerWidth * dpr));
+    canvas.height = Math.max(1, Math.round(innerHeight * dpr));
+    const scale = Math.min(1, BUF_MAX_W / canvas.width);
+    BW = Math.max(160, Math.round(canvas.width * scale));
+    BH = Math.max(90, Math.round(canvas.height * scale));
+    for (const c of [buf, acc, tmp]) { c.width = BW; c.height = BH; }
   }
   addEventListener('resize', resize); resize();
 
-  let calm = 0.5, targetCalm = 0.5;
-  let breathPeriod = 0, targetBreathPeriod = 0; // 0 = no real measurement yet
-  let noise = 0, targetNoise = 0;
-  // Sensible neutral defaults so callers that never call setBandLevels/
-  // setBandSpikes (e.g. index.html's Mind Monitor path, which doesn't have
-  // per-channel data) still render a reasonable, static set of bands.
-  let bandLevel = [0.5, 0.5, 0.5, 0.5], targetBandLevel = [0.5, 0.5, 0.5, 0.5];
-  let bandSpike = [0, 0, 0, 0], targetBandSpike = [0, 0, 0, 0];
-  const start = performance.now();
-  function frame(now) {
-    calm += 0.035 * (targetCalm - calm); // gentle inertia so shifts settle rather than snap
-    breathPeriod += 0.01 * (targetBreathPeriod - breathPeriod); // breath period changes glide, don't snap
-    noise += 0.15 * (targetNoise - noise); // noise grain should react fairly promptly
-    for (let i = 0; i < 4; i++) {
-      bandLevel[i] += 0.06 * (targetBandLevel[i] - bandLevel[i]);
-      // Spikes decay fast on their own (see direct.html); here just track
-      // toward the latest target quickly so a new spike reads as sudden.
-      bandSpike[i] += 0.5 * (targetBandSpike[i] - bandSpike[i]);
+  function paintBase(c) {
+    const g = c.createLinearGradient(0, 0, 0, BH);
+    g.addColorStop(0, '#070a18');
+    g.addColorStop(1, '#03050d');
+    c.fillStyle = g;
+    c.fillRect(0, 0, BW, BH);
+  }
+
+  // ---- Flow: chronological watercolour ---------------------------------
+  function renderFlow(nowMs, dtSec) {
+    // Scroll the persistent buffer left. Fractional offsets make drawImage
+    // interpolate, which is exactly the soft bleed we want for watercolour.
+    const dx = Math.max(0.25, dtSec * (BW / 45)); // ~45s of history on screen
+    tctx.clearRect(0, 0, BW, BH);
+    tctx.drawImage(acc, 0, 0);
+    actx.clearRect(0, 0, BW, BH);
+    actx.globalAlpha = 0.994; // slow fade so old paint dissolves away
+    actx.drawImage(tmp, -dx, 0);
+    actx.globalAlpha = 1;
+
+    actx.globalCompositeOperation = 'lighter';
+    const x = BW - 2;
+    const unit = BH / 300;
+    state.bands.forEach((b, i) => {
+      const col = VizCore.CHANNEL_COLORS[i];
+      const y = BH * (1 - clamp01(smooth.levels[i]));
+      const r = Math.max(2, (4 + 8 * smooth.calm) * unit * 3);
+      const g = actx.createRadialGradient(x, y, 0, x, y, r);
+      g.addColorStop(0, rgba(col, 0.5));
+      g.addColorStop(1, rgba(col, 0));
+      actx.fillStyle = g;
+      actx.fillRect(x - r, y - r, r * 2, r * 2);
+      if (b.spike > 0.25) {
+        const sr = r * 2.4;
+        const sg = actx.createRadialGradient(x, y, 0, x, y, sr);
+        sg.addColorStop(0, `rgba(255,255,255,${0.55 * b.spike})`);
+        sg.addColorStop(1, 'rgba(255,255,255,0)');
+        actx.fillStyle = sg;
+        actx.fillRect(x - sr, y - sr, sr * 2, sr * 2);
+      }
+    });
+    actx.globalCompositeOperation = 'source-over';
+
+    paintBase(bctx);
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.drawImage(acc, 0, 0);
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Bloom: gradients that emerge on real events ----------------------
+  function renderBloom(nowMs) {
+    paintBase(bctx);
+    const active = blooms.update(nowMs);
+    bctx.globalCompositeOperation = 'lighter';
+    // No ctx.filter here on purpose: a multi-stop radial gradient is already
+    // smooth, and blurring every bloom individually would mean up to a dozen
+    // full-size blur passes per frame for no visible gain.
+    for (const b of active) {
+      const R = Math.max(4, b.radius * Math.min(BW, BH) * 1.7);
+      const cx = b.x * BW, cy = b.y * BH;
+      const g = bctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+      g.addColorStop(0, rgba(b.color, 0.55 * b.alpha));
+      g.addColorStop(0.45, rgba(b.color, 0.22 * b.alpha));
+      g.addColorStop(1, rgba(b.color, 0));
+      bctx.fillStyle = g;
+      bctx.beginPath(); bctx.arc(cx, cy, R, 0, Math.PI * 2); bctx.fill();
     }
-    gl.uniform2f(uRes, canvas.width, canvas.height);
-    gl.uniform1f(uTime, (now - start) / 1000);
-    gl.uniform1f(uCalm, calm);
-    gl.uniform1f(uBreathPeriod, breathPeriod);
-    gl.uniform1f(uNoise, noise);
-    gl.uniform1fv(uBandLevel, bandLevel);
-    gl.uniform1fv(uBandSpike, bandSpike);
-    gl.drawArrays(gl.TRIANGLES, 0, 3);
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Field: one soft wavy coloured band per sensor --------------------
+  function renderField(tSec) {
+    paintBase(bctx);
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(3, Math.round((BW / 46) * (0.55 + 0.9 * smooth.calm)))}px)`;
+    bctx.lineCap = 'round';
+    state.bands.forEach((b, i) => {
+      const col = VizCore.CHANNEL_COLORS[i];
+      const lvl = clamp01(smooth.levels[i]);
+      const baseY = BH * (0.27 + 0.155 * i);
+      const amp = BH * (0.05 + 0.055 * (1 - smooth.calm));
+      const thick = BH * (0.045 + 0.11 * smooth.calm) * (0.6 + 0.8 * lvl);
+      bctx.beginPath();
+      const steps = 26;
+      for (let s = 0; s <= steps; s++) {
+        const px = (s / steps) * BW;
+        const py = baseY + amp * VizCore.wobble(tSec * (0.45 + 0.11 * i) + (s / steps) * 3.2, i + 1);
+        if (s === 0) bctx.moveTo(px, py); else bctx.lineTo(px, py);
+      }
+      bctx.strokeStyle = rgba(col, 0.28 + 0.4 * lvl);
+      bctx.lineWidth = Math.max(1, thick);
+      bctx.stroke();
+      if (b.spike > 0.25) {
+        bctx.strokeStyle = `rgba(255,255,255,${0.5 * b.spike})`;
+        bctx.lineWidth = Math.max(1, thick * 0.3);
+        bctx.stroke();
+      }
+    });
+    bctx.filter = 'none';
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Breath: austere, slow, nothing per-channel -----------------------
+  function renderBreath(nowMs) {
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * smooth.calm;
+    const b = 0.5 + 0.5 * Math.sin((nowMs / 1000) * ((2 * Math.PI) / period));
+    paintBase(bctx);
+    bctx.globalCompositeOperation = 'lighter';
+    // Same reasoning as Bloom: the radial gradient is already smooth, so no
+    // blur pass is needed here.
+    const cool = [150, 190, 255], warm = [255, 234, 196];
+    const col = mixColor(cool, warm, smooth.calm);
+    const cx = BW / 2, cy = BH * 0.52;
+    const R = Math.min(BW, BH) * (0.30 + 0.16 * b + 0.10 * smooth.calm);
+    const g = bctx.createRadialGradient(cx, cy, 0, cx, cy, R);
+    g.addColorStop(0, rgba(col, 0.26 + 0.20 * b));
+    g.addColorStop(0.55, rgba(col, 0.09));
+    g.addColorStop(1, rgba(col, 0));
+    bctx.fillStyle = g;
+    bctx.beginPath(); bctx.arc(cx, cy, R, 0, Math.PI * 2); bctx.fill();
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  let last = performance.now();
+  const start = last;
+  function frame(now) {
+    const dtSec = Math.min(0.1, (now - last) / 1000);
+    last = now;
+
+    // Smooth the inputs so the picture glides rather than snapping.
+    smooth.calm += 0.04 * (state.calm - smooth.calm);
+    smooth.noise += 0.15 * (state.noise - smooth.noise);
+    smooth.breathPeriod += 0.01 * (state.breathPeriod - smooth.breathPeriod);
+    for (let i = 0; i < 4; i++) {
+      smooth.levels[i] += 0.06 * (clamp01(state.bands[i].level) - smooth.levels[i]);
+    }
+
+    const mode = VizCore.MODES[modeIndex].key;
+    if (mode === 'flow') renderFlow(now, dtSec);
+    else if (mode === 'bloom') renderBloom(now);
+    else if (mode === 'field') renderField((now - start) / 1000);
+    else renderBreath(now);
+
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(buf, 0, 0, BW, BH, 0, 0, canvas.width, canvas.height);
+
+    // A faint veil when the signal itself is noisy — honest feedback that
+    // what you're seeing is less trustworthy right now, rather than hiding
+    // it inside a smoothed score.
+    if (smooth.noise > 0.02) {
+      ctx.fillStyle = `rgba(190,195,215,${0.05 * clamp01(smooth.noise)})`;
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+    }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
 
+  function spawnEventBlooms(events, nowMs) {
+    for (const ev of events) {
+      if (ev.type === 'spike') {
+        // Deterministic but varied placement, biased to that channel's band.
+        const jx = 0.5 + 0.34 * VizCore.wobble(nowMs / 1000, ev.channel + 1);
+        const jy = 0.30 + 0.16 * ev.channel + 0.05 * VizCore.wobble(nowMs / 700, ev.channel + 5);
+        blooms.spawn({
+          x: clamp01(jx), y: clamp01(jy),
+          color: VizCore.CHANNEL_COLORS[ev.channel] || [200, 210, 255],
+          strength: 0.9, at: nowMs,
+        });
+      } else if (ev.type === 'settled') {
+        blooms.spawn({ x: 0.5, y: 0.5, color: [255, 226, 178], strength: 1, at: nowMs });
+      } else if (ev.type === 'stirred') {
+        blooms.spawn({ x: 0.5, y: 0.5, color: [140, 175, 255], strength: 0.8, at: nowMs });
+      }
+    }
+  }
+
   return {
-    setCalm: (v) => { targetCalm = v; },
-    setBreathPeriod: (v) => { targetBreathPeriod = v == null ? 0 : v; },
-    setNoise: (v) => { targetNoise = v == null ? 0 : v; },
-    setBandLevels: (levels) => { targetBandLevel = levels.map((v) => (v == null ? 0.5 : v)); },
-    setBandSpikes: (spikes) => { targetBandSpike = spikes.map((v) => (v == null ? 0 : v)); },
+    // Full state (direct.html). Also drives event detection for Bloom mode.
+    setState(next) {
+      // Always normalise to exactly 4 bands — the render loop indexes 0..3
+      // every frame, so a short or missing array must never reach it.
+      const bands = [0, 1, 2, 3].map((i) => {
+        const src = (next.bands && next.bands[i]) || state.bands[i] || {};
+        return { level: src.level != null ? src.level : 0.5, spike: src.spike || 0 };
+      });
+      state = {
+        calm: next.calm != null ? next.calm : state.calm,
+        noise: next.noise != null ? next.noise : state.noise,
+        breathPeriod: next.breathPeriod != null ? next.breathPeriod : state.breathPeriod,
+        bands,
+      };
+      const events = detector.update({
+        calm: state.calm,
+        spikes: state.bands.map((b) => b.spike),
+      });
+      if (events.length) spawnEventBlooms(events, performance.now());
+    },
+    // Back-compat for the Mind Monitor page, which only has a calm value.
+    setCalm(v) { this.setState({ calm: v }); },
+    setBreathPeriod(v) { this.setState({ breathPeriod: v == null ? 0 : v }); },
+    setNoise(v) { this.setState({ noise: v == null ? 0 : v }); },
+    cycleMode() {
+      modeIndex = VizCore.nextMode(modeIndex);
+      actx.clearRect(0, 0, BW, BH); // don't carry Flow's painting across modes
+      return VizCore.MODES[modeIndex];
+    },
+    currentMode() { return VizCore.MODES[modeIndex]; },
   };
 }
