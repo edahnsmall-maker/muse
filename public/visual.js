@@ -676,7 +676,6 @@ function createZenVisual(canvas) {
   // Kept alongside Pulse rather than replacing it: the lanes are more legible,
   // the corona is more beautiful, and which one actually helps someone settle is
   // an open question that only comparison can answer.
-  const CORONA_BASES = [0.52, 0.60, 0.68, 0.76];  // packed close, so they overlap
   const coronaRings = VizCore.PULSE_METRICS.map(() => new VizCore.SweepRing({
     bins: PULSE_BINS, revSec: PULSE_REV_SEC,
   }));
@@ -685,7 +684,7 @@ function createZenVisual(canvas) {
   // a lot. levelMix near zero means a steady mind draws a quiet even ring and
   // all the visible structure is genuine change.
   const coronaDevs = VizCore.PULSE_METRICS.map(() => new VizCore.DeviationTracker({
-    gain: 9.0, levelMix: 0.10, rate: 0.05,
+    gain: 10.0, levelMix: 0.018, rate: 0.055,
   }));
 
   function renderCorona(c, W, H, tSec) {
@@ -756,6 +755,66 @@ function createZenVisual(canvas) {
     const vg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, voidR));
     vg.addColorStop(0, 'rgba(3,5,14,0.90)');
     vg.addColorStop(0.5, 'rgba(4,6,17,0.58)');
+    vg.addColorStop(1, 'rgba(6,9,22,0)');
+    c.fillStyle = vg;
+    c.beginPath(); c.arc(cx, cy, Math.max(2, voidR), 0, Math.PI * 2); c.fill();
+  }
+
+  function renderCoronaDiffuse(c, W, H, tSec) {
+    const cx = W / 2, cy = H / 2;
+    const maxR = Math.min(W, H) * 0.46;
+
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0a1026');
+    bg.addColorStop(1, '#050813');
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+
+    VizCore.PULSE_METRICS.forEach((m, mi) => {
+      const raw = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
+      coronaRings[mi].write(tSec, coronaDevs[mi].update(raw == null ? null : VizCore.expandSoft(raw)));
+    });
+
+    const voidR = maxR * 0.56;
+    c.globalCompositeOperation = 'lighter';
+    c.lineJoin = 'round';
+    c.lineCap = 'round';
+
+    VizCore.PULSE_METRICS.forEach((m, mi) => {
+      const ring = coronaRings[mi];
+      const prof = ring.profile({ smoothBins: 13, leadIn: 0.09, curve: 1.75 });
+      const phaseOffset = (mi - 1.5) * 0.010;
+      for (let b = 0; b < PULSE_BINS; b++) {
+        const v = prof[b];
+        if (v < 0.018) continue;
+
+        const age = ring.age(b);
+        const freshness = Math.pow(1 - age, 0.85);
+        const a = (b / PULSE_BINS + phaseOffset) * Math.PI * 2;
+        const span = (Math.PI * 2 / PULSE_BINS) * (1.75 + 2.5 * v);
+        const base = voidR * (1.02 + 0.035 * mi) + maxR * 0.20 * freshness;
+        const r = base + maxR * (0.56 + 0.10 * mi) * Math.pow(v, 0.82);
+        const alpha = Math.pow(v, 0.75) * freshness;
+        const strokes = [
+          { w: 0.135, a: 0.060 },
+          { w: 0.070, a: 0.095 },
+          { w: 0.030, a: 0.155 },
+        ];
+
+        for (const s of strokes) {
+          c.beginPath();
+          c.arc(cx, cy, Math.max(2, r), a - span, a + span);
+          c.strokeStyle = rgba(m.color, s.a * alpha);
+          c.lineWidth = Math.max(1, Math.min(W, H) * s.w * (0.70 + 0.55 * v));
+          c.stroke();
+        }
+      }
+    });
+
+    c.globalCompositeOperation = 'source-over';
+    const vg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, voidR));
+    vg.addColorStop(0, 'rgba(3,5,14,0.94)');
+    vg.addColorStop(0.48, 'rgba(4,6,17,0.76)');
     vg.addColorStop(1, 'rgba(6,9,22,0)');
     c.fillStyle = vg;
     c.beginPath(); c.arc(cx, cy, Math.max(2, voidR), 0, Math.PI * 2); c.fill();
@@ -1005,7 +1064,7 @@ function createZenVisual(canvas) {
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (mode === 'flow') renderFlow(ctx, canvas.width, canvas.height);
       else if (mode === 'silk') renderSilk(ctx, canvas.width, canvas.height, tSec);
-      else if (mode === 'corona') renderCorona(ctx, canvas.width, canvas.height, tSec);
+      else if (mode === 'corona') renderCoronaDiffuse(ctx, canvas.width, canvas.height, tSec);
       else renderPulse(ctx, canvas.width, canvas.height, tSec);
     } else {
       if (mode === 'eclipse') renderEclipse(tSec);
