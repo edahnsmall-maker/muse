@@ -383,7 +383,36 @@ zone, so `zone` stayed `null` and the **first genuine transition was swallowed**
 the don't-fire-on-startup guard. Fixed by classifying the opening value into a
 `mid` zone.
 
-### The Polar H10 chest strap (optional second device)
+### Connecting devices: a persistent bar, not a one-shot screen
+
+Both device buttons live in a bar that stays on screen for the whole session, and
+either device can be connected at any time in either order. That is a fix, not a
+preference — two bugs made the previous version unusable:
+
+1. **`setStatus()` assigns `statusEl.innerHTML`, and the buttons were inside
+   `statusEl`.** So the very first status message — `"choose your Muse in the
+   browser picker…"` — deleted both buttons from the DOM. "Connect to Muse" became
+   unpressable, and after connecting the headband the strap button was
+   unreachable. The buttons now live in their own `#devices` container that
+   `setStatus` never touches.
+2. **Everything that clears the status sat behind `if (!result) return;`**, which
+   requires Muse data. With only the strap connected, the "HRV needs about 20s of
+   beats" message never cleared and the page looked frozen. The status expiry and
+   the device bar now render unconditionally, before that early return.
+
+Also fixed while in there: `connectBtn` was bound with `{ once: true }`, so a
+*failed* connection could never be retried — one click and the button was dead
+forever. Both buttons are now retryable, guarded by connecting/connected state
+rather than by consuming the listener.
+
+**A strap-only session is a legitimate state** and now renders properly: the strap
+alone gives heart rate, HRV and a real breathing rate, none of which need EEG. The
+readout says "Headband — not connected" rather than implying EEG data exists.
+
+`test-ui.js` covers all of this in a real browser, and was verified non-vacuous by
+re-injecting the original bug and watching it fail.
+
+## The Polar H10 chest strap (optional second device)
 
 **Yes, two Bluetooth devices at once works.** Web Bluetooth connects them
 independently — each `requestDevice()` needs its own user gesture, which is why the
@@ -583,6 +612,35 @@ Pick a duration (5/10/20/30 min) once connected, or skip it. A plain "session
 complete" message shows at the end — no alarm, no sound — and the countdown lives
 in the same readout as everything else.
 
+## Connecting devices: a persistent bar, not a one-shot screen
+
+Both device buttons live in a bar that stays on screen for the whole session, and
+either device can be connected at any time in either order. That is a fix, not a
+preference — two bugs made the previous version unusable:
+
+1. **`setStatus()` assigns `statusEl.innerHTML`, and the buttons were inside
+   `statusEl`.** So the very first status message — `"choose your Muse in the
+   browser picker…"` — deleted both buttons from the DOM. "Connect to Muse" became
+   unpressable, and after connecting the headband the strap button was
+   unreachable. The buttons now live in their own `#devices` container that
+   `setStatus` never touches.
+2. **Everything that clears the status sat behind `if (!result) return;`**, which
+   requires Muse data. With only the strap connected, the "HRV needs about 20s of
+   beats" message never cleared and the page looked frozen. The status expiry and
+   the device bar now render unconditionally, before that early return.
+
+Also fixed while in there: `connectBtn` was bound with `{ once: true }`, so a
+*failed* connection could never be retried — one click and the button was dead
+forever. Both buttons are now retryable, guarded by connecting/connected state
+rather than by consuming the listener.
+
+**A strap-only session is a legitimate state** and now renders properly: the strap
+alone gives heart rate, HRV and a real breathing rate, none of which need EEG. The
+readout says "Headband — not connected" rather than implying EEG data exists.
+
+`test-ui.js` covers all of this in a real browser, and was verified non-vacuous by
+re-injecting the original bug and watching it fail.
+
 ## The Polar H10 chest strap (optional second device)
 
 **Yes, two Bluetooth devices at once works.** Web Bluetooth connects them
@@ -654,6 +712,14 @@ node test-visual-smoke.js
                     # more than 2.2 blurred draw ops per frame. Plus a long
                     # Iris run (~20 simulated seconds), because its every-6s
                     # deposit path never fired in a 1-second test at all
+node test-ui.js       # loads direct.html in real Chromium and asserts DOM
+                     # LIFECYCLE: that the device buttons survive a status
+                     # message, that a transient message expires with no device
+                     # connected, that the device bar re-renders off its own
+                     # timer rather than off EEG data, and that a strap-only
+                     # session renders. Added because a bug reached the user
+                     # that no amount of unit-testing the signal maths could
+                     # have caught — see below
 node test-polar.js   # Polar H10: the variable-length Heart Rate Measurement
                      # packet (flag-driven offsets, the energy-expended field
                      # that must be SKIPPED, truncated buffers), RMSSD against

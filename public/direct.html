@@ -62,6 +62,15 @@
     background: rgba(255,255,255,.07); border-color: var(--glass-line);
     box-shadow: none; color: var(--text-dim, rgba(255,255,255,.7)); }
   button.secondary:hover { background: rgba(255,255,255,.13); color: var(--text-main); }
+  /* Device controls stay reachable for the WHOLE session, not just at startup:
+     you need two devices, they can be connected in either order, and either can
+     drop out and need reconnecting mid-sit. */
+  #statusStack { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  #devices { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
+  #devices button.linked { font-size: 12px; padding: 8px 14px; letter-spacing: .06em;
+    background: rgba(255,255,255,.05); border-color: var(--glass-line); box-shadow: none;
+    color: rgba(255,255,255,.62); cursor: default; }
+  #devices button.linked.warn { color: #ffc98a; border-color: rgba(255,201,138,.4); }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
@@ -262,9 +271,16 @@
 </div>
 <div id="overlay">
   <div></div>
-  <div class="status" id="status" style="align-self:center">
-    <button id="connect">Connect to Muse</button>
-    <button id="connectStrap" class="secondary">+ heart strap</button>
+  <div id="statusStack">
+    <div class="status hidden" id="status"></div>
+    <!-- The device buttons must NOT live inside #status: setStatus() overwrites
+         statusEl.innerHTML, so anything in there is destroyed by the first
+         status message. That is exactly what made "Connect to Muse"
+         unpressable, and then unreachable. -->
+    <div id="devices">
+      <button id="connect">Connect headband</button>
+      <button id="connectStrap" class="secondary">+ heart strap</button>
+    </div>
   </div>
   <div id="timerPicker"></div>
   <div id="readout"></div>
@@ -400,7 +416,38 @@ function renderTimerPicker() {
 
 function setStatus(html, opts = {}) {
   statusEl.innerHTML = html;
-  statusEl.classList.toggle('hidden', !!opts.hide);
+  // Hide when empty as well as when asked, so an empty bubble doesn't linger.
+  statusEl.classList.toggle('hidden', !!opts.hide || !html);
+}
+
+// Both devices' state, always on screen. Rendered on a timer independent of EEG
+// data so it stays correct when only the strap is connected, or neither is.
+let museConnecting = false, strapConnecting = false;
+function museConnected() {
+  return !!(device && device.gatt && device.gatt.connected);
+}
+function renderDevices() {
+  // The no-Web-Bluetooth path removes both buttons entirely.
+  if (!connectBtn.isConnected || !strapBtn.isConnected) return;
+  const muse = museConnected();
+  connectBtn.textContent = muse ? 'headband \u00b7 linked'
+    : (museConnecting ? 'connecting\u2026' : 'Connect headband');
+  connectBtn.classList.toggle('linked', muse);
+  connectBtn.classList.toggle('secondary', muse);
+  connectBtn.disabled = muse || museConnecting;
+
+  const strap = strapConnected();
+  let strapText = '+ heart strap';
+  if (strapConnecting) strapText = 'connecting\u2026';
+  else if (strap && strapUnreliable()) {
+    strapText = strapContact === false ? 'heart \u00b7 no contact' : 'heart \u00b7 noisy';
+  } else if (strap) {
+    strapText = hrBpm != null ? `heart \u00b7 ${hrBpm} bpm` : 'heart \u00b7 linked';
+  }
+  strapBtn.textContent = strapText;
+  strapBtn.classList.toggle('linked', strap);
+  strapBtn.classList.toggle('warn', strap && strapUnreliable());
+  strapBtn.disabled = strap || strapConnecting;
 }
 
 // ---- Session log + summary -------------------------------------------------
@@ -1186,7 +1233,9 @@ function strapUnreliable() {
 
 async function connectStrap() {
   if (!navigator.bluetooth) { setStatus('Web Bluetooth is not available in this browser'); return; }
-  strapBtn.disabled = true;
+  if (strapConnecting || strapConnected()) return;
+  strapConnecting = true;
+  renderDevices();
   try {
     setStatus('choose your heart strap in the browser picker…');
     strapDevice = await navigator.bluetooth.requestDevice({
@@ -1194,26 +1243,35 @@ async function connectStrap() {
     });
     strapDevice.addEventListener('gattserverdisconnected', () => {
       setStatus('heart strap disconnected');
-      strapBtn.disabled = false;
-      strapBtn.textContent = 'Connect heart strap';
+      statusLockUntil = Date.now() + 2500;
+      strapConnecting = false;
+      renderDevices();
     });
     const gatt = await strapDevice.gatt.connect();
     const svc = await gatt.getPrimaryService(Polar.HR_SERVICE);
     const ch = await svc.getCharacteristic(Polar.HR_MEASUREMENT);
     await ch.startNotifications();
     ch.addEventListener('characteristicvaluechanged', onStrapData);
-    strapBtn.textContent = 'strap: connected';
-    setStatus('heart strap connected — HRV needs ~20s of beats');
-    statusLockUntil = Date.now() + 2500;
+    setStatus('heart strap linked — HRV needs about 20s of beats');
+    // This message MUST expire on its own. It previously stuck forever, because
+    // the only code that cleared the status sat behind an early return that
+    // required Muse data — so with no headband streaming, nothing ever cleared
+    // it and the app looked frozen.
+    statusLockUntil = Date.now() + 4000;
   } catch (err) {
     // A failed strap must never take down the EEG session.
     setStatus(`heart strap: ${err && err.message ? err.message : 'could not connect'}`);
-    strapBtn.disabled = false;
+    statusLockUntil = Date.now() + 4000;
+  } finally {
+    strapConnecting = false;
+    renderDevices();
   }
 }
 
 async function connect() {
-  connectBtn.disabled = true;
+  if (museConnecting || museConnected()) return;
+  museConnecting = true;
+  renderDevices();
   try {
     setStatus('choose your Muse in the browser picker…');
     device = await navigator.bluetooth.requestDevice({ filters: [{ services: [DSP.MUSE_SERVICE] }] });
@@ -1287,30 +1345,32 @@ async function connect() {
     renderModeBar();
     renderPatternBar();
   } catch (err) {
-    connectBtn.disabled = false;
-    if (err.name === 'NotFoundError') setStatus('no device selected. <button id="connect2">try again</button>');
-    else setStatus(`connection failed: ${escapeHtml(err.message)}. <button id="connect2">try again</button>`);
-    rewireRetry();
+    if (err.name === 'NotFoundError') setStatus('no device selected — use the button below to try again');
+    else setStatus(`connection failed: ${escapeHtml(err.message)}`);
+    statusLockUntil = Date.now() + 5000;
+  } finally {
+    museConnecting = false;
+    renderDevices();
   }
 }
 
 function onDisconnected() {
-  setStatus('disconnected. <button id="connect2">reconnect</button>');
+  setStatus('headband disconnected — reconnect below');
+  statusLockUntil = Date.now() + 5000;
   readoutEl.classList.remove('show');
   dataPanelEl.classList.remove('show');
   timerPickerEl.innerHTML = '';
   timerEndAt = null; timerDone = false;
-  rewireRetry();
-}
-
-function rewireRetry() {
-  const btn = document.getElementById('connect2');
-  if (btn) btn.addEventListener('click', connect, { once: true });
+  museConnecting = false;
+  renderDevices();
 }
 
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
-connectBtn.addEventListener('click', connect, { once: true });
+// Not `once`: a failed connection must be retryable, and either device can drop
+// out mid-session and need reconnecting. renderDevices() disables each button
+// while its device is connected or connecting, which is the real guard.
+connectBtn.addEventListener('click', connect);
 // Its own listener, and NOT `once`: a strap connection can legitimately be
 // retried after a failure, and it must be a separate user gesture because
 // Web Bluetooth requires one per requestDevice() call.
@@ -1318,11 +1378,49 @@ strapBtn.addEventListener('click', connectStrap);
 
 setInterval(updateBreathing, 2000);
 
+// A minimal readout for when the strap is connected but the headband isn't. The
+// strap alone genuinely measures three things — heart rate, HRV, and a real
+// breathing rate from RSA — and none of them need EEG.
+function renderStrapOnlyReadout() {
+  const line = (label, text, tier) => `<div class="rRow"><span class="rLabel">${label}</span>`
+    + (tier ? `<span class="tierLight tier-${tier}"></span>` : '')
+    + `<span class="rBar"></span><span class="rVal">${text}</span></div>`;
+  const rows = [];
+  rows.push(line('Heart', hrBpm == null ? 'reading…' : `${hrBpm} bpm`, 'solid'));
+  rows.push(line('HRV (RMSSD)', hrvRmssd == null
+    ? `reading… (${rrBuffer.length}/20 beats)` : `${Math.round(hrvRmssd)} ms`, 'solid'));
+  rows.push(line('Breath', strapBreathSec == null
+    ? `needs ~40 beats` : `${Math.round(60 / strapBreathSec)}/min`));
+  if (strapUnreliable()) {
+    rows.push(line('Strap', strapContact === false
+      ? 'no skin contact' : `${Math.round(rrBuffer.rejectRate() * 100)}% rejected`));
+  }
+  rows.push(line('Headband', 'not connected'));
+  readoutEl.innerHTML = rows.join('');
+  readoutEl.classList.add('show');
+}
+
+renderDevices();   // initial paint; must come after the device state declarations
+
 let tickCount = 0;
 setInterval(() => {
+  // These three run FIRST, unconditionally. They used to sit after an early
+  // return that required Muse data, which meant a strap-only session showed a
+  // permanently stuck status message and never displayed a single heart row.
+  renderDevices();
+  const lockedNow = Date.now() < statusLockUntil;
+  if (!lockedNow && !museConnected() && !museConnecting) {
+    setStatus(strapConnected()
+      ? 'heart strap linked \u00b7 connect the headband when you\u2019re ready'
+      : '', { hide: !strapConnected() });
+  }
+
   const result = computeCalm();
   if (!result) {
-    if (lastDataAt) setStatus('gathering signal— sit still for a moment…');
+    // Strap-only operation is a legitimate state: the strap alone gives heart
+    // rate, HRV and a real breathing rate, none of which need the headband.
+    if (strapConnected()) renderStrapOnlyReadout();
+    if (lastDataAt && !lockedNow) setStatus('gathering signal — sit still for a moment…');
     return;
   }
   const channels = computeChannelLabels(); // one call, reused for readout + bands + chart
