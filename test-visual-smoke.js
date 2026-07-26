@@ -232,6 +232,18 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
   console.log('✓ setCalm/setBreathPeriod/setNoise back-compat path works (index.html)');
 }
 
+// ---- visual responsiveness is a UI-level setting, not a scoring change ----
+{
+  const v3 = sandbox.createZenVisual(makeCanvas());
+  assert.strictEqual(v3.currentResponsiveness().key, 'sensitive');
+  assert.strictEqual(v3.responsivenessModes().map((m) => m.key).join(','),
+    'smooth,sensitive,ultrasensitive');
+  assert.strictEqual(v3.setResponsiveness('smooth').key, 'smooth');
+  assert.strictEqual(v3.cycleResponsiveness().key, 'sensitive');
+  assert.strictEqual(v3.setResponsiveness('not-a-mode').key, 'sensitive');
+  console.log('✓ visual responsiveness cycles smooth/sensitive/ultrasensitive');
+}
+
 // ---- mode cycling returns real modes and wraps -----------------------------
 {
   const seen = new Set();

@@ -222,6 +222,7 @@
     <div id="controls">
       <span class="pill mark" id="btnMark">Mark this moment<kbd>M</kbd></span>
       <span class="pill" id="trainToggle">training: off<kbd>T</kbd></span>
+      <span class="pill" id="responseToggle">response: sensitive</span>
       <span class="pill" id="cueToggle">cues: on</span>
       <span class="pill" id="summaryLink">Session summary</span>
       <span class="pill" id="btnFull">Fullscreen<kbd>F</kbd></span>
@@ -536,6 +537,17 @@ document.getElementById('btnFull').addEventListener('click', () => {
   else document.exitFullscreen();
 });
 const cueToggleEl = document.getElementById('cueToggle');
+const responseToggleEl = document.getElementById('responseToggle');
+function renderResponseToggle() {
+  responseToggleEl.textContent = `response: ${visual.currentResponsiveness().label}`;
+}
+responseToggleEl.addEventListener('click', () => {
+  const mode = visual.cycleResponsiveness();
+  renderResponseToggle();
+  setStatus(`visual response: ${mode.label}`);
+  statusLockUntil = Date.now() + 1600;
+});
+renderResponseToggle();
 cueToggleEl.addEventListener('click', () => {
   const on = cueEngine.setEnabled(!cueEngine.enabled);
   cueToggleEl.textContent = `cues: ${on ? 'on' : 'off'}`;

@@ -59,6 +59,22 @@ function createZenVisual(canvas) {
   // merge into a field instead of reading as separate "street lights".
   const blooms = new VizCore.BloomField({ max: 14, life: 16000 });
 
+  const RESPONSE_MODES = [
+    {
+      key: 'smooth', label: 'smooth',
+      rates: { calm: 0.018, activity: 0.022, focus: 0.018, voidCalm: 0.002, noise: 0.09, breath: 0.006, levels: 0.028 },
+    },
+    {
+      key: 'sensitive', label: 'sensitive',
+      rates: { calm: 0.04, activity: 0.05, focus: 0.04, voidCalm: 0.004, noise: 0.15, breath: 0.01, levels: 0.06 },
+    },
+    {
+      key: 'ultrasensitive', label: 'ultrasensitive',
+      rates: { calm: 0.10, activity: 0.13, focus: 0.10, voidCalm: 0.010, noise: 0.24, breath: 0.025, levels: 0.14 },
+    },
+  ];
+  let responseIndex = 1;
+
   // Flow renders from an explicit history buffer rather than by repeatedly
   // blitting a canvas onto itself. The old approach had two compounding bugs:
   // the per-frame fade (0.994^60 ≈ 0.70/sec) destroyed paint in ~10s while a
@@ -1375,16 +1391,18 @@ function createZenVisual(canvas) {
     last = now;
     sessionSec += dtSec;
 
-    smooth.calm += 0.04 * (state.calm - smooth.calm);
-    smooth.activity += 0.05 * (state.activity - smooth.activity);
+    const response = RESPONSE_MODES[responseIndex].rates;
+    smooth.calm += response.calm * (state.calm - smooth.calm);
+    smooth.activity += response.activity * (state.activity - smooth.activity);
     const targetFocus = state.metrics && state.metrics.focus != null ? state.metrics.focus : state.calm;
-    smooth.focus += 0.04 * (targetFocus - smooth.focus);
-    // ~4s time constant: the void must grow slowly and never twitch.
-    smooth.voidCalm += 0.004 * (state.calm - smooth.voidCalm);
-    smooth.noise += 0.15 * (state.noise - smooth.noise);
-    smooth.breathPeriod += 0.01 * (state.breathPeriod - smooth.breathPeriod);
+    smooth.focus += response.focus * (targetFocus - smooth.focus);
+    // The base mode keeps the void slow; the responsiveness toggle deliberately
+    // changes only how quickly the visual catches up, not the underlying score.
+    smooth.voidCalm += response.voidCalm * (state.calm - smooth.voidCalm);
+    smooth.noise += response.noise * (state.noise - smooth.noise);
+    smooth.breathPeriod += response.breath * (state.breathPeriod - smooth.breathPeriod);
     for (let i = 0; i < 4; i++) {
-      smooth.levels[i] += 0.06 * (clamp01(state.bands[i].level) - smooth.levels[i]);
+      smooth.levels[i] += response.levels * (clamp01(state.bands[i].level) - smooth.levels[i]);
     }
 
     const mode = VizCore.MODES[modeIndex].key;
@@ -1501,6 +1519,17 @@ function createZenVisual(canvas) {
     },
     currentSeries() { return seriesMode; },
     modes() { return VizCore.MODES; },
+    responsivenessModes() { return RESPONSE_MODES.map(({ key, label }) => ({ key, label })); },
+    currentResponsiveness() { return RESPONSE_MODES[responseIndex]; },
+    setResponsiveness(key) {
+      const idx = RESPONSE_MODES.findIndex((m) => m.key === key);
+      if (idx >= 0) responseIndex = idx;
+      return RESPONSE_MODES[responseIndex];
+    },
+    cycleResponsiveness() {
+      responseIndex = (responseIndex + 1) % RESPONSE_MODES.length;
+      return RESPONSE_MODES[responseIndex];
+    },
     cyclePattern() {
       patternIndex = VizCore.nextPattern(patternIndex);
       patternT = 0; // restart the cycle so it begins on an inhale
