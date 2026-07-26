@@ -31,6 +31,10 @@ function createZenVisual(canvas) {
   const mixColor = (a, b, t) => [
     a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t,
   ];
+  const smoothstep = (a, b, x) => {
+    const t = clamp01((x - a) / (b - a));
+    return t * t * (3 - 2 * t);
+  };
 
   let state = {
     calm: 0.5, noise: 0, breathPeriod: 0, activity: 0.5,
@@ -39,6 +43,7 @@ function createZenVisual(canvas) {
   };
   let smooth = {
     calm: 0.5, noise: 0, breathPeriod: 0, activity: 0.5,
+    focus: 0.5,
     levels: [0.5, 0.5, 0.5, 0.5],
     // Eclipse's void grows on a much longer time constant than everything
     // else — the user asked for it to grow SLOWLY, and a void that twitched
@@ -66,7 +71,7 @@ function createZenVisual(canvas) {
   // Modes that bypass the shared small buffer and draw at full canvas
   // resolution. Both depend on crisp thin strokes, which a ~4x upscale
   // destroys; neither uses a blur filter, so they don't need the small buffer.
-  const DIRECT_MODES = new Set(['flow', 'pulse', 'corona']);
+  const DIRECT_MODES = new Set(['flow', 'pulse', 'corona', 'silk']);
 
   // Which series Flow graphs: the four electrodes, or the four composites.
   // Follows the data panel's Sensors/Composites switch, because a main visual
@@ -756,6 +761,98 @@ function createZenVisual(canvas) {
     c.beginPath(); c.arc(cx, cy, Math.max(2, voidR), 0, Math.PI * 2); c.fill();
   }
 
+  // ---- Silk: iridescent folds settling into a line -----------------------
+  // A material visual rather than an instrument. Calm compresses the surface
+  // toward a nearly-straight luminous horizon. Thought/activity lifts slow
+  // peaks and adds fine vibration. Focus brightens and sharpens the coherent
+  // ridge without making the field busier.
+  function renderSilk(c, W, H, tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * calm;
+    const breath = 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / Math.max(1, period));
+
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#040611');
+    bg.addColorStop(1, '#0a0612');
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+
+    c.save();
+    c.translate(W * 0.5, H * 0.53);
+    c.rotate((-0.14 + (-0.025 + 0.14) * calm) + 0.025 * thinking * Math.sin(tSec * 0.08));
+
+    const min = Math.min(W, H);
+    const lines = 104;
+    const settle = Math.pow(calm, 1.8) * (1 - 0.55 * thinking);
+    const amp = min * (0.020 + (0.205 - 0.020) * clamp01(thinking + 0.55 * (1 - calm)));
+    const width = W * 1.12;
+    const step = min * 0.0085;
+    c.globalCompositeOperation = 'lighter';
+    c.lineCap = 'round';
+
+    for (let i = 0; i < lines; i++) {
+      const u = (i / (lines - 1) - 0.5);
+      const y0 = u * min * 0.78;
+      const phase = tSec * (0.16 + (0.018 - 0.16) * calm) + i * (0.13 + (0.045 - 0.13) * calm);
+      const weave = Math.sin(i * 0.42 + tSec * (0.055 + (0.012 - 0.055) * calm));
+      const cool = mixColor([60, 190, 255], [154, 91, 230], u + 0.5);
+      const warm = mixColor([255, 110, 69], [255, 200, 151], smoothstep(-0.05, 0.44, u + 0.22));
+      const col = mixColor(cool, warm, smoothstep(-0.18, 0.55, Math.sin(i * 0.035 + tSec * 0.02) + focus * 0.55));
+      const shade = 0.10 + 0.42 * Math.pow(Math.max(0, Math.sin(i * 0.18 + phase)), 3);
+      const ridgeLine = smoothstep(0.12, 0.0, Math.abs(u));
+      c.strokeStyle = rgba(col, (0.020 + 0.060 * shade + 0.045 * focus * ridgeLine) * (0.70 + 0.42 * focus));
+      c.lineWidth = Math.max(0.5, step * (0.40 + 0.72 * focus + 0.30 * ridgeLine));
+      c.beginPath();
+      for (let s = 0; s <= 96; s++) {
+        const x = -width * 0.5 + (s / 96) * width;
+        const px = x / width;
+        const peakA = Math.exp(-Math.pow((px - 0.08 - 0.12 * Math.sin(tSec * 0.025)) / 0.16, 2));
+        const peakB = Math.exp(-Math.pow((px + 0.27 + 0.08 * Math.sin(tSec * 0.031 + 2)) / 0.22, 2));
+        const thoughtPeaks = thinking * (peakA - 0.75 * peakB) * Math.sin(phase * 1.4 + u * 5.5);
+        const broadFold =
+          Math.sin(px * Math.PI * 2 * 1.25 + phase)
+          + 0.48 * Math.sin(px * Math.PI * 2 * 2.10 - phase * 0.62 + u * 3.2);
+        const vibration = thinking * (1 - calm * 0.55)
+          * Math.sin(px * Math.PI * 2 * 18 + tSec * 2.4 + i * 0.43)
+          * smoothstep(0.04, 0.32, Math.abs(u));
+        const fold = amp * (
+          broadFold * (1 - 0.82 * settle)
+          + 1.25 * thoughtPeaks
+          + 0.055 * vibration
+        );
+        const y = y0 + fold + weave * min * 0.006 * (1 - settle) + breath * min * 0.007 * (0.35 + focus);
+        if (s === 0) c.moveTo(x, y); else c.lineTo(x, y);
+      }
+      c.stroke();
+    }
+
+    const light = c.createRadialGradient(min * 0.26, -min * 0.25, 0, min * 0.26, -min * 0.25, min * 0.72);
+    light.addColorStop(0, `rgba(255,210,172,${0.13 + 0.13 * focus})`);
+    light.addColorStop(0.42, `rgba(59,204,255,${0.08 + 0.10 * (1 - thinking)})`);
+    light.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = light;
+    c.fillRect(-W, -H, W * 2, H * 2);
+
+    if (calm > 0.45 || focus > 0.35) {
+      const ridge = c.createLinearGradient(-width * 0.5, 0, width * 0.5, 0);
+      ridge.addColorStop(0, 'rgba(90,190,255,0)');
+      ridge.addColorStop(0.43, `rgba(138,222,255,${0.08 + 0.10 * calm})`);
+      ridge.addColorStop(0.56, `rgba(255,219,166,${0.10 + 0.15 * focus})`);
+      ridge.addColorStop(1, 'rgba(255,170,210,0)');
+      c.strokeStyle = ridge;
+      c.lineWidth = Math.max(1, min * (0.003 + 0.004 * focus));
+      c.beginPath();
+      c.moveTo(-width * 0.46, breath * min * 0.006);
+      c.bezierCurveTo(-width * 0.15, -min * 0.018 * (1 - calm), width * 0.14,
+        min * 0.012 * (1 - calm), width * 0.46, breath * min * 0.006);
+      c.stroke();
+    }
+    c.restore();
+    c.globalCompositeOperation = 'source-over';
+  }
+
   // ---- Bloom: slow gradients that emerge on real events -----------------
   function renderBloom(nowMs) {
     paintBase(bctx);
@@ -888,6 +985,8 @@ function createZenVisual(canvas) {
 
     smooth.calm += 0.04 * (state.calm - smooth.calm);
     smooth.activity += 0.05 * (state.activity - smooth.activity);
+    const targetFocus = state.metrics && state.metrics.focus != null ? state.metrics.focus : state.calm;
+    smooth.focus += 0.04 * (targetFocus - smooth.focus);
     // ~4s time constant: the void must grow slowly and never twitch.
     smooth.voidCalm += 0.004 * (state.calm - smooth.voidCalm);
     smooth.noise += 0.15 * (state.noise - smooth.noise);
@@ -905,6 +1004,7 @@ function createZenVisual(canvas) {
       // upscale from the shared small buffer.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (mode === 'flow') renderFlow(ctx, canvas.width, canvas.height);
+      else if (mode === 'silk') renderSilk(ctx, canvas.width, canvas.height, tSec);
       else if (mode === 'corona') renderCorona(ctx, canvas.width, canvas.height, tSec);
       else renderPulse(ctx, canvas.width, canvas.height, tSec);
     } else {

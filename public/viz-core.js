@@ -70,6 +70,7 @@
     { key: 'iris',    label: 'Iris',    blurb: 'your session laid down as a rose window' },
     { key: 'pulse',  label: 'Pulse',  blurb: 'a clock hand sweeps; each metric bulges where it flared' },
     { key: 'corona', label: 'Corona', blurb: 'the same sweep, overlapping and bleeding into one field' },
+    { key: 'silk',   label: 'Silk',   blurb: 'iridescent folds settle into a line; thoughts lift slow peaks' },
     { key: 'flow',   label: 'Flow',   blurb: 'a live trace, dissolving as it ages' },
     { key: 'bloom',  label: 'Bloom',  blurb: 'gradients that appear on real events' },
     { key: 'field',  label: 'Field',  blurb: 'one soft band of colour per sensor' },
