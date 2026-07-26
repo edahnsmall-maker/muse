@@ -141,6 +141,45 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log('✓ a strap-only session renders heart rate, HRV, and says the headband is absent');
   }
 
+  // 6) The breath row is a CENTRED bar: the midpoint is the turnaround, above it
+  //    is the in-breath and below it the out-breath. A 0..100 left-to-right fill
+  //    would render an exhale as a low score, which is a different claim.
+  {
+    const inhale = await page.evaluate(() => {
+      breathAmount = 0.8; breathRising = true;
+      const el = document.createElement('div');
+      el.innerHTML = breathRow();
+      const bar = el.querySelector('.rBarC');
+      const fill = bar.querySelector('i');
+      return { cls: fill.className, height: fill.style.height, text: el.textContent };
+    });
+    assert.strictEqual(inhale.cls, 'up', 'a positive breath amount must fill UPWARD from the midpoint');
+    assert.strictEqual(inhale.height, '40%', 'and reach 40% of the bar for an amount of 0.8 (half-range)');
+    assert.ok(/in/.test(inhale.text), 'and be labelled as an in-breath');
+
+    const exhale = await page.evaluate(() => {
+      breathAmount = -0.6; breathRising = false;
+      const el = document.createElement('div');
+      el.innerHTML = breathRow();
+      const fill = el.querySelector('.rBarC i');
+      return { cls: fill.className, height: fill.style.height, text: el.textContent };
+    });
+    assert.strictEqual(exhale.cls, 'dn', 'a negative breath amount must fill DOWNWARD');
+    assert.strictEqual(exhale.height, '30%');
+    assert.ok(/out/.test(exhale.text), 'and be labelled as an out-breath');
+
+    // No breath signal must mean NO row, not a row parked at the midpoint —
+    // "we cannot see your breath" and "you are at the turnaround" are different.
+    const absent = await page.evaluate(() => {
+      breathAmount = null;
+      renderStrapOnlyReadout();
+      return document.getElementById('readout').textContent;
+    });
+    assert.ok(!/\bin\b|\bout\b/.test(absent.replace(/not connected/, '')),
+      `with no breath signal there must be no in/out row (got: ${absent})`);
+    console.log('✓ the breath bar fills up on the inhale, down on the exhale, and is absent with no signal');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

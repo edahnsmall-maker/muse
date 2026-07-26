@@ -77,6 +77,11 @@
       caveat: 'Frontal alpha asymmetry is often linked to approach/withdrawal affect, but effect sizes are small, findings are contested, and single-session values are unreliable. Do not read mood from this.',
     },
     {
+      key: 'breath', label: 'Breath', tier: 'moderate',
+      source: 'where you are in the breath cycle, from the respiratory modulation of heart timing (RSA) via the chest strap',
+      caveat: 'This is a real phase estimate, not a guess at a rhythm — but the heart RESPONDS to breathing rather than predicting it, so it lags the actual breath by roughly a fifth of a cycle (measured: 1.0s in a 5s cycle). Breath-holding or an irregular pattern makes it unreliable. For true zero-lag phase you would need chest-wall movement from the strap accelerometer.',
+    },
+    {
       key: 'hrv', label: 'HRV', tier: 'moderate',
       source: 'RMSSD over a rolling 60s window of beat-to-beat intervals from a chest strap, normalised to your own baseline',
       caveat: 'RMSSD is a standard, well-defined measurement and the strap is ECG-grade, so the NUMBER is solid. What it means is the proxy part: higher RMSSD indicates parasympathetic (rest) activation, which correlates with calm — but it also rises with slow breathing regardless of mental state, so you can move it deliberately without settling at all.',
@@ -132,6 +137,9 @@
         // 0.5 is balanced; >0.5 means more left-frontal alpha.
         if (!has(f.alphaLeft) || !has(f.alphaRight)) return null;
         return clamp01(0.5 + 0.5 * Math.tanh((f.alphaLeft - f.alphaRight) * 2));
+      // Mapped so 0.5 is the turnaround between in and out, which is what makes
+      // a centred bar and a mid-line trace mean the right thing.
+      case 'breath': return has(f.breathPhase) ? clamp01(0.5 + 0.5 * f.breathPhase) : null;
       case 'hrv': return has(f.hrvLevel) ? clamp01(f.hrvLevel) : null;
       case 'equanimity':
         if (!has(f.hrvSteadiness)) return null;

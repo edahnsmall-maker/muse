@@ -222,8 +222,103 @@
     }
   }
 
+  /* --- Breath PHASE, not just rate -----------------------------------------
+   *
+   * Until now this project had breathing RATE only. RSA tells you the frequency
+   * of the respiratory modulation in heart timing; it does not tell you where in
+   * the cycle you are right now, so nothing could swell on the inhale and
+   * contract on the exhale. This closes that gap.
+   *
+   * The mechanism: heart rate genuinely accelerates during inhalation and
+   * decelerates during exhalation. So instantaneous heart rate, with its slow
+   * drift removed, IS the breath waveform — positive means inhaling, negative
+   * means exhaling. No extra sensor required, and the chest strap's beat timing
+   * is clean enough to make it work.
+   *
+   * TWO HONEST LIMITS, both unavoidable:
+   *  1. RSA lags the actual breath by a fraction of a cycle — the heart responds
+   *     to breathing, it doesn't predict it.
+   *  2. Detrending with a centred window means the most recent sample has a
+   *     one-sided window, which biases it.
+   * Together these put "now" somewhat in the past. test-polar.js MEASURES the
+   * total lag against a synthetic signal rather than leaving it a guess, so the
+   * number is known instead of hoped for.
+   *
+   * If this proves too laggy to breathe along with, the real fix is the strap's
+   * ACCELEROMETER via Polar's PMD service: the H10 sits on the ribcage, so chest
+   * wall movement is direct breath measurement with no physiological lag at all.
+   * That is a bigger protocol job. Head-mounted accelerometry on the Muse is NOT
+   * the answer — the head barely moves with breathing and mostly reports
+   * postural sway.
+   */
+
+  // Instantaneous heart rate resampled onto a uniform grid. RR intervals arrive
+  // one per beat, i.e. unevenly in time, and every downstream filter assumes
+  // even spacing — the same mistake that once skewed every breathing estimate in
+  // dsp.js.
+  function resampleHr(rrs, hz = 4) {
+    if (!Array.isArray(rrs) || rrs.length < 4 || !(hz > 0)) return null;
+    const times = [], hrs = [];
+    let acc = 0;
+    for (const rr of rrs) {
+      acc += rr / 1000;
+      times.push(acc);
+      hrs.push(60000 / rr);
+    }
+    const dur = times[times.length - 1] - times[0];
+    const n = Math.floor(dur * hz);
+    if (n < 8) return null;
+    const out = new Array(n);
+    let j = 0;
+    for (let i = 0; i < n; i++) {
+      const t = times[0] + i / hz;
+      while (j < times.length - 2 && times[j + 1] < t) j++;
+      const span = times[j + 1] - times[j];
+      const f = span > 1e-9 ? (t - times[j]) / span : 0;
+      out[i] = hrs[j] + (hrs[j + 1] - hrs[j]) * Math.max(0, Math.min(1, f));
+    }
+    return out;
+  }
+
+  // The respiratory waveform: instantaneous HR with its slow drift removed and
+  // amplitude normalised, so it reads -1 (fully exhaled) .. +1 (fully inhaled)
+  // regardless of how big a given person's RSA happens to be.
+  function breathSignal(rrs, { hz = 4, trendSec = 10 } = {}) {
+    const hr = resampleHr(rrs, hz);
+    if (!hr) return null;
+    const half = Math.max(1, Math.round((trendSec * hz) / 2));
+    const detr = new Array(hr.length);
+    for (let i = 0; i < hr.length; i++) {
+      let sum = 0, n = 0;
+      for (let k = -half; k <= half; k++) {
+        const idx = i + k;
+        if (idx < 0 || idx >= hr.length) continue;
+        sum += hr[idx]; n++;
+      }
+      detr[i] = hr[i] - sum / n;
+    }
+    // Normalise by RMS rather than peak: one artefactual excursion would
+    // otherwise squash the entire rest of the waveform toward zero.
+    const rms = Math.sqrt(detr.reduce((a, b) => a + b * b, 0) / detr.length);
+    if (!(rms > 1e-9)) return null;
+    return detr.map((v) => Math.max(-1, Math.min(1, v / (rms * 1.5))));
+  }
+
+  // Where in the breath you are right now.
+  //   amount: -1 fully exhaled .. 0 midpoint .. +1 fully inhaled
+  //   rising: true while inhaling
+  // Returns null rather than guessing when there isn't enough clean data.
+  function breathPhaseNow(rrs, opts = {}) {
+    const sig = breathSignal(rrs, opts);
+    if (!sig || sig.length < 6) return null;
+    const i = sig.length - 1;
+    const prev = sig[Math.max(0, i - 2)];
+    return { amount: sig[i], rising: sig[i] > prev };
+  }
+
   return {
     HR_SERVICE, HR_MEASUREMENT, BATTERY_SERVICE, BATTERY_LEVEL,
+    resampleHr, breathSignal, breathPhaseNow,
     RR_UNIT_MS, RR_MIN_MS, RR_MAX_MS, RR_MAX_STEP_FRACTION,
     parseHeartRateMeasurement,
     rmssd, sdnn, meanRR, bpmFromRR,

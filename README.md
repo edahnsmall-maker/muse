@@ -383,7 +383,55 @@ zone, so `zone` stayed `null` and the **first genuine transition was swallowed**
 the don't-fire-on-startup guard. Fixed by classifying the opening value into a
 `mid` zone.
 
-### Connecting devices: a persistent bar, not a one-shot screen
+### Breath phase — the thing that was missing until now
+
+Every earlier version had breathing **rate** only. RSA tells you the *frequency* of
+the respiratory modulation in heart timing; it says nothing about where in the cycle
+you are. So nothing could swell on the inhale and contract on the exhale, and
+"Follow me" was running a synthetic sine at roughly the right rate — which drifts out
+of step with the actual breath within a cycle or two.
+
+The mechanism, now implemented: heart rate genuinely **accelerates on the inhale and
+decelerates on the exhale**. So instantaneous heart rate, with its slow drift removed
+and its amplitude normalised, *is* the breath waveform. Positive means inhaling. No
+extra sensor needed — the chest strap's beat timing is clean enough.
+
+Four things use it:
+
+- **A centred bar in the metrics panel.** Midpoint is the turnaround; it fills upward
+  on the in-breath and downward on the out-breath. Deliberately not a 0–100
+  left-to-right fill, which would render an exhale as a low score.
+- **A `breath` series in the live graph**, oscillating about the centre line.
+- **"Follow me" genuinely follows** now, driven by measured phase rather than a
+  generated rhythm.
+- **A breath wave in Flow** about the vertical midpoint, drawn from the same history
+  buffer as the traces — so it's the real recorded breath and you can see where the
+  rhythm changed. Drawn *first* and kept dim: it's context, not a competing line. A
+  first attempt drew it last at 30% amplitude and it swamped the sensor data
+  completely, which a screenshot caught immediately.
+
+**Two honest limits, both unavoidable, and one of them measured rather than guessed:**
+
+1. **RSA lags the breath** — the heart responds to breathing, it doesn't predict it.
+2. Detrending with a centred window makes the most recent sample the least reliable.
+
+`test-polar.js` cross-correlates the recovered waveform against a known synthetic
+breath and reports the total lag: **1.0 second in a 5-second cycle**, correlation
+0.47. Good enough to watch and follow loosely; **not** a metronome to breathe
+against. The bar is labelled "est" and the metric carries this caveat in its registry
+entry.
+
+**If that lag proves too much,** the real fix is the strap's **accelerometer** via
+Polar's PMD service: the H10 sits on your ribcage, so chest-wall movement is direct
+breath measurement with no physiological lag at all. Bigger protocol job, and worth
+doing only if the RSA estimate isn't good enough in practice.
+
+**Not the Muse's gyroscope.** It does have one (and an accelerometer), and they are
+reachable over BLE — but the head barely moves with breathing, and head-mounted
+accelerometry mostly reports postural sway. It would be a lot of work for a weak
+signal when the strap is already on your chest.
+
+## Connecting devices: a persistent bar, not a one-shot screen
 
 Both device buttons live in a bar that stays on screen for the whole session, and
 either device can be connected at any time in either order. That is a fix, not a
@@ -434,7 +482,8 @@ What it adds (`public/polar.js`, tested in `test-polar.js`):
 | **HRV (RMSSD)** | standard short-term HRV over a rolling 60s window |
 | **`hrv` metric** | RMSSD normalised to your own baseline. Tier: **proxy** |
 | **`equanimity`** | finally computes — from HRV *steadiness*, not level. Still **exploratory** |
-| **Breathing** | recovered from RSA and it **takes precedence over the Muse's PPG** — ECG-grade beat timing at the chest beats an optical pulse read through a temple. Verified at 4.92s for a true 5.00s |
+| **Breath phase** | *where you are in the breath*, not just the rate — see below |
+| **Breathing rate** | recovered from RSA and it **takes precedence over the Muse's PPG** — ECG-grade beat timing at the chest beats an optical pulse read through a temple. Verified at 4.92s for a true 5.00s |
 
 **Steadiness, not level, feeds equanimity.** That's deliberate: a person can have
 high HRV and still be reacting to everything. `SteadinessTracker` reports the
@@ -612,6 +661,54 @@ Pick a duration (5/10/20/30 min) once connected, or skip it. A plain "session
 complete" message shows at the end — no alarm, no sound — and the countdown lives
 in the same readout as everything else.
 
+## Breath phase — the thing that was missing until now
+
+Every earlier version had breathing **rate** only. RSA tells you the *frequency* of
+the respiratory modulation in heart timing; it says nothing about where in the cycle
+you are. So nothing could swell on the inhale and contract on the exhale, and
+"Follow me" was running a synthetic sine at roughly the right rate — which drifts out
+of step with the actual breath within a cycle or two.
+
+The mechanism, now implemented: heart rate genuinely **accelerates on the inhale and
+decelerates on the exhale**. So instantaneous heart rate, with its slow drift removed
+and its amplitude normalised, *is* the breath waveform. Positive means inhaling. No
+extra sensor needed — the chest strap's beat timing is clean enough.
+
+Four things use it:
+
+- **A centred bar in the metrics panel.** Midpoint is the turnaround; it fills upward
+  on the in-breath and downward on the out-breath. Deliberately not a 0–100
+  left-to-right fill, which would render an exhale as a low score.
+- **A `breath` series in the live graph**, oscillating about the centre line.
+- **"Follow me" genuinely follows** now, driven by measured phase rather than a
+  generated rhythm.
+- **A breath wave in Flow** about the vertical midpoint, drawn from the same history
+  buffer as the traces — so it's the real recorded breath and you can see where the
+  rhythm changed. Drawn *first* and kept dim: it's context, not a competing line. A
+  first attempt drew it last at 30% amplitude and it swamped the sensor data
+  completely, which a screenshot caught immediately.
+
+**Two honest limits, both unavoidable, and one of them measured rather than guessed:**
+
+1. **RSA lags the breath** — the heart responds to breathing, it doesn't predict it.
+2. Detrending with a centred window makes the most recent sample the least reliable.
+
+`test-polar.js` cross-correlates the recovered waveform against a known synthetic
+breath and reports the total lag: **1.0 second in a 5-second cycle**, correlation
+0.47. Good enough to watch and follow loosely; **not** a metronome to breathe
+against. The bar is labelled "est" and the metric carries this caveat in its registry
+entry.
+
+**If that lag proves too much,** the real fix is the strap's **accelerometer** via
+Polar's PMD service: the H10 sits on your ribcage, so chest-wall movement is direct
+breath measurement with no physiological lag at all. Bigger protocol job, and worth
+doing only if the RSA estimate isn't good enough in practice.
+
+**Not the Muse's gyroscope.** It does have one (and an accelerometer), and they are
+reachable over BLE — but the head barely moves with breathing, and head-mounted
+accelerometry mostly reports postural sway. It would be a lot of work for a weak
+signal when the strap is already on your chest.
+
 ## Connecting devices: a persistent bar, not a one-shot screen
 
 Both device buttons live in a bar that stays on screen for the whole session, and
@@ -663,7 +760,8 @@ What it adds (`public/polar.js`, tested in `test-polar.js`):
 | **HRV (RMSSD)** | standard short-term HRV over a rolling 60s window |
 | **`hrv` metric** | RMSSD normalised to your own baseline. Tier: **proxy** |
 | **`equanimity`** | finally computes — from HRV *steadiness*, not level. Still **exploratory** |
-| **Breathing** | recovered from RSA and it **takes precedence over the Muse's PPG** — ECG-grade beat timing at the chest beats an optical pulse read through a temple. Verified at 4.92s for a true 5.00s |
+| **Breath phase** | *where you are in the breath*, not just the rate — see below |
+| **Breathing rate** | recovered from RSA and it **takes precedence over the Muse's PPG** — ECG-grade beat timing at the chest beats an optical pulse read through a temple. Verified at 4.92s for a true 5.00s |
 
 **Steadiness, not level, feeds equanimity.** That's deliberate: a person can have
 high HRV and still be reacting to everything. `SteadinessTracker` reports the

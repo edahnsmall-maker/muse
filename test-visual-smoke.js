@@ -153,16 +153,18 @@ console.log('✓ createZenVisual initialises without throwing');
 const modeCount = sandbox.VizCore.MODES.length;
 const adversarial = [
   { calm: 0, noise: 0, breathPeriod: 0, bands: [0, 1, 2, 3].map(() => ({ level: 0, spike: 0 })),
-    metrics: { calm: 0, thinking: 0, focus: 0, drowsy: 0 } },
+    metrics: { calm: 0, thinking: 0, focus: 0, drowsy: 0 }, breathAmount: -1 },
   { calm: 1, noise: 1, breathPeriod: 0, bands: [0, 1, 2, 3].map(() => ({ level: 1, spike: 1 })),
-    metrics: { calm: 1, thinking: 1, focus: 1, drowsy: 1 } },
+    metrics: { calm: 1, thinking: 1, focus: 1, drowsy: 1 }, breathAmount: 1 },
   { calm: 0.5, noise: 0.5, breathPeriod: 4.2, bands: [0, 1, 2, 3].map(() => ({ level: 0.5, spike: 0.5 })),
-    metrics: { calm: 0.5, thinking: 0.8, focus: 0.2, drowsy: 0.5 } },
+    metrics: { calm: 0.5, thinking: 0.8, focus: 0.2, drowsy: 0.5 }, breathAmount: 0 },
   // deliberately malformed: missing bands, nulls, out-of-range
-  { calm: null, noise: null, breathPeriod: null, metrics: { calm: null, thinking: NaN } },
+  // breathAmount null is a REAL state (no strap, or breath-holding) and must not
+  // render as a convincing sway on stale data.
+  { calm: null, noise: null, breathPeriod: null, metrics: { calm: null, thinking: NaN }, breathAmount: null },
   { calm: 0.7, bands: [{ level: null, spike: null }], metrics: {} },  // too few bands
   { calm: -5, noise: 99, breathPeriod: -3, bands: [],                 // empty + out of range
-    metrics: { calm: -4, thinking: 12, focus: null, drowsy: NaN } },
+    metrics: { calm: -4, thinking: 12, focus: null, drowsy: NaN }, breathAmount: 9 },
 ];
 
 for (let m = 0; m < modeCount; m++) {

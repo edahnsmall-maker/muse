@@ -214,4 +214,103 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
   console.log('✓ SteadinessTracker needs data, is relative, and separates steady from lurching');
 }
 
+// 14) Breath PHASE from RSA. This is the new capability: not just how fast you
+//     are breathing but WHERE in the breath you are, so a bar can swell on the
+//     inhale and contract on the exhale.
+{
+  // Build an RR series whose timing is modulated by a known breathing phase, so
+  // the recovered phase can be checked against ground truth.
+  const period = 5.0;
+  const rrs = [];
+  const truePhaseAt = [];   // 0..1 through the breath cycle, at each beat
+  let t = 0;
+  for (let i = 0; i < 200; i++) {
+    // Heart rate RISES on the inhale, so RR (the interval) SHORTENS. The sign
+    // matters: getting it backwards would render every inhale as an exhale.
+    const phase = (t % period) / period;          // 0 = start of inhale
+    const rr = 1000 - 70 * Math.sin(2 * Math.PI * phase);
+    rrs.push(rr);
+    truePhaseAt.push(phase);
+    t += rr / 1000;
+  }
+
+  const sig = Polar.breathSignal(rrs);
+  assert.ok(sig && sig.length > 40, 'should produce a respiratory waveform');
+  assert.ok(Math.min(...sig) < -0.5 && Math.max(...sig) > 0.5,
+    `the waveform should use most of its range (got ${Math.min(...sig).toFixed(2)}..${Math.max(...sig).toFixed(2)})`);
+
+  // It must be a smooth oscillation at roughly the breathing rate, not noise:
+  // count zero crossings and compare with the expected number of half-cycles.
+  let crossings = 0;
+  for (let i = 1; i < sig.length; i++) if ((sig[i] < 0) !== (sig[i - 1] < 0)) crossings++;
+  const spanSec = sig.length / 4;                  // default 4Hz grid
+  const expected = (2 * spanSec) / period;
+  assert.ok(Math.abs(crossings - expected) < expected * 0.4,
+    `should oscillate at about the breathing rate (${crossings} crossings, expected ~${expected.toFixed(0)})`);
+
+  // MEASURE the lag rather than assuming it. Cross-correlate the recovered
+  // waveform against the true inhale/exhale waveform and find the best shift.
+  const hz = 4;
+  const trueWave = [];
+  for (let i = 0; i < sig.length; i++) {
+    // The grid starts at the first beat time; reconstruct true phase on it.
+    const tt = (rrs[0] / 1000) + i / hz;
+    trueWave.push(Math.sin(2 * Math.PI * ((tt % period) / period)));
+  }
+  let bestShift = 0, bestCorr = -Infinity;
+  for (let shift = 0; shift < Math.round(period * hz); shift++) {
+    let c = 0, n = 0;
+    for (let i = shift; i < sig.length; i++) { c += sig[i] * trueWave[i - shift]; n++; }
+    if (n > 20 && c / n > bestCorr) { bestCorr = c / n; bestShift = shift; }
+  }
+  const lagSec = bestShift / hz;
+  assert.ok(bestCorr > 0.2,
+    `the recovered waveform must actually correlate with the real breath (best ${bestCorr.toFixed(2)})`);
+  // A fraction of a cycle is expected and acceptable; a lag near a full cycle
+  // would mean inhale and exhale are effectively swapped.
+  assert.ok(lagSec < period * 0.45,
+    `lag must stay well under half a cycle or inhale reads as exhale (measured ${lagSec.toFixed(2)}s of ${period}s)`);
+  console.log(`✓ breath phase recovered from RSA, correlation ${bestCorr.toFixed(2)}, measured lag ${lagSec.toFixed(2)}s of a ${period}s cycle`);
+}
+
+// 15) breathPhaseNow: reports a usable amount and direction, or null when there
+//     genuinely isn't enough data — never a fabricated midpoint.
+{
+  assert.strictEqual(Polar.breathPhaseNow([]), null, 'no data -> null, not 0');
+  assert.strictEqual(Polar.breathPhaseNow([1000, 1000, 1000]), null, 'too few beats -> null');
+  // A perfectly regular heart has no respiratory modulation to find.
+  const flat = new Array(80).fill(1000);
+  assert.strictEqual(Polar.breathPhaseNow(flat), null,
+    'a completely flat series has no breath signal, and must say so rather than reporting the midpoint');
+
+  const rrs = [];
+  let t = 0;
+  for (let i = 0; i < 200; i++) {
+    const rr = 1000 - 70 * Math.sin((2 * Math.PI * t) / 5);
+    rrs.push(rr); t += rr / 1000;
+  }
+  const now = Polar.breathPhaseNow(rrs);
+  assert.ok(now != null, 'should report a phase');
+  assert.ok(now.amount >= -1 && now.amount <= 1, `amount must be in range (got ${now.amount})`);
+  assert.strictEqual(typeof now.rising, 'boolean', 'must say whether the breath is rising');
+  console.log('✓ breathPhaseNow reports amount and direction, and null when there is no signal');
+}
+
+// 16) resampleHr puts beats on an EVEN grid. Uneven spacing fed to a filter that
+//     assumes even spacing is the exact bug that once skewed every breathing
+//     estimate in dsp.js.
+{
+  assert.strictEqual(Polar.resampleHr([1000, 1000], 4), null, 'too short -> null');
+  // 60bpm for a while then 120bpm: the grid must cover the real elapsed time,
+  // not the beat count.
+  const rrs = new Array(20).fill(1000).concat(new Array(20).fill(500));
+  const hr = Polar.resampleHr(rrs, 4);
+  const durSec = (20 * 1000 + 20 * 500) / 1000;
+  assert.ok(Math.abs(hr.length - durSec * 4) <= 4,
+    `grid length should follow elapsed time (${hr.length} samples for ${durSec}s at 4Hz)`);
+  assert.ok(hr[2] > 55 && hr[2] < 65, `should start near 60bpm (got ${hr[2].toFixed(1)})`);
+  assert.ok(hr[hr.length - 3] > 110, `should end near 120bpm (got ${hr[hr.length - 3].toFixed(1)})`);
+  console.log('✓ resampleHr produces an evenly-spaced grid covering real elapsed time');
+}
+
 console.log('\nAll Polar tests passed.');

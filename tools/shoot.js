@@ -110,6 +110,22 @@ const SCENARIOS = {
   // occasional bursts on top. This is the scenario that tells you whether a
   // mode can render SHAPE rather than just a slowly-changing level — the others
   // all vary too smoothly to distinguish "working" from "drawing a circle".
+  // A clean sit with a real breath phase, for checking the breath wave and the
+  // Follow-me visual actually move with the measured breath.
+  breathing: (t) => {
+    const period = 5.2;
+    const amount = Math.sin((2 * Math.PI * t) / period);
+    const calm = clamp01(0.48 + 0.10 * Math.sin(t / 50));
+    return {
+      calm, activity: clamp01(0.5 - 0.08 * Math.sin(t / 50)), noise: 0.03,
+      breathPeriod: period,
+      breathAmount: amount,
+      metrics: { calm, thinking: 0.45, focus: 0.5, drowsy: 0.4 },
+      bands: [0, 1, 2, 3].map((i) => ({
+        level: clamp01(0.48 + 0.12 * (wobble(t * 0.5, i + 1) - 0.5) * 2), spike: 0,
+      })),
+    };
+  },
   bursty: (t) => {
     const burst = Math.max(0,
       Math.sin(t * 0.9) ** 8 + 0.8 * Math.sin(t * 0.31 + 2) ** 12);

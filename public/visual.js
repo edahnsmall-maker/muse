@@ -39,6 +39,7 @@ function createZenVisual(canvas) {
   let state = {
     calm: 0.5, noise: 0, breathPeriod: 0, activity: 0.5,
     metrics: {},   // composite scores by key, for Pulse
+    breathAmount: null, // measured breath phase, -1 exhaled .. +1 inhaled
     bands: [0, 1, 2, 3].map(() => ({ level: 0.5, spike: 0, fresh: true })),
   };
   let smooth = {
@@ -49,6 +50,8 @@ function createZenVisual(canvas) {
     // else — the user asked for it to grow SLOWLY, and a void that twitched
     // with every calm wobble would undo the whole point of the image.
     voidCalm: 0.5,
+    breathAmount: null,   // null until a real measurement exists
+    breathPrev: null,
   };
 
   let modeIndex = 0;
@@ -812,6 +815,47 @@ function createZenVisual(canvas) {
     // blew out to white.
     const baseW = Math.max(1, H * 0.0018);
 
+    // The breath, as a wave about the vertical midpoint: above the centre line is
+    // the in-breath, below it the out-breath. Drawn from the same history buffer
+    // as everything else, so it is the real recorded breath rather than a sine
+    // generated at the current rate — you can see where the rhythm changed.
+    //
+    // Drawn FIRST and kept dim: it is context for the traces, not another
+    // competing line. A first attempt drew it last at 30% amplitude and it
+    // completely swamped the sensor data.
+    if (history.some((h) => h.breath != null)) {
+      const mid = H * 0.5;
+      const amp = H * 0.15;
+      const breathSeries = VizCore.smoothSeries(history.map((h) => h.breath), 5);
+      // The midpoint, so "above" and "below" are readable at a glance.
+      c.strokeStyle = 'rgba(180,205,235,0.07)';
+      c.lineWidth = 1;
+      c.beginPath(); c.moveTo(0, mid); c.lineTo(nowX, mid); c.stroke();
+      // Same age banding as the traces, so the breath dissolves leftward with
+      // them instead of sitting there like a fixed grid.
+      for (let gi = 0; gi < FLOW_GROUPS; gi++) {
+        const i0 = Math.round((gi * (n - 1)) / FLOW_GROUPS);
+        const i1 = Math.round(((gi + 1) * (n - 1)) / FLOW_GROUPS);
+        if (i1 <= i0) continue;
+        const age = 1 - ((i0 + i1) / 2 / (n - 1));
+        const vis = Math.pow(1 - age, 0.9);
+        for (const pass of [{ w: baseW * 7, a: 0.030 * vis }, { w: baseW * 1.2, a: 0.13 * vis }]) {
+          if (pass.a <= 0.004) continue;
+          c.beginPath();
+          let started = false;
+          for (let i = i0; i <= i1; i++) {
+            const v = breathSeries[i];
+            if (v == null) { started = false; continue; }
+            const y = mid - amp * Math.max(-1, Math.min(1, v));
+            if (!started) { c.moveTo(xOf(i), y); started = true; } else c.lineTo(xOf(i), y);
+          }
+          c.strokeStyle = `rgba(134,225,255,${pass.a})`;
+          c.lineWidth = Math.max(0.5, pass.w);
+          c.stroke();
+        }
+      }
+    }
+
     for (let ch = 0; ch < 4; ch++) {
       const col = colors[ch] || [200, 210, 255];
       if (yOf(n - 1, ch) == null) continue;   // nothing to say about this series
@@ -1365,6 +1409,17 @@ function createZenVisual(canvas) {
       patternT += dtSec;
       const r = VizCore.breathPattern(pattern, patternT);
       amount = r.amount; breathLabel = r.label;
+    } else if (smooth.breathAmount != null) {
+      // "Follow me" now genuinely FOLLOWS. Previously it ran a synthetic sine at
+      // roughly the measured RATE, which is not the same thing at all — it drifts
+      // out of step with the actual breath within a cycle or two. This is the
+      // measured phase from RSA, so the visual moves when the person does.
+      //
+      // It lags by about a fifth of a cycle, because the heart responds to
+      // breathing rather than predicting it. Fine to watch; do not treat it as
+      // a metronome to breathe against.
+      amount = 0.5 + 0.5 * smooth.breathAmount;
+      breathLabel = smooth.breathAmount > (smooth.breathPrev || 0) ? 'Breathing in' : 'Breathing out';
     } else {
       const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * smooth.calm;
       // Integrate the phase instead of computing it as elapsedTime * omega.
@@ -2023,9 +2078,11 @@ function createZenVisual(canvas) {
         // snapping its ring to zero — a fabricated zero is a lie about the
         // signal, the same rule metrics.js follows.
         metrics: Object.assign({}, state.metrics, next.metrics || {}),
+        breathAmount: next.breathAmount !== undefined ? next.breathAmount : state.breathAmount,
         bands,
       };
       history.push({
+        breath: state.breathAmount,
         levels: bands.map((b) => clamp01(b.level)),
         held: bands.map((b) => b.fresh === false),
         spikes: bands.map((b) => clamp01(b.spike)),
