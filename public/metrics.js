@@ -77,9 +77,14 @@
       caveat: 'Frontal alpha asymmetry is often linked to approach/withdrawal affect, but effect sizes are small, findings are contested, and single-session values are unreliable. Do not read mood from this.',
     },
     {
+      key: 'hrv', label: 'HRV', tier: 'moderate',
+      source: 'RMSSD over a rolling 60s window of beat-to-beat intervals from a chest strap, normalised to your own baseline',
+      caveat: 'RMSSD is a standard, well-defined measurement and the strap is ECG-grade, so the NUMBER is solid. What it means is the proxy part: higher RMSSD indicates parasympathetic (rest) activation, which correlates with calm — but it also rises with slow breathing regardless of mental state, so you can move it deliberately without settling at all.',
+    },
+    {
       key: 'equanimity', label: 'Equanimity', tier: 'speculative',
-      source: 'steadiness of heart-rate variability (requires the PPG sensor)',
-      caveat: 'There is NO established EEG marker for equanimity. This is HRV steadiness — physiological non-reactivity — which is related to but genuinely not the same thing as equanimity.',
+      source: 'how STEADY that HRV is (coefficient of variation of RMSSD), not how high it is',
+      caveat: 'There is NO established marker for equanimity. This is physiological non-reactivity, which is related to but genuinely not the same thing. Steadiness rather than level is the deliberate choice: a person can have high HRV and still be reacting to everything.',
     },
     {
       key: 'openness', label: 'Open awareness', tier: 'speculative',
@@ -127,6 +132,7 @@
         // 0.5 is balanced; >0.5 means more left-frontal alpha.
         if (!has(f.alphaLeft) || !has(f.alphaRight)) return null;
         return clamp01(0.5 + 0.5 * Math.tanh((f.alphaLeft - f.alphaRight) * 2));
+      case 'hrv': return has(f.hrvLevel) ? clamp01(f.hrvLevel) : null;
       case 'equanimity':
         if (!has(f.hrvSteadiness)) return null;
         return clamp01(f.hrvSteadiness);

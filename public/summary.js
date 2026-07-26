@@ -162,7 +162,7 @@
   // keeps its meaning without the app, and easy to paste into a journal.
   // Includes the honesty caveats inline, because a file outlives the session
   // and will eventually be read without any of this conversation's context.
-  function toMarkdown(stats, { selfRating = null, cueLog = [], dateISO = null, visualMode = null, breathPattern = null, markers = [], samples = [], markerContext = null, practice = null } = {}) {
+  function toMarkdown(stats, { selfRating = null, cueLog = [], dateISO = null, visualMode = null, breathPattern = null, markers = [], samples = [], markerContext = null, practice = null, heart = null } = {}) {
     if (!stats) return '# Meditation session\n\nNot enough signal was recorded to summarise this sit.\n';
     const mins = Math.floor(stats.durationSec / 60);
     const secs = Math.round(stats.durationSec % 60);
@@ -217,6 +217,39 @@
     L.push(`| Signal noise (movement) | ${pct(stats.noiseAvg)} |`);
     L.push(`| Usable forehead signal | ${pct(stats.usableAvg)} |`);
     L.push('');
+
+    // Heart section, only when a strap was actually connected. Absent rather
+    // than zeroed when there was none — the report should never imply it
+    // measured something it had no sensor for.
+    if (heart) {
+      L.push('## Heart (chest strap)');
+      L.push('');
+      L.push('| Measure | Value |');
+      L.push('| --- | --- |');
+      L.push(`| Heart rate | ${heart.hrBpm == null ? '—' : heart.hrBpm + ' bpm'} |`);
+      L.push(`| HRV (RMSSD) | ${heart.rmssdMs == null ? '—' : Math.round(heart.rmssdMs) + ' ms'} |`);
+      L.push(`| HRV steadiness | ${heart.steadiness == null ? '—' : Math.round(heart.steadiness * 100) + '%'} |`);
+      L.push(`| Breathing (from RSA) | ${heart.breathSec == null ? '—' : (60 / heart.breathSec).toFixed(1) + '/min'} |`);
+      L.push(`| Beats used | ${heart.beats == null ? '—' : heart.beats} |`);
+      L.push(`| Beats rejected | ${heart.rejectRate == null ? '—' : Math.round(heart.rejectRate * 100) + '%'} |`);
+      L.push('');
+      if (heart.rejectRate != null && heart.rejectRate > 0.3) {
+        L.push(`> **Strap data unreliable.** ${Math.round(heart.rejectRate * 100)}% of beats were rejected as`);
+        L.push('> implausible, so the HRV figures above describe artefact rather than physiology.');
+        L.push('> Wet the electrode strip and make sure it is snug below the chest muscles.');
+        L.push('');
+      } else if (heart.contact === false) {
+        L.push('> **Skin contact was lost** during this session, so read the heart figures loosely.');
+        L.push('');
+      }
+      L.push('RMSSD is a standard measurement and the strap is ECG-grade, so the numbers');
+      L.push('themselves are solid. What they *mean* is the interpretive part: higher RMSSD');
+      L.push('indicates parasympathetic (rest) activation, which correlates with calm — but it');
+      L.push('also rises with slow breathing regardless of mental state, so it can be moved');
+      L.push('deliberately without settling at all. Steadiness, not level, is what feeds');
+      L.push('"equanimity", and that remains an exploratory guess rather than a measurement.');
+      L.push('');
+    }
 
     L.push('## Per sensor');
     L.push('');

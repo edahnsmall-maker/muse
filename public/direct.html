@@ -55,6 +55,13 @@
     background: linear-gradient(180deg, rgba(134,225,255,.22), rgba(255,255,255,.08));
     color: var(--text-main); box-shadow: 0 0 22px rgba(102,211,255,.16), 0 1px 0 rgba(255,255,255,.14) inset; }
   button:disabled { opacity: .5; cursor: default; }
+  /* The heart strap is a genuinely optional second device, so its button is
+     visually secondary — quieter than "Connect to Muse", which is the one thing
+     a first-time user must find. */
+  button.secondary { font-size: 13px; padding: 10px 18px; letter-spacing: .06em;
+    background: rgba(255,255,255,.07); border-color: var(--glass-line);
+    box-shadow: none; color: var(--text-dim, rgba(255,255,255,.7)); }
+  button.secondary:hover { background: rgba(255,255,255,.13); color: var(--text-main); }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
@@ -257,6 +264,7 @@
   <div></div>
   <div class="status" id="status" style="align-self:center">
     <button id="connect">Connect to Muse</button>
+    <button id="connectStrap" class="secondary">+ heart strap</button>
   </div>
   <div id="timerPicker"></div>
   <div id="readout"></div>
@@ -290,12 +298,14 @@
 <script src="cues.js"></script>
 <script src="metrics.js"></script>
 <script src="markers.js"></script>
+<script src="polar.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
 const readoutEl = document.getElementById('readout');
 const timerPickerEl = document.getElementById('timerPicker');
 const connectBtn = document.getElementById('connect');
+const strapBtn = document.getElementById('connectStrap');
 
 // When a transient message is showing (e.g. the visual-mode name), the
 // 250ms status loop must not immediately overwrite it.
@@ -567,6 +577,14 @@ function wireMarkerEditor() {
 function downloadReport(stats) {
   const md = Summary.toMarkdown(stats, {
     selfRating: selfRating || null,
+    heart: strapConnected() || hrvRmssd != null ? {
+      hrBpm, rmssdMs: hrvRmssd,
+      steadiness: hrvSteady,
+      breathSec: strapBreathSec,
+      rejectRate: rrBuffer.rejectRate(),
+      contact: strapContact,
+      beats: rrBuffer.accepted,
+    } : null,
     cueLog: cueEngine.log,
     dateISO: new Date().toISOString().slice(0, 16).replace('T', ' '),
     visualMode: visual.currentMode().label,
@@ -616,6 +634,7 @@ summaryEl.addEventListener('click', (e) => { if (e.target === summaryEl) closeSu
 if (!navigator.bluetooth) {
   setStatus('Web Bluetooth isn’t available in this browser.<br>Use Chrome or Edge (desktop, Android, or ChromeOS).');
   connectBtn.remove();
+  strapBtn.remove();
 }
 
 // Two frontal channels only (AF7, AF8) drive the calm score — the same
@@ -644,7 +663,11 @@ let features = {};
 // composite drives the visual when in composite view.
 let viewMode = 'sensors';          // 'sensors' | 'composites'
 let primaryMetric = 'calm';
-const activeComposites = ['calm', 'thinking', 'focus', 'drowsy', 'blink', 'jaw'];
+// HRV and equanimity are listed even with no strap connected: Metrics.compute
+// returns null for them, the readout shows an em dash, and that is the honest
+// state — "we have no heart data" rather than silently omitting the row so you
+// can't tell whether it's missing or zero.
+const activeComposites = ['calm', 'thinking', 'focus', 'drowsy', 'hrv', 'equanimity', 'blink', 'jaw'];
 
 function computeFeatures(result) {
   const wins = FRONTAL.map((ch) => buffers[ch].slice(-WINDOW)).filter((w) => w.length >= WINDOW);
@@ -659,7 +682,11 @@ function computeFeatures(result) {
     calm: result.calm, activity: result.activity,
     blink: art.blink, jaw: art.jaw,
     variability: activityTracker.varNorm ? activityTracker.varNorm.value : 0.5,
-    hrvSteadiness: null, // deliberately absent: see the equanimity caveat
+    // No longer deliberately absent: with a chest strap connected these are
+    // real. Still null when there's no strap, or when it's unreliable —
+    // a metric with no trustworthy input must read as no data, not as zero.
+    hrvSteadiness: strapUnreliable() ? null : hrvSteady,
+    hrvLevel: strapUnreliable() ? null : hrvLevel,
   };
   if (clean) {
     f.deltaLevel = bandNorms.delta.update(Math.log(avg('delta') + 1e-6));
@@ -943,6 +970,7 @@ const SENSOR_SERIES = [
 const COMPOSITE_COLORS = {
   calm: '#f2c879', thinking: '#ff7dab', focus: '#7dd3fc', drowsy: '#9b8cff',
   blink: '#7ce8c0', jaw: '#e0697a', asymmetry: '#c0b3ff', equanimity: '#8fe3a8',
+  hrv: '#ff8f6b',
   openness: '#ffd9a0',
 };
 const COMPOSITE_SERIES = activeComposites.map((k) => ({
@@ -1095,6 +1123,95 @@ renderLegend();
 
 let device = null;
 
+/* ---- Polar H10 chest strap -------------------------------------------------
+ * A SECOND, INDEPENDENT Bluetooth device. Web Bluetooth allows this: each
+ * requestDevice() needs its own user gesture, which is why this has its own
+ * button and cannot be chained off the Muse connection, and each returns its own
+ * GATT connection. The two devices do not contend for anything.
+ *
+ * Deliberately optional in both directions: no strap and the EEG side behaves
+ * exactly as before; a strap that drops out mid-session disturbs nothing.
+ */
+const rrBuffer = new Polar.RrBuffer({ windowSec: 60 });
+const steadiness = new Polar.SteadinessTracker();
+// RMSSD in ms varies enormously between people (roughly 10ms to 100ms+ at rest),
+// so an absolute number cannot drive a 0..1 visual. Normalised against the
+// wearer's own baseline, same discipline as every EEG-derived score.
+const hrvNorm = new DSP.AdaptiveNormalizer({ adapt: 0.004, slope: 1.6, smoothing: 0.08 });
+let strapDevice = null;
+let hrBpm = null;          // the strap's own HR field
+let hrvRmssd = null;       // ms, over the rolling window
+let hrvLevel = null;       // 0..1, normalised to this wearer
+let hrvSteady = null;      // 0..1, how steady the HRV is
+let strapBreathSec = null; // breathing from RSA — cleaner than temple PPG
+let strapContact = null;
+let strapLastAt = 0;
+
+function onStrapData(ev) {
+  const p = Polar.parseHeartRateMeasurement(ev.target.value);
+  strapLastAt = Date.now();
+  if (p.hr != null) hrBpm = p.hr;
+  if (p.contact != null) strapContact = p.contact;
+  let gotNew = false;
+  for (const rr of p.rr) { if (rrBuffer.push(rr)) gotNew = true; }
+  if (!gotNew) return;
+
+  // RMSSD needs a real window before it means anything. ~20 accepted intervals
+  // is roughly 20 seconds; below that this stays null rather than reporting a
+  // number derived from a handful of beats.
+  if (rrBuffer.length >= 20) {
+    hrvRmssd = Polar.rmssd(rrBuffer.values());
+    if (hrvRmssd != null) {
+      hrvLevel = hrvNorm.update(Math.log(hrvRmssd + 1e-6));
+      hrvSteady = steadiness.update(hrvRmssd);
+    }
+    // Breathing from RSA on ECG-grade beat timing: the same computation as the
+    // PPG path but much cleaner input, so this takes precedence when available.
+    if (rrBuffer.length >= 40) {
+      const est = DSP.estimateBreathingPeriod(rrBuffer.beatTimes());
+      if (est != null) strapBreathSec = est;
+    }
+  }
+}
+
+function strapConnected() {
+  return !!(strapDevice && strapDevice.gatt && strapDevice.gatt.connected);
+}
+// Connected but not to be trusted: too many rejected intervals, or skin contact
+// explicitly lost. Same rule as the EEG side — say so rather than quietly
+// reporting numbers derived from bad input.
+function strapUnreliable() {
+  return strapConnected() && (rrBuffer.rejectRate() > 0.3 || strapContact === false);
+}
+
+async function connectStrap() {
+  if (!navigator.bluetooth) { setStatus('Web Bluetooth is not available in this browser'); return; }
+  strapBtn.disabled = true;
+  try {
+    setStatus('choose your heart strap in the browser picker…');
+    strapDevice = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [Polar.HR_SERVICE] }],
+    });
+    strapDevice.addEventListener('gattserverdisconnected', () => {
+      setStatus('heart strap disconnected');
+      strapBtn.disabled = false;
+      strapBtn.textContent = 'Connect heart strap';
+    });
+    const gatt = await strapDevice.gatt.connect();
+    const svc = await gatt.getPrimaryService(Polar.HR_SERVICE);
+    const ch = await svc.getCharacteristic(Polar.HR_MEASUREMENT);
+    await ch.startNotifications();
+    ch.addEventListener('characteristicvaluechanged', onStrapData);
+    strapBtn.textContent = 'strap: connected';
+    setStatus('heart strap connected — HRV needs ~20s of beats');
+    statusLockUntil = Date.now() + 2500;
+  } catch (err) {
+    // A failed strap must never take down the EEG session.
+    setStatus(`heart strap: ${err && err.message ? err.message : 'could not connect'}`);
+    strapBtn.disabled = false;
+  }
+}
+
 async function connect() {
   connectBtn.disabled = true;
   try {
@@ -1194,6 +1311,10 @@ function rewireRetry() {
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
 connectBtn.addEventListener('click', connect, { once: true });
+// Its own listener, and NOT `once`: a strap connection can legitimately be
+// retried after a failure, and it must be a separate user gesture because
+// Web Bluetooth requires one per requestDevice() call.
+strapBtn.addEventListener('click', connectStrap);
 
 setInterval(updateBreathing, 2000);
 
@@ -1226,6 +1347,10 @@ setInterval(() => {
     calm: driver == null ? result.calm : driver,
     noise: result.artifactRate,
     activity: result.activity,
+    // Strap first when present: the Breath visual should pace off the cleanest
+    // available measurement of the actual breath, not the noisiest.
+    breathPeriod: strapBreathSec != null ? strapBreathSec
+      : (breathPeriod != null ? breathPeriod : 0),
     metrics: pulseMetrics,
     bands: bandState.map((s) => ({ level: s.level, spike: s.spike, fresh: s.fresh })),
   });
@@ -1302,10 +1427,28 @@ setInterval(() => {
     tail.push(row('Calm', result.calm, { tier: 'moderate', color: COMPOSITE_COLORS.calm }));
     tail.push(row('Brainwaves', null, { text: brainLabel }));
   }
-  if (ppgAvailable) {
+  // The strap's RSA estimate takes precedence over the Muse's PPG when both
+  // exist: ECG-grade beat timing at the chest is far cleaner than an optical
+  // pulse read through the skin of a temple.
+  const bestBreath = strapBreathSec != null ? strapBreathSec : breathPeriod;
+  if (ppgAvailable || strapConnected()) {
     tail.push(row('Breath', null, {
-      text: breathPeriod == null ? 'reading…' : `${Math.round(60 / breathPeriod)}/min`,
+      text: bestBreath == null ? 'reading…'
+        : `${Math.round(60 / bestBreath)}/min${strapBreathSec != null ? ' \u00b7 strap' : ''}`,
     }));
+  }
+  if (strapConnected()) {
+    tail.push(row('Heart', null, { text: hrBpm == null ? 'reading…' : `${hrBpm} bpm`, tier: 'solid' }));
+    tail.push(row('HRV (RMSSD)', null, {
+      text: hrvRmssd == null ? 'reading…' : `${Math.round(hrvRmssd)} ms`, tier: 'solid',
+    }));
+    // Say when the strap's numbers should not be trusted, rather than showing
+    // them at the same confidence as clean ones.
+    if (strapUnreliable()) {
+      tail.push(row('Strap', null, {
+        text: strapContact === false ? 'no skin contact' : `${Math.round(rrBuffer.rejectRate() * 100)}% beats rejected`,
+      }));
+    }
   }
   tail.push(row('Noise', result.artifactRate, { text: noiseLabel, color: COMPOSITE_COLORS.jaw }));
   if (timerEndAt) {

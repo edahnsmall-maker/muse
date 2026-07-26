@@ -383,7 +383,54 @@ zone, so `zone` stayed `null` and the **first genuine transition was swallowed**
 the don't-fire-on-startup guard. Fixed by classifying the opening value into a
 `mid` zone.
 
-### Testing the untestable
+### The Polar H10 chest strap (optional second device)
+
+**Yes, two Bluetooth devices at once works.** Web Bluetooth connects them
+independently — each `requestDevice()` needs its own user gesture, which is why the
+strap has its own **+ heart strap** button and can't be chained off the Muse
+connection, and each gets its own GATT connection. They don't contend for anything.
+The strap is optional in both directions: without one the EEG side is unchanged, and
+a strap that drops out mid-session disturbs nothing.
+
+It reads the **standard** Bluetooth Heart Rate Service (`0x180D`), not Polar's
+proprietary PMD service. The standard characteristic already carries RR intervals —
+the beat-to-beat timings, which is exactly and only what HRV is computed from — so
+this is stable across firmware and works with any HR strap, not just this one.
+
+What it adds (`public/polar.js`, tested in `test-polar.js`):
+
+| | |
+|---|---|
+| **Heart rate** | direct, measured |
+| **HRV (RMSSD)** | standard short-term HRV over a rolling 60s window |
+| **`hrv` metric** | RMSSD normalised to your own baseline. Tier: **proxy** |
+| **`equanimity`** | finally computes — from HRV *steadiness*, not level. Still **exploratory** |
+| **Breathing** | recovered from RSA and it **takes precedence over the Muse's PPG** — ECG-grade beat timing at the chest beats an optical pulse read through a temple. Verified at 4.92s for a true 5.00s |
+
+**Steadiness, not level, feeds equanimity.** That's deliberate: a person can have
+high HRV and still be reacting to everything. `SteadinessTracker` reports the
+inverted coefficient of variation of RMSSD, which is *relative*, so someone with high
+resting HRV isn't scored differently for the level.
+
+**The artifact rejection is the load-bearing part.** A strap occasionally misses a
+beat, producing one interval about twice as long as its neighbours. RMSSD squares
+successive differences, so a single such interval contributes two enormous terms.
+`test-polar.js` measures it: an unrejected missed beat took RMSSD from **30.0ms to
+182.2ms** — a six-fold inflation that would appear as a sudden flood of
+parasympathetic calm at the exact moment the strap slipped. Intervals outside
+300–2000ms, or more than 25% away from the previous one, are discarded, and the
+reject rate is reported. Above 30% rejected (or on lost skin contact) the readout
+says so and the report prints a banner instead of presenting the figures as
+physiology.
+
+**Honest limit on what HRV means:** RMSSD is a real measurement and the strap is
+ECG-grade, so the *number* is solid — that's why HR and RMSSD carry the green
+"measured" light. What it *means* is the proxy part. Higher RMSSD indicates
+parasympathetic (rest) activation, which correlates with calm, but **it also rises
+with slow breathing regardless of mental state** — so you can move it deliberately
+without settling at all. That caveat travels with the numbers in the report.
+
+## Testing the untestable
 
 `visual.js` draws to a canvas, which can't run here — but the thing most likely to
 break it isn't the pixels, it's a plain runtime error in a render path that would
@@ -536,6 +583,53 @@ Pick a duration (5/10/20/30 min) once connected, or skip it. A plain "session
 complete" message shows at the end — no alarm, no sound — and the countdown lives
 in the same readout as everything else.
 
+## The Polar H10 chest strap (optional second device)
+
+**Yes, two Bluetooth devices at once works.** Web Bluetooth connects them
+independently — each `requestDevice()` needs its own user gesture, which is why the
+strap has its own **+ heart strap** button and can't be chained off the Muse
+connection, and each gets its own GATT connection. They don't contend for anything.
+The strap is optional in both directions: without one the EEG side is unchanged, and
+a strap that drops out mid-session disturbs nothing.
+
+It reads the **standard** Bluetooth Heart Rate Service (`0x180D`), not Polar's
+proprietary PMD service. The standard characteristic already carries RR intervals —
+the beat-to-beat timings, which is exactly and only what HRV is computed from — so
+this is stable across firmware and works with any HR strap, not just this one.
+
+What it adds (`public/polar.js`, tested in `test-polar.js`):
+
+| | |
+|---|---|
+| **Heart rate** | direct, measured |
+| **HRV (RMSSD)** | standard short-term HRV over a rolling 60s window |
+| **`hrv` metric** | RMSSD normalised to your own baseline. Tier: **proxy** |
+| **`equanimity`** | finally computes — from HRV *steadiness*, not level. Still **exploratory** |
+| **Breathing** | recovered from RSA and it **takes precedence over the Muse's PPG** — ECG-grade beat timing at the chest beats an optical pulse read through a temple. Verified at 4.92s for a true 5.00s |
+
+**Steadiness, not level, feeds equanimity.** That's deliberate: a person can have
+high HRV and still be reacting to everything. `SteadinessTracker` reports the
+inverted coefficient of variation of RMSSD, which is *relative*, so someone with high
+resting HRV isn't scored differently for the level.
+
+**The artifact rejection is the load-bearing part.** A strap occasionally misses a
+beat, producing one interval about twice as long as its neighbours. RMSSD squares
+successive differences, so a single such interval contributes two enormous terms.
+`test-polar.js` measures it: an unrejected missed beat took RMSSD from **30.0ms to
+182.2ms** — a six-fold inflation that would appear as a sudden flood of
+parasympathetic calm at the exact moment the strap slipped. Intervals outside
+300–2000ms, or more than 25% away from the previous one, are discarded, and the
+reject rate is reported. Above 30% rejected (or on lost skin contact) the readout
+says so and the report prints a banner instead of presenting the figures as
+physiology.
+
+**Honest limit on what HRV means:** RMSSD is a real measurement and the strap is
+ECG-grade, so the *number* is solid — that's why HR and RMSSD carry the green
+"measured" light. What it *means* is the proxy part. Higher RMSSD indicates
+parasympathetic (rest) activation, which correlates with calm, but **it also rises
+with slow breathing regardless of mental state** — so you can move it deliberately
+without settling at all. That caveat travels with the numbers in the report.
+
 ## Test
 
 ```bash
@@ -560,6 +654,12 @@ node test-visual-smoke.js
                     # more than 2.2 blurred draw ops per frame. Plus a long
                     # Iris run (~20 simulated seconds), because its every-6s
                     # deposit path never fired in a 1-second test at all
+node test-polar.js   # Polar H10: the variable-length Heart Rate Measurement
+                     # packet (flag-driven offsets, the energy-expended field
+                     # that must be SKIPPED, truncated buffers), RMSSD against
+                     # hand-computed values, missed-beat rejection measured
+                     # against what it prevents, time-bounded windowing, and
+                     # breathing recovered from RR intervals via RSA
 node test-metrics.js # the evidence registry: every metric has a tier, source
                      # and caveat; missing inputs return null (never 0);
                      # out-of-range inputs are clamped, not passed through;

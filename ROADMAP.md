@@ -173,9 +173,15 @@ moving.
 - [x] **The honesty layer** — evidence tiers, null-not-zero, and visible
       caveats on every score (see the new non-negotiable above).
 
+- [x] **Polar H10 integrated.** Two Bluetooth devices at once works — Web
+      Bluetooth connects them independently, one user gesture per
+      `requestDevice()`. Reads the standard Heart Rate Service rather than
+      Polar's proprietary PMD, so it is firmware-stable and strap-agnostic.
+      `Equanimity` finally computes, from HRV *steadiness* rather than level,
+      and breathing now comes from ECG-grade RSA in preference to temple PPG.
+
 **Next up, concretely:** session storage (unblocks self-relative progress),
-scatter→recover in the report, and HRV steadiness so `Equanimity` stops
-returning `null`.
+scatter→recover in the report, and the calibration trials below.
 
 ## Validation: calibration trials (the actual next priority)
 
@@ -319,7 +325,7 @@ view so today's architecture doesn't foreclose it:
 |---|---|---|
 | Formal EEG sits (now) | Muse S Gen 2 (owned) | In use — via Mind Monitor (Phase 0), moving to BrainFlow direct BLE (Phase 2). Same 4-channel layout as Muse 2 (AF7/AF8 frontal, TP9/TP10 temporal, 256Hz) plus PPG/HR, accelerometer, and a breath sensor — a superset, fully compatible with this pipeline. |
 | Formal EEG sits (future option) | Neurosity Crown | Not yet needed |
-| HRV, cheap + very reliable | Polar H10 (~$90) | **Recommended next purchase.** Speaks standard BLE (Heart Rate Service `0x180D` for RR intervals, plus Polar's PMD for raw ECG), so Path B can add it as a second `requestDevice()` and feed the same state object — genuinely a small job. Unlocks real HRV, which is what `Equanimity` needs to stop returning `null`, and it is far more robust than EEG in a crowded room (Phase 3). |
+| HRV, cheap + very reliable | Polar H10 (~$90) | **Owned and integrated (2026-07-26).** Speaks standard BLE (Heart Rate Service `0x180D` for RR intervals, plus Polar's PMD for raw ECG), so Path B can add it as a second `requestDevice()` and feed the same state object — genuinely a small job. Unlocks real HRV, which is what `Equanimity` needs to stop returning `null`, and it is far more robust than EEG in a crowded room (Phase 3). |
 | Breathing, real phase not just rate | Respiration belt (chest/abdomen strain) | Wanted, harder to source than expected. Muse S has no strain sensor — breathing is inferred from PPG via RSA, which gives **rate but not phase**, and phase is what a breath-paced visual actually wants. Off-the-shelf BLE options are either expensive (Hexoskin, ~$400+) or research kit; the cheap route is a piezo/stretch belt into an ESP32 speaking BLE, where the *hardware* is the work and the software side is easy. Worth it only if breath phase proves to matter for the experience. |
 | All-day tracking (Phase 4) | Apple Watch / Oura / Whoop-class wrist HRV | Correlations to be established later — different precision tradeoff than EEG, chosen for wearability |
 

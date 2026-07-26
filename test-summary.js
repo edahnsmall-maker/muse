@@ -126,6 +126,32 @@ const mk = (n, fn) => Array.from({ length: n }, (_, i) => Object.assign({ t: i, 
   console.log('✓ an unusable-signal session is labelled as such, before its own numbers');
 }
 
+// 7c) The heart section appears only when a strap was actually connected, and
+//     labels itself unreliable when the beats were mostly rejected.
+{
+  const st = Summary.summarize(mk(120, () => ({ calm: 0.5 })));
+  const none = Summary.toMarkdown(st, { dateISO: 'x' });
+  assert.ok(!/Heart \(chest strap\)/.test(none),
+    'with no strap the section must be ABSENT, not zeroed — the report must never imply it measured something it had no sensor for');
+
+  const good = Summary.toMarkdown(st, { dateISO: 'x', heart: {
+    hrBpm: 58, rmssdMs: 42.3, steadiness: 0.81, breathSec: 5.2, rejectRate: 0.02, contact: true, beats: 118 } });
+  assert.ok(/Heart \(chest strap\)/.test(good), 'a connected strap should get a section');
+  assert.ok(/58 bpm/.test(good) && /42 ms/.test(good), 'the figures should be there');
+  assert.ok(!/unreliable/i.test(good), 'clean strap data must not be flagged');
+  assert.ok(/also rises with slow breathing/.test(good),
+    'the caveat that RMSSD can be moved deliberately must travel with the numbers');
+
+  const bad = Summary.toMarkdown(st, { dateISO: 'x', heart: {
+    hrBpm: 58, rmssdMs: 180, steadiness: 0.2, breathSec: null, rejectRate: 0.62, contact: true, beats: 40 } });
+  assert.ok(/Strap data unreliable/.test(bad), 'a high reject rate must be called out');
+
+  const lost = Summary.toMarkdown(st, { dateISO: 'x', heart: {
+    hrBpm: 58, rmssdMs: 40, steadiness: 0.6, breathSec: 5, rejectRate: 0.05, contact: false, beats: 100 } });
+  assert.ok(/Skin contact was lost/.test(lost), 'lost skin contact must be called out');
+  console.log('\u2713 the heart section is absent without a strap and self-flags when unreliable');
+}
+
 // 8) sparkline: fixed alphabet, one char per value, monotonic, range-safe.
 {
   assert.strictEqual(Summary.sparkline([]), '');
