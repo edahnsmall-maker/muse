@@ -374,6 +374,181 @@ function createZenVisual(canvas) {
     bctx.globalCompositeOperation = 'source-over';
   }
 
+  function roseRadii() {
+    const rMax = Math.min(BW, BH) * 0.56;
+    const r0 = rMax * 0.14;
+    const step = (rMax - r0) / IRIS_MAX_RINGS;
+    return { rMax, r0, step, rNow: Math.min(rMax, r0 + irisRing * step) };
+  }
+
+  function roseWindowBand(rInner, tSec, alphaScale, sharpCtx, softCtx = lctx) {
+    const cx = BW / 2, cy = BH / 2;
+    const rad = roseRadii();
+    const rMax = rad.rMax;
+    const band = Math.max(2, rad.step * 2.6);
+    const r0 = Math.max(rMax * 0.10, rInner - band * 0.75);
+    const r1 = Math.min(rMax, rInner + band * 1.15);
+    const calm = clamp01(smooth.calm);
+    const focus = clamp01(smooth.focus);
+    const activity = clamp01(smooth.activity);
+    const cells = 24;
+
+    for (let s = 0; s < cells; s++) {
+      const mid = ((s + 0.5) / cells) * Math.PI * 2;
+      const a0 = (s / cells) * Math.PI * 2;
+      const a1 = ((s + 1) / cells) * Math.PI * 2;
+      let owner = 0;
+      let best = -1;
+      for (let i = 0; i < 4; i++) {
+        const w = VizCore.lobeWeight(mid, i, 1.05);
+        if (w > best) { best = w; owner = i; }
+      }
+
+      const lvl = clamp01(smooth.levels[owner]);
+      const spike = clamp01(state.bands[owner].spike);
+      const petal = 0.42 + 0.58 * Math.pow(Math.abs(Math.cos(mid * IRIS_PETALS)), 0.82);
+      const rough = (1 - calm) * activity * 0.12 * VizCore.wobble(tSec * 0.18 + s * 0.7, owner + 2);
+      const inner = Math.max(1, r0 + band * 0.20 * petal * (0.5 - lvl));
+      const outer = Math.max(inner + 1, r1 + band * (0.38 * petal * focus + 0.55 * spike + rough));
+      const col = mixColor(VizCore.CHANNEL_COLORS[owner], [246, 205, 126], focus * (0.30 + 0.30 * calm));
+
+      if (softCtx) {
+        softCtx.beginPath();
+        softCtx.moveTo(cx + Math.sin(a0) * inner, cy - Math.cos(a0) * inner);
+        softCtx.lineTo(cx + Math.sin(mid) * outer, cy - Math.cos(mid) * outer);
+        softCtx.lineTo(cx + Math.sin(a1) * inner, cy - Math.cos(a1) * inner);
+        softCtx.closePath();
+        softCtx.fillStyle = rgba(col, alphaScale * (0.09 + 0.24 * lvl + 0.15 * focus));
+        softCtx.fill();
+      }
+
+      if (sharpCtx) {
+        sharpCtx.beginPath();
+        sharpCtx.moveTo(cx + Math.sin(a0) * inner, cy - Math.cos(a0) * inner);
+        sharpCtx.lineTo(cx + Math.sin(mid) * outer, cy - Math.cos(mid) * outer);
+        sharpCtx.lineTo(cx + Math.sin(a1) * inner, cy - Math.cos(a1) * inner);
+        sharpCtx.strokeStyle = rgba(mixColor(col, [255, 240, 205], 0.28), alphaScale * (0.12 + 0.24 * focus + 0.11 * lvl));
+        sharpCtx.lineWidth = Math.max(0.45, rMax * (0.0025 + 0.0025 * focus));
+        sharpCtx.stroke();
+      }
+    }
+
+    if (sharpCtx) {
+      sharpCtx.beginPath();
+      sharpCtx.arc(cx, cy, Math.max(1, rInner), 0, Math.PI * 2);
+      sharpCtx.strokeStyle = `rgba(232,222,188,${(0.06 + 0.10 * focus) * alphaScale})`;
+      sharpCtx.lineWidth = Math.max(0.45, rMax * 0.0018);
+      sharpCtx.stroke();
+    }
+  }
+
+  function renderIrisRose(tSec) {
+    const cx = BW / 2, cy = BH / 2;
+    const rad = roseRadii();
+    const rNow = Math.max(2, rad.rNow);
+    const calm = clamp01(smooth.calm);
+    const focus = clamp01(smooth.focus);
+    const activity = clamp01(smooth.activity);
+
+    if (sessionSec - irisLastDeposit >= IRIS_DEPOSIT_SEC && irisRing < IRIS_MAX_RINGS) {
+      irisLastDeposit = sessionSec;
+      lctx.clearRect(0, 0, BW, BH);
+      lctx.globalCompositeOperation = 'source-over';
+      rctx.globalCompositeOperation = 'lighter';
+      roseWindowBand(rNow, tSec, 1.0, rctx);
+      rctx.filter = 'blur(2px)';
+      rctx.drawImage(lay, 0, 0);
+      rctx.filter = 'none';
+      rctx.globalCompositeOperation = 'source-over';
+      irisRing++;
+    }
+
+    const bg = bctx.createLinearGradient(0, 0, 0, BH);
+    bg.addColorStop(0, '#080714');
+    bg.addColorStop(0.58, '#050711');
+    bg.addColorStop(1, '#02030a');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    const halo = bctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, rad.rMax * 1.35));
+    halo.addColorStop(0, `rgba(104,92,168,${0.06 + 0.08 * focus})`);
+    halo.addColorStop(0.58, `rgba(34,44,94,${0.05 + 0.05 * calm})`);
+    halo.addColorStop(1, 'rgba(0,0,0,0)');
+    bctx.fillStyle = halo;
+    bctx.fillRect(0, 0, BW, BH);
+
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.globalAlpha = 0.92;
+    bctx.drawImage(rec, 0, 0);
+    bctx.globalAlpha = 1;
+
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'source-over';
+    roseWindowBand(rNow, tSec, 1.0, null);
+    bctx.filter = `blur(${Math.max(1, Math.round(BW / 150))}px)`;
+    bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
+    roseWindowBand(rNow, tSec, 0.92, bctx, null);
+
+    bctx.globalCompositeOperation = 'source-over';
+    bctx.lineCap = 'round';
+    const spokes = 24;
+    for (let s = 0; s < spokes; s++) {
+      const a = (s / spokes) * Math.PI * 2;
+      const fade = s % 2 ? 0.035 : 0.060;
+      bctx.beginPath();
+      bctx.moveTo(cx + Math.sin(a) * rad.r0 * 0.72, cy - Math.cos(a) * rad.r0 * 0.72);
+      bctx.lineTo(cx + Math.sin(a) * rad.rMax * 0.98, cy - Math.cos(a) * rad.rMax * 0.98);
+      bctx.strokeStyle = `rgba(238,226,190,${fade * (0.55 + focus)})`;
+      bctx.lineWidth = Math.max(0.35, rad.rMax * 0.0012);
+      bctx.stroke();
+    }
+    for (let k = 1; k <= 5; k++) {
+      const r = rad.rMax * (0.16 + k * 0.16);
+      bctx.beginPath();
+      bctx.arc(cx, cy, r, 0, Math.PI * 2);
+      bctx.strokeStyle = `rgba(238,226,190,${0.025 + 0.025 * focus})`;
+      bctx.lineWidth = Math.max(0.35, rad.rMax * 0.0013);
+      bctx.stroke();
+    }
+
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * calm;
+    const tide = 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / Math.max(1, period));
+    const tideR = rad.rMax * (0.28 + 0.60 * tide);
+    const tg = bctx.createRadialGradient(cx, cy, Math.max(1, tideR * 0.94), cx, cy, Math.max(2, tideR * 1.08));
+    tg.addColorStop(0, 'rgba(255,255,255,0)');
+    tg.addColorStop(0.5, `rgba(245,232,196,${0.035 + 0.045 * calm})`);
+    tg.addColorStop(1, 'rgba(255,255,255,0)');
+    bctx.fillStyle = tg;
+    bctx.beginPath(); bctx.arc(cx, cy, Math.max(2, tideR * 1.08), 0, Math.PI * 2); bctx.fill();
+
+    const oculus = Math.max(2, rad.rMax * (0.105 + 0.018 * (1 - calm) + 0.012 * activity));
+    const og = bctx.createRadialGradient(cx, cy, 0, cx, cy, oculus * 2.4);
+    og.addColorStop(0, 'rgba(4,4,9,0.98)');
+    og.addColorStop(0.58, 'rgba(7,8,18,0.92)');
+    og.addColorStop(1, 'rgba(7,8,18,0)');
+    bctx.fillStyle = og;
+    bctx.beginPath(); bctx.arc(cx, cy, oculus * 2.4, 0, Math.PI * 2); bctx.fill();
+    bctx.strokeStyle = `rgba(246,220,166,${0.12 + 0.16 * focus})`;
+    bctx.lineWidth = Math.max(0.55, rad.rMax * 0.003);
+    bctx.beginPath(); bctx.arc(cx, cy, oculus * 1.02, 0, Math.PI * 2); bctx.stroke();
+
+    bctx.globalCompositeOperation = 'lighter';
+    for (let i = 0; i < 4; i++) {
+      const sp = clamp01(state.bands[i].spike);
+      if (sp < 0.22) continue;
+      const a = VizCore.CHANNEL_ANGLES[i];
+      const r = Math.max(rad.r0, rNow);
+      const col = VizCore.CHANNEL_COLORS[i];
+      bctx.beginPath();
+      bctx.arc(cx, cy, r + rad.step * 2.5, a - 0.18, a + 0.18);
+      bctx.strokeStyle = rgba(mixColor(col, [255, 255, 255], 0.45), 0.20 * sp);
+      bctx.lineWidth = Math.max(1, rad.rMax * 0.018);
+      bctx.stroke();
+    }
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
   // ---- Flow: a live trace that dissolves as it ages ----------------------
   // "Now" sits slightly right of centre rather than hard against the right
   // edge: new paint appears where the eye already is, and history trails left.
@@ -1068,7 +1243,7 @@ function createZenVisual(canvas) {
       else renderPulse(ctx, canvas.width, canvas.height, tSec);
     } else {
       if (mode === 'eclipse') renderEclipse(tSec);
-      else if (mode === 'iris') renderIris(tSec);
+      else if (mode === 'iris') renderIrisRose(tSec);
       else if (mode === 'bloom') renderBloom(now);
       else if (mode === 'field') renderField(tSec);
       else renderBreath(dtSec);
