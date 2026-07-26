@@ -5,8 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Muse Zen Spike — Direct Bluetooth</title>
 <style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #05060a;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  :root {
+    --glass: rgba(7, 13, 27, .54);
+    --glass-soft: rgba(12, 21, 42, .42);
+    --glass-line: rgba(130, 219, 255, .18);
+    --glass-line-hot: rgba(130, 219, 255, .38);
+    --text-main: rgba(235,246,255,.88);
+    --text-muted: rgba(202,222,238,.48);
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #03050b;
+    font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
   #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
   /* #overlay is a full-screen flex container, so its own box covers the entire
      canvas. It MUST NOT receive pointer events itself, or its dead space eats
@@ -17,63 +25,97 @@
   #overlay { position: fixed; inset: 0; pointer-events: none;
     display: flex; flex-direction: column; align-items: center; justify-content: space-between; padding: 5vmin; }
   #overlay > * { pointer-events: auto; }
-  .status { color: rgba(255,255,255,.85); font-size: 15px;
-    letter-spacing: .04em; text-align: center; text-shadow: 0 1px 12px rgba(0,0,0,.6);
-    background: rgba(0,0,0,.28); padding: 10px 18px; border-radius: 999px;
-    backdrop-filter: blur(6px); transition: opacity .6s; max-width: 80vw; }
+  .status { color: var(--text-main); font-size: 14px;
+    letter-spacing: .08em; text-align: center; text-shadow: 0 1px 12px rgba(0,0,0,.6);
+    background: var(--glass); padding: 10px 18px; border-radius: 16px;
+    border: 1px solid var(--glass-line); box-shadow: 0 0 0 1px rgba(255,255,255,.035) inset, 0 18px 70px rgba(0,0,0,.35);
+    backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
+    transition: opacity .6s; max-width: 80vw; }
   .status.hidden { opacity: 0; }
   /* One understated readout — small, translucent, no card/pill chrome.
      Plain-English content (calm, brainwaves, breathing, noise, timer). */
-  #readout { position: absolute; right: 5vmin; bottom: 5vmin; text-align: right;
-    color: rgba(255,255,255,.6); font-size: 13px; font-variant-numeric: tabular-nums;
+  #readout { position: absolute; right: 5vmin; bottom: 5vmin; width: 250px; padding: 15px 16px;
+    text-align: right; color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums;
     line-height: 1.9; text-shadow: 0 1px 8px rgba(0,0,0,.7);
+    background: linear-gradient(180deg, var(--glass), rgba(5, 8, 18, .34));
+    border: 1px solid var(--glass-line); border-radius: 18px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.035) inset, 0 24px 90px rgba(0,0,0,.38);
+    backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
     opacity: 0; transition: opacity .6s; }
   #readout.show { opacity: 1; }
   #readout b { color: rgba(255,255,255,.92); font-weight: 500; }
   #timerPicker { display: flex; gap: 8px; }
   #timerPicker button { font-size: 13px; padding: 8px 16px;
     background: rgba(255,255,255,.12); color: rgba(255,255,255,.85); }
-  #hint { color: rgba(255,255,255,.4); font-size: 12px; letter-spacing: .05em; text-align: center; }
+  #hint { display: none; }
   kbd { background: rgba(255,255,255,.12); border-radius: 4px; padding: 1px 5px; font-size: 11px; }
-  button { pointer-events: auto; font: inherit; font-size: 16px; letter-spacing: .03em;
-    padding: 14px 28px; border-radius: 999px; border: none; cursor: pointer;
-    background: rgba(255,255,255,.92); color: #111; }
+  button { pointer-events: auto; font: inherit; font-size: 15px; letter-spacing: .08em;
+    padding: 14px 28px; border-radius: 14px; border: 1px solid var(--glass-line-hot); cursor: pointer;
+    background: linear-gradient(180deg, rgba(134,225,255,.22), rgba(255,255,255,.08));
+    color: var(--text-main); box-shadow: 0 0 22px rgba(102,211,255,.16), 0 1px 0 rgba(255,255,255,.14) inset; }
   button:disabled { opacity: .5; cursor: default; }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
-  #dataPanel { position: absolute; left: 5vmin; bottom: 5vmin;
-    color: rgba(255,255,255,.6); font-size: 12px; opacity: 0; transition: opacity .6s; }
+  #dataPanel { position: absolute; right: calc(5vmin + 276px); bottom: calc(5vmin + 2px);
+    width: clamp(280px, calc(90vw - 340px), 430px); padding: 14px;
+    color: var(--text-muted); font-size: 12px; opacity: 0; transition: opacity .6s, transform .35s, width .35s;
+    background: linear-gradient(180deg, var(--glass), rgba(5,8,18,.30));
+    border: 1px solid var(--glass-line); border-radius: 18px;
+    box-shadow: 0 0 0 1px rgba(255,255,255,.035) inset, 0 24px 90px rgba(0,0,0,.35);
+    backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
+    z-index: 8; }
   #dataPanel.show { opacity: 1; }
-  #dataToggle { cursor: pointer; user-select: none; letter-spacing: .05em; margin-bottom: 8px; }
+  #dataPanel.collapsed { width: auto; padding: 0; background: transparent; border-color: transparent;
+    box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none; }
+  #dataPanel::after { content: ""; position: absolute; right: -14px; bottom: 35px; width: 14px; height: 1px;
+    background: linear-gradient(90deg, var(--glass-line), transparent); }
+  #dataPanel.collapsed::after { display: none; }
+  #dataToggle { cursor: pointer; user-select: none; letter-spacing: .16em; margin-bottom: 10px;
+    text-transform: uppercase; font-size: 10px; color: var(--text-muted); }
+  #dataPanel.collapsed #dataToggle { margin: 0; padding: 8px 12px; border-radius: 12px;
+    border: 1px solid var(--glass-line); background: var(--glass);
+    box-shadow: 0 0 0 1px rgba(255,255,255,.035) inset, 0 12px 36px rgba(0,0,0,.28);
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
   #dataToggle:hover { color: rgba(255,255,255,.9); }
   #dataBody.collapsed { display: none; }
-  #chartCanvas { display: block; background: rgba(255,255,255,.03); border-radius: 8px; }
-  #legend { display: flex; flex-wrap: wrap; gap: 6px 12px; margin-top: 8px; max-width: 320px; }
+  #chartCanvas { display: block; width: 100%; height: 140px; background:
+    linear-gradient(rgba(255,255,255,.055) 1px, transparent 1px) 0 50% / 100% 50%,
+    radial-gradient(circle at 82% 62%, rgba(128,231,255,.15), transparent 22%),
+    rgba(1,4,13,.62); border: 1px solid rgba(255,255,255,.06); border-radius: 12px; }
+  #legend { display: flex; flex-wrap: wrap; gap: 7px 13px; margin-top: 11px; max-width: 100%; }
   .legendItem { display: flex; align-items: center; gap: 5px; cursor: pointer;
-    user-select: none; font-size: 11px; transition: opacity .2s; }
+    user-select: none; font-size: 11px; letter-spacing: .06em; transition: opacity .2s; }
   .legendItem.off { opacity: .3; }
-  .legendItem .swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
-  .tierMark { opacity: .45; font-size: 9px; margin-left: 3px; }
-  #viewSwitch { display: flex; gap: 6px; width: 100%; margin-bottom: 4px; }
-  #viewSwitch .pill { font-size: 11px; padding: 5px 12px; }
-  #tierKey { width: 100%; margin-top: 6px; font-size: 10px; color: rgba(255,255,255,.35); }
+  .legendItem .swatch { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
+    box-shadow: 0 0 9px currentColor; }
+  .tierMark, #tierKey { display: none; }
+  #viewSwitch { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 11px; padding-bottom: 10px;
+    border-bottom: 1px solid rgba(255,255,255,.07); }
+  #viewSwitch .pill { min-height: 27px; font-size: 10px; padding: 0 10px; border-radius: 10px; }
   #whatsThis { text-decoration: underline; cursor: pointer; }
 
   /* Visual-mode pills, top centre — light, clickable, unobtrusive.
      The explicit z-index keeps them above #overlay rather than relying on DOM
      order, so re-ordering the markup can't silently make them unclickable again. */
   #modeBar { position: absolute; top: 3.5vmin; left: 50%; transform: translateX(-50%);
-    z-index: 10; display: flex; gap: 7px; flex-wrap: wrap; justify-content: center;
+    z-index: 10; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+    padding: 7px; border: 1px solid var(--glass-line); border-radius: 18px;
+    background: rgba(5,10,22,.46); box-shadow: 0 0 0 1px rgba(255,255,255,.035) inset, 0 18px 70px rgba(0,0,0,.35);
+    backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
     opacity: 0; pointer-events: none; transition: opacity .6s; }
   #modeBar.show { pointer-events: auto; }
   #modeBar.show { opacity: 1; }
-  .pill { font-size: 12px; letter-spacing: .07em; padding: 7px 15px; border-radius: 999px;
-    background: rgba(255,255,255,.06); color: rgba(255,255,255,.5); cursor: pointer;
-    user-select: none; transition: background .25s, color .25s;
+  .pill { min-height: 34px; display: inline-flex; align-items: center; justify-content: center;
+    font-size: 12px; letter-spacing: .11em; padding: 0 15px; border-radius: 12px;
+    border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.045);
+    color: var(--text-muted); cursor: pointer;
+    user-select: none; transition: background .25s, color .25s, border-color .25s, box-shadow .25s;
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); white-space: nowrap; }
   .pill:hover { color: rgba(255,255,255,.92); }
-  .pill.active { background: rgba(255,255,255,.17); color: rgba(255,255,255,.95); }
+  .pill.active { color: #f7fbff; border-color: var(--glass-line-hot);
+    background: linear-gradient(180deg, rgba(134,225,255,.18), rgba(255,255,255,.06));
+    box-shadow: 0 0 22px rgba(102,211,255,.20), 0 1px 0 rgba(255,255,255,.14) inset; }
   #patternBar { position: absolute; top: calc(3.5vmin + 42px); left: 50%; transform: translateX(-50%);
     z-index: 10; display: none; gap: 7px; }
   #patternBar.show { display: flex; }
@@ -153,11 +195,19 @@
   /* Readout rows: label, tier light, level bar, value. The bar is the
      "what am I even looking at" fix — a bare number is hard to read at a
      glance, a filled bar is not. */
-  .rRow { display: flex; align-items: center; justify-content: flex-end; gap: 7px; }
+  #readoutHead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 12px; }
+  #readoutTitle { display: flex; align-items: center; gap: 8px; color: var(--text-muted);
+    font-size: 10px; letter-spacing: .18em; text-transform: uppercase; }
+  #readoutTitle::before { content: ""; width: 7px; height: 7px; border: 1px solid #80e7ff;
+    transform: rotate(45deg); opacity: .75; }
+  #feedState { min-height: 28px; padding: 0 10px; font-size: 9px; border-radius: 10px; }
+  .rRow { display: grid; grid-template-columns: minmax(74px, 1fr) 64px 34px; align-items: center;
+    gap: 9px; justify-content: flex-end; min-height: 27px; }
   .rLabel { opacity: .72; }
-  .rBar { width: 42px; height: 5px; border-radius: 3px; background: rgba(255,255,255,.11);
+  .rBar { width: 64px; height: 5px; border-radius: 5px; background: rgba(255,255,255,.11);
     overflow: hidden; flex: none; }
-  .rBar i { display: block; height: 100%; border-radius: 3px; transition: width .25s linear; }
+  .rBar i { display: block; height: 100%; border-radius: 5px; transition: width .25s linear;
+    box-shadow: 0 0 10px currentColor; }
   .rVal { min-width: 26px; text-align: right; color: rgba(255,255,255,.92); font-weight: 500; }
   .rRow.primary .rLabel { color: rgba(255,255,255,.95); opacity: 1; }
 
@@ -167,20 +217,24 @@
   .tier-solid { background: #6ee7a8; box-shadow: 0 0 5px rgba(110,231,168,.7); }
   .tier-moderate { background: #f2c879; box-shadow: 0 0 5px rgba(242,200,121,.55); }
   .tier-speculative { background: transparent; border: 1px solid rgba(255,255,255,.4); }
-  #tierLegend { display: none; margin-top: 10px; font-size: 10px;
-    color: rgba(255,255,255,.42); justify-content: flex-end; gap: 10px; align-items: center; }
-  #tierLegend.show { display: flex; }
+  #tierLegend { display: none; }
+  #tierLegend.show { display: none; }
   #tierLegend .li { display: flex; align-items: center; gap: 4px; }
   #tierLegend .more { text-decoration: underline; cursor: pointer; }
 
   /* A real, clickable control bar. Keyboard shortcuts still work, but nothing
      is keyboard-ONLY — shortcuts you have to remember are not discoverable. */
-  #controls { display: flex; gap: 7px; flex-wrap: wrap; justify-content: center;
-    opacity: 0; transition: opacity .6s; margin-bottom: 10px; }
+  #controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+    opacity: 0; transition: opacity .6s; margin-bottom: 10px; padding: 8px;
+    border: 1px solid rgba(255,255,255,.09); border-radius: 18px;
+    background: rgba(5,8,18,.58); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
+    box-shadow: 0 18px 70px rgba(0,0,0,.42); }
   #controls.show { opacity: 1; }
   #controls .pill kbd { margin-left: 5px; opacity: .5; font-size: 9px; }
-  #controls .pill.mark { background: rgba(255,255,255,.15); color: rgba(255,255,255,.95); }
-  #controls .pill.mark:hover { background: rgba(255,255,255,.26); }
+  #controls .pill { text-transform: none; letter-spacing: .08em; }
+  #controls .pill.mark { background: linear-gradient(180deg, rgba(134,225,255,.16), rgba(255,255,255,.06));
+    color: rgba(255,255,255,.95); }
+  #controls .pill.mark:hover { background: rgba(255,255,255,.18); }
 </style>
 </head>
 <body>
@@ -211,9 +265,9 @@
   </div>
   <div id="timerPicker"></div>
   <div id="readout"></div>
-  <div id="dataPanel">
-    <div id="dataToggle">▾ Data</div>
-    <div id="dataBody">
+  <div id="dataPanel" class="collapsed">
+    <div id="dataToggle">▸ Live feed</div>
+    <div id="dataBody" class="collapsed">
       <canvas id="chartCanvas" width="320" height="140"></canvas>
       <div id="legend"></div>
     </div>
@@ -227,8 +281,7 @@
       <span class="pill" id="summaryLink">Session summary</span>
       <span class="pill" id="btnFull">Fullscreen<kbd>F</kbd></span>
     </div>
-    <div id="hint">no Mind Monitor, no phone — this page talks to your Muse directly over Bluetooth ·
-      <a href="index.html">use Mind Monitor instead →</a></div>
+    <div id="hint"></div>
   </div>
 </div>
 <script src="dsp.js"></script>
@@ -906,36 +959,12 @@ const dataBodyEl = document.getElementById('dataBody');
 const dataPanelEl = document.getElementById('dataPanel');
 
 function renderLegend() {
-  const tierBadge = (key) => {
-    const t = Metrics.tierOf(key);
-    if (!t) return '';
-    const mark = t === 'solid' ? '●' : t === 'moderate' ? '◐' : '○';
-    return `<span class="tierMark" title="${Metrics.tierInfo(t).label}">${mark}</span>`;
-  };
   legendEl.innerHTML =
-    `<div id="viewSwitch">`
-    + `<span class="pill${viewMode === 'sensors' ? ' active' : ''}" data-view="sensors">Sensors</span>`
-    + `<span class="pill${viewMode === 'composites' ? ' active' : ''}" data-view="composites">Composites</span>`
-    + `</div>`
-    + visibleSeries().map((s) =>
+    visibleSeries().map((s) =>
       `<span class="legendItem${seriesEnabled[s.key] ? '' : ' off'}" data-key="${s.key}">` +
-      `<span class="swatch" style="background:${s.color}"></span>${s.label}${tierBadge(s.key)}</span>`
-    ).join('')
-    + (viewMode === 'composites'
-      ? `<div id="tierKey">● measured · ◐ proxy · ○ exploratory — <span id="whatsThis">what do these mean?</span></div>`
-      : '');
+      `<span class="swatch" style="background:${s.color};color:${s.color}"></span>${s.label}</span>`
+    ).join('');
 
-  legendEl.querySelectorAll('[data-view]').forEach((el) => {
-    el.addEventListener('click', () => {
-      viewMode = el.dataset.view;
-      // The visual follows the view: in composite view it is tuned to the
-      // selected composite, not to the raw sensor-derived calm score — and
-      // Flow graphs the composites rather than the raw electrodes, so the main
-      // visual and the panel are showing the same four things.
-      visual.setSeries(viewMode);
-      renderLegend(); renderChart();
-    });
-  });
   legendEl.querySelectorAll('.legendItem').forEach((el) => {
     el.addEventListener('click', () => {
       const key = el.dataset.key;
@@ -949,8 +978,6 @@ function renderLegend() {
       renderLegend(); renderChart();
     });
   });
-  const wt = document.getElementById('whatsThis');
-  if (wt) wt.addEventListener('click', showMetricInfo);
 }
 
 // The honesty panel: what each score is computed from, and what it cannot tell
@@ -1025,7 +1052,8 @@ function sampleHistory(result, channels) {
 
 dataToggleEl.addEventListener('click', () => {
   const collapsed = dataBodyEl.classList.toggle('collapsed');
-  dataToggleEl.textContent = (collapsed ? '▸' : '▾') + ' Data';
+  dataPanelEl.classList.toggle('collapsed', collapsed);
+  dataToggleEl.textContent = (collapsed ? '▸' : '▾') + ' Live feed';
 });
 renderLegend();
 
@@ -1203,16 +1231,14 @@ setInterval(() => {
   const noiseLabel = result.artifactRate > 0.5 ? 'High' : result.artifactRate > 0.15 ? 'Some' : 'Low';
   const brainLabel = result.ratio == null ? '—' : result.alphaSum > result.betaSum ? 'Alpha (restful)' : 'Beta (active)';
   // A row with a level bar reads at a glance in a way a bare number does not.
-  // `tier` adds a coloured light so the confidence of a score is visible
-  // without having to remember which name is which.
+  // Confidence tiers stay in the info overlay; the live table stays visually quiet.
   const row = (label, value01, { text = null, tier = null, color = null, primary = false } = {}) => {
     const pct = value01 == null ? 0 : Math.round(Math.max(0, Math.min(1, value01)) * 100);
-    const light = tier ? `<span class="tierLight tier-${tier}" title="${Metrics.tierInfo(tier).label}"></span>` : '';
     const bar = value01 == null ? '<span class="rBar"></span>'
       : `<span class="rBar"><i style="width:${pct}%;background:${color || 'rgba(255,255,255,.75)'}"></i></span>`;
     const val = text != null ? text : (value01 == null ? '—' : pct);
     return `<div class="rRow${primary ? ' primary' : ''}">`
-      + `<span class="rLabel">${label}</span>${light}${bar}<span class="rVal">${val}</span></div>`;
+      + `<span class="rLabel">${label}</span>${bar}<span class="rVal">${val}</span></div>`;
   };
 
   let topRows;
@@ -1252,14 +1278,25 @@ setInterval(() => {
   }
   if (markerLog.length) tail.push(row('Marks', null, { text: String(markerLog.length) }));
 
-  readoutEl.innerHTML = topRows.join('') + '<div style="height:12px"></div>' + tail.join('')
-    + `<div id="tierLegend" class="${viewMode === 'composites' ? 'show' : ''}">`
-    + `<span class="li"><span class="tierLight tier-solid"></span>measured</span>`
-    + `<span class="li"><span class="tierLight tier-moderate"></span>proxy</span>`
-    + `<span class="li"><span class="tierLight tier-speculative"></span>exploratory</span>`
-    + `<span class="more" id="legendMore">what?</span></div>`;
-  const lm = document.getElementById('legendMore');
-  if (lm) lm.addEventListener('click', showMetricInfo);
+  const viewSwitchHtml = `<div id="viewSwitch">`
+    + `<span class="pill${viewMode === 'sensors' ? ' active' : ''}" data-view="sensors">Sensors</span>`
+    + `<span class="pill${viewMode === 'composites' ? ' active' : ''}" data-view="composites">Composites</span>`
+    + `</div>`;
+  const feedOpen = !dataBodyEl.classList.contains('collapsed');
+  readoutEl.innerHTML = `<div id="readoutHead"><div id="readoutTitle">Metrics</div>`
+    + `<span class="pill${feedOpen ? ' active' : ''}" id="feedState">${feedOpen ? 'Feed open' : 'Feed closed'}</span></div>`
+    + viewSwitchHtml
+    + topRows.join('') + '<div style="height:12px"></div>' + tail.join('');
+
+  readoutEl.querySelectorAll('[data-view]').forEach((el) => {
+    el.addEventListener('click', () => {
+      viewMode = el.dataset.view;
+      visual.setSeries(viewMode);
+      renderLegend(); renderChart();
+    });
+  });
+  const feedState = document.getElementById('feedState');
+  if (feedState) feedState.addEventListener('click', () => dataToggleEl.click());
 
   if (trainingMode) {
     const t = sessionSeconds();
