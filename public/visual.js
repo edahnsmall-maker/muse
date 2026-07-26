@@ -1425,13 +1425,13 @@ function createZenVisual(canvas) {
     const cx = BW * (0.50 + 0.025 * Math.sin(tSec * 0.035));
     const cy = BH * (0.50 + 0.015 * (breath - 0.5));
     const colors = [
-      [92, 219, 255],
-      [153, 122, 255],
-      [117, 239, 194],
-      [255, 132, 178],
-      [255, 207, 135],
+      [34, 232, 255],
+      [177, 98, 255],
+      [54, 255, 192],
+      [255, 75, 176],
+      [255, 213, 80],
     ];
-    const sheets = 18;
+    const sheets = 26;
     for (let i = 0; i < sheets; i++) {
       const u = i / Math.max(1, sheets - 1);
       const side = u - 0.5;
@@ -1451,8 +1451,8 @@ function createZenVisual(canvas) {
       const x3 = cx - side * BW * (0.78 - 0.16 * focus);
       const y3 = BH + min * 0.12;
 
-      lctx.strokeStyle = rgba(col, 0.018 + 0.055 * (0.35 + level) + 0.050 * spike);
-      lctx.lineWidth = Math.max(1, spread * (0.13 + 0.13 * (1 - calm) + 0.06 * focus));
+      lctx.strokeStyle = rgba(col, 0.050 + 0.120 * (0.35 + level) + 0.110 * spike + 0.045 * focus);
+      lctx.lineWidth = Math.max(1, spread * (0.16 + 0.16 * (1 - calm) + 0.08 * focus));
       lctx.beginPath();
       lctx.moveTo(x0, y0);
       lctx.bezierCurveTo(x1, y1, x2, y2, x3, y3);
@@ -1468,8 +1468,9 @@ function createZenVisual(canvas) {
     const beamCol = mixColor([94, 222, 255], [255, 219, 169], focus);
     const beam = bctx.createLinearGradient(cx - min * 0.45, 0, cx + min * 0.45, 0);
     beam.addColorStop(0, rgba(beamCol, 0));
-    beam.addColorStop(0.48, rgba(beamCol, 0.08 + 0.12 * focus));
-    beam.addColorStop(0.52, rgba([255, 255, 255], 0.05 + 0.08 * focus));
+    beam.addColorStop(0.46, rgba(beamCol, 0.18 + 0.22 * focus));
+    beam.addColorStop(0.50, rgba([255, 255, 255], 0.16 + 0.18 * focus));
+    beam.addColorStop(0.54, rgba([255, 86, 190], 0.08 + 0.12 * thinking));
     beam.addColorStop(1, rgba(beamCol, 0));
     bctx.fillStyle = beam;
     bctx.fillRect(cx - min * 0.45, 0, min * 0.9, BH);
@@ -1516,10 +1517,10 @@ function createZenVisual(canvas) {
       c.stroke();
     };
 
-    const cool = [103, 224, 255];
-    const mint = [115, 237, 190];
-    const warm = [255, 122, 132];
-    const gold = [255, 222, 156];
+    const cool = [42, 228, 255];
+    const mint = [66, 255, 186];
+    const warm = [255, 74, 170];
+    const gold = [255, 225, 90];
     const rot = tSec * (0.006 + 0.018 * (1 - calm));
     const rings = 7;
     for (let i = 0; i < rings; i++) {
@@ -1532,7 +1533,7 @@ function createZenVisual(canvas) {
       const col = mixColor(mixColor(cool, mint, level), warm, clamp01(thinking * 0.72 + spike * 0.45));
       const wobble = (0.006 + 0.052 * thinking + 0.030 * spike) * (1 - 0.65 * focus);
       drawPoly(lctx, sides, r, rot * (i % 2 ? -1 : 1) + i * Math.PI / 12,
-        col, 0.045 + 0.045 * u + 0.06 * spike, min * (0.0011 + 0.0018 * focus), wobble);
+        col, 0.100 + 0.085 * u + 0.140 * spike + 0.040 * focus, min * (0.0017 + 0.0025 * focus), wobble);
     }
 
     for (let i = 0; i < 12; i++) {
@@ -1542,8 +1543,8 @@ function createZenVisual(canvas) {
       lctx.beginPath();
       lctx.moveTo(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0);
       lctx.lineTo(cx + Math.sin(a) * r1, cy - Math.cos(a) * r1);
-      lctx.strokeStyle = rgba(mixColor(cool, gold, focus), 0.025 + 0.055 * focus);
-      lctx.lineWidth = Math.max(0.5, min * 0.0014);
+      lctx.strokeStyle = rgba(mixColor(cool, gold, focus), 0.070 + 0.140 * focus);
+      lctx.lineWidth = Math.max(0.5, min * 0.0020);
       lctx.stroke();
     }
 
@@ -1553,7 +1554,7 @@ function createZenVisual(canvas) {
     bctx.drawImage(lay, 0, 0);
     bctx.filter = 'none';
     drawPoly(bctx, 6, min * (0.08 + 0.020 * focus), -rot, mixColor(gold, mint, calm),
-      0.12 + 0.14 * focus, min * 0.0018, 0.004 * thinking);
+      0.260 + 0.280 * focus, min * 0.0026, 0.004 * thinking);
     bctx.globalCompositeOperation = 'source-over';
   }
 
@@ -1582,11 +1583,11 @@ function createZenVisual(canvas) {
     const left = (BW - width) / 2;
     const active = clamp01(thinking + 0.35 * (1 - calm));
     const colors = [
-      [95, 216, 255],
-      [160, 124, 255],
-      [255, 127, 178],
-      [255, 212, 151],
-      [121, 236, 195],
+      [44, 225, 255],
+      [178, 94, 255],
+      [255, 78, 181],
+      [255, 219, 91],
+      [73, 255, 195],
     ];
 
     for (let layer = 0; layer < 5; layer++) {
@@ -1607,8 +1608,8 @@ function createZenVisual(canvas) {
           + amp * (0.65 * broad + thinking * 0.75 * (peakA - 0.55 * peakB) + 0.030 * active * fine);
         if (i === 0) lctx.moveTo(x, y); else lctx.lineTo(x, y);
       }
-      lctx.strokeStyle = rgba(col, 0.050 + 0.080 * focus + 0.040 * active);
-      lctx.lineWidth = Math.max(1, min * (0.006 + 0.008 * (1 - calm) + 0.004 * focus));
+      lctx.strokeStyle = rgba(col, 0.105 + 0.170 * focus + 0.085 * active);
+      lctx.lineWidth = Math.max(1, min * (0.008 + 0.010 * (1 - calm) + 0.006 * focus));
       lctx.stroke();
     }
 
@@ -1620,9 +1621,9 @@ function createZenVisual(canvas) {
 
     const line = bctx.createLinearGradient(left, 0, left + width, 0);
     line.addColorStop(0, 'rgba(80,210,255,0)');
-    line.addColorStop(0.42, `rgba(112,224,255,${0.08 + 0.13 * focus})`);
-    line.addColorStop(0.50, `rgba(255,236,193,${0.12 + 0.20 * focus})`);
-    line.addColorStop(0.58, `rgba(112,224,255,${0.08 + 0.13 * focus})`);
+    line.addColorStop(0.42, `rgba(80,235,255,${0.18 + 0.24 * focus})`);
+    line.addColorStop(0.50, `rgba(255,240,145,${0.22 + 0.30 * focus})`);
+    line.addColorStop(0.58, `rgba(255,78,190,${0.12 + 0.18 * thinking})`);
     line.addColorStop(1, 'rgba(80,210,255,0)');
     bctx.strokeStyle = line;
     bctx.lineWidth = Math.max(1, min * (0.002 + 0.003 * focus));
@@ -1656,15 +1657,15 @@ function createZenVisual(canvas) {
       flowers.push({
         x: 0.5 + Math.sin(a) * (0.11 + 0.05 * thinking),
         y: 0.52 - Math.cos(a) * (0.10 + 0.04 * focus),
-        alpha: 0.32 + 0.18 * calm,
-        radius: 0.12 + 0.035 * Math.sin(tSec * 0.02 + i),
-        color: mixColor([86, 220, 255], [255, 142, 178], smoothstep(0.36, 0.92, thinking)),
+        alpha: 0.62 + 0.22 * calm,
+        radius: 0.14 + 0.045 * Math.sin(tSec * 0.02 + i),
+        color: mixColor([36, 232, 255], [255, 76, 178], smoothstep(0.36, 0.92, thinking)),
       });
     }
     for (const b of active) {
       flowers.push({
         x: b.x, y: b.y, alpha: b.alpha, radius: b.radius * 1.55,
-        color: mixColor(b.color, [255, 245, 216], 0.18 + 0.28 * focus),
+        color: mixColor(b.color, [255, 245, 145], 0.25 + 0.35 * focus),
       });
     }
 
@@ -1678,14 +1679,15 @@ function createZenVisual(canvas) {
         const px = x + Math.sin(a) * R * 0.18;
         const py = y - Math.cos(a) * R * 0.18;
         const g = bctx.createRadialGradient(px, py, 0, px, py, R * (0.74 + 0.12 * Math.sin(p)));
-        g.addColorStop(0, rgba(f.color, 0.12 * f.alpha));
-        g.addColorStop(0.42, rgba(f.color, 0.050 * f.alpha));
+        g.addColorStop(0, rgba(f.color, 0.28 * f.alpha));
+        g.addColorStop(0.42, rgba(f.color, 0.125 * f.alpha));
+        g.addColorStop(0.72, rgba(mixColor(f.color, [255,255,255], 0.4), 0.045 * f.alpha));
         g.addColorStop(1, rgba(f.color, 0));
         bctx.fillStyle = g;
         bctx.beginPath(); bctx.arc(px, py, R, 0, Math.PI * 2); bctx.fill();
       }
-      bctx.strokeStyle = rgba(mixColor(f.color, [255, 255, 255], 0.32), 0.055 + 0.085 * focus);
-      bctx.lineWidth = Math.max(0.5, min * 0.0016);
+      bctx.strokeStyle = rgba(mixColor(f.color, [255, 255, 255], 0.38), 0.150 + 0.180 * focus);
+      bctx.lineWidth = Math.max(0.5, min * 0.0024);
       bctx.beginPath(); bctx.arc(x, y, R * (0.38 + 0.18 * calm), 0, Math.PI * 2); bctx.stroke();
     }
     bctx.globalCompositeOperation = 'source-over';
@@ -1710,18 +1712,18 @@ function createZenVisual(canvas) {
     lctx.clearRect(0, 0, BW, BH);
     lctx.globalCompositeOperation = 'lighter';
     lctx.lineCap = 'round';
-    const layers = 56;
+    const layers = 76;
     const width = BW * 1.08;
     const amp = min * (0.018 + 0.135 * clamp01(thinking + 0.52 * (1 - calm)));
     for (let i = 0; i < layers; i++) {
       const u = i / (layers - 1);
       const y0 = BH * (0.30 + u * 0.42);
       const ridge = smoothstep(0.22, 0.0, Math.abs(u - 0.5));
-      const cool = mixColor([67, 215, 255], [155, 117, 255], u);
-      const col = mixColor(cool, [255, 130, 175], smoothstep(0.42, 0.92, thinking + clamp01(state.bands[i % 4].spike) * 0.4));
+      const cool = mixColor([38, 230, 255], [180, 92, 255], u);
+      const col = mixColor(cool, [255, 78, 178], smoothstep(0.42, 0.92, thinking + clamp01(state.bands[i % 4].spike) * 0.4));
       const phase = tSec * (0.020 + 0.080 * thinking) + i * (0.07 - 0.035 * calm);
-      lctx.strokeStyle = rgba(col, 0.025 + 0.085 * ridge + 0.030 * focus);
-      lctx.lineWidth = Math.max(0.5, min * (0.0025 + 0.0055 * ridge + 0.002 * focus));
+      lctx.strokeStyle = rgba(col, 0.060 + 0.170 * ridge + 0.080 * focus);
+      lctx.lineWidth = Math.max(0.5, min * (0.0032 + 0.0075 * ridge + 0.003 * focus));
       lctx.beginPath();
       for (let s = 0; s <= 90; s++) {
         const x = BW * 0.5 - width / 2 + (s / 90) * width;
@@ -1746,11 +1748,12 @@ function createZenVisual(canvas) {
 
     const seam = bctx.createLinearGradient(BW * 0.12, 0, BW * 0.88, 0);
     seam.addColorStop(0, 'rgba(90,220,255,0)');
-    seam.addColorStop(0.48, `rgba(144,233,255,${0.08 + 0.16 * calm + 0.10 * focus})`);
-    seam.addColorStop(0.52, `rgba(255,233,190,${0.08 + 0.16 * focus})`);
+    seam.addColorStop(0.46, `rgba(80,237,255,${0.20 + 0.24 * calm + 0.16 * focus})`);
+    seam.addColorStop(0.51, `rgba(255,238,124,${0.18 + 0.28 * focus})`);
+    seam.addColorStop(0.56, `rgba(255,80,190,${0.10 + 0.16 * thinking})`);
     seam.addColorStop(1, 'rgba(90,220,255,0)');
     bctx.strokeStyle = seam;
-    bctx.lineWidth = Math.max(1, min * (0.002 + 0.004 * focus));
+    bctx.lineWidth = Math.max(1, min * (0.0032 + 0.0055 * focus));
     bctx.beginPath();
     bctx.moveTo(BW * 0.13, BH * (0.51 + (breath - 0.5) * 0.012));
     bctx.bezierCurveTo(BW * 0.35, BH * (0.50 - 0.025 * (1 - calm)), BW * 0.62,
@@ -1781,12 +1784,12 @@ function createZenVisual(canvas) {
       const ch = i % 4;
       const level = clamp01(smooth.levels[ch]);
       const spike = clamp01(state.bands[ch].spike);
-      const col = mixColor(mixColor([73, 232, 199], [87, 205, 255], level), [255, 118, 154], clamp01(thinking * 0.65 + spike * 0.55));
+      const col = mixColor(mixColor([43, 255, 194], [43, 220, 255], level), [255, 70, 170], clamp01(thinking * 0.65 + spike * 0.55));
       const xBase = BW * (0.12 + i * 0.13) + Math.sin(tSec * 0.025 + i) * min * 0.035;
       const top = BH * (0.08 + 0.03 * Math.sin(i));
       const bottom = BH * (0.78 + 0.08 * calm);
-      lctx.strokeStyle = rgba(col, 0.055 + 0.035 * focus + 0.055 * spike);
-      lctx.lineWidth = Math.max(1, min * (0.045 + 0.020 * level + 0.020 * thinking));
+      lctx.strokeStyle = rgba(col, 0.140 + 0.090 * focus + 0.120 * spike);
+      lctx.lineWidth = Math.max(1, min * (0.058 + 0.026 * level + 0.026 * thinking));
       lctx.beginPath();
       for (let s = 0; s <= 44; s++) {
         const y = top + (s / 44) * (bottom - top);
@@ -1805,7 +1808,7 @@ function createZenVisual(canvas) {
     bctx.drawImage(lay, 0, 0);
     bctx.filter = 'none';
     const floor = bctx.createRadialGradient(BW / 2, BH * 0.75, 0, BW / 2, BH * 0.75, min * 0.52);
-    floor.addColorStop(0, `rgba(125,238,215,${0.045 + 0.080 * calm})`);
+    floor.addColorStop(0, `rgba(95,255,220,${0.120 + 0.170 * calm})`);
     floor.addColorStop(1, 'rgba(125,238,215,0)');
     bctx.fillStyle = floor;
     bctx.fillRect(0, 0, BW, BH);
@@ -1837,20 +1840,20 @@ function createZenVisual(canvas) {
         const ch = p % 4;
         const spike = clamp01(state.bands[ch].spike);
         const level = clamp01(smooth.levels[ch]);
-        const col = mixColor(mixColor([95, 218, 255], [135, 239, 187], level), [255, 126, 164], clamp01(thinking * 0.70 + spike * 0.4));
+        const col = mixColor(mixColor([42, 226, 255], [76, 255, 188], level), [255, 72, 174], clamp01(thinking * 0.70 + spike * 0.4));
         const x = cx + Math.sin(a) * rr;
         const y = cy - Math.cos(a) * rr;
         const pr = min * (0.030 + 0.010 * focus + 0.018 * spike);
         const g = bctx.createRadialGradient(x, y, 0, x, y, pr * 2.2);
-        g.addColorStop(0, rgba(col, 0.10 + 0.11 * focus + 0.12 * spike));
-        g.addColorStop(0.62, rgba(col, 0.030 + 0.040 * focus));
+        g.addColorStop(0, rgba(col, 0.240 + 0.220 * focus + 0.180 * spike));
+        g.addColorStop(0.62, rgba(col, 0.080 + 0.090 * focus));
         g.addColorStop(1, rgba(col, 0));
         bctx.fillStyle = g;
         bctx.beginPath(); bctx.ellipse(x, y, pr * (0.55 + 0.4 * calm), pr * 1.7, -a, 0, Math.PI * 2); bctx.fill();
       }
     }
-    bctx.strokeStyle = rgba([205, 240, 255], 0.055 + 0.12 * focus);
-    bctx.lineWidth = Math.max(0.5, min * 0.0015);
+    bctx.strokeStyle = rgba([210, 246, 255], 0.150 + 0.220 * focus);
+    bctx.lineWidth = Math.max(0.5, min * 0.0022);
     for (let p = 0; p < petals; p++) {
       const a = rot + (p / petals) * Math.PI * 2;
       bctx.beginPath();
@@ -1885,7 +1888,7 @@ function createZenVisual(canvas) {
       const ch = i % 4;
       const level = clamp01(smooth.levels[ch]);
       const spike = clamp01(state.bands[ch].spike);
-      const col = mixColor(mixColor([84, 220, 255], [116, 239, 196], calm), [255, 128, 154], clamp01(thinking * 0.62 + spike * 0.50));
+      const col = mixColor(mixColor([42, 230, 255], [72, 255, 190], calm), [255, 75, 174], clamp01(thinking * 0.62 + spike * 0.50));
       const amp = min * (0.004 + 0.030 * thinking + 0.022 * spike) * (1 - 0.62 * calm);
       const pts = 128;
       bctx.beginPath();
@@ -1898,12 +1901,12 @@ function createZenVisual(canvas) {
         const y = cy - Math.cos(a) * rr * (0.62 + 0.18 * calm);
         if (p === 0) bctx.moveTo(x, y); else bctx.lineTo(x, y);
       }
-      bctx.strokeStyle = rgba(col, 0.040 + 0.055 * (1 - u) + 0.060 * focus);
-      bctx.lineWidth = Math.max(0.5, min * (0.0013 + 0.0024 * (1 - u) + 0.0015 * focus));
+      bctx.strokeStyle = rgba(col, 0.100 + 0.105 * (1 - u) + 0.125 * focus);
+      bctx.lineWidth = Math.max(0.5, min * (0.0020 + 0.0032 * (1 - u) + 0.0023 * focus));
       bctx.stroke();
     }
     const pool = bctx.createRadialGradient(cx, cy, 0, cx, cy, min * (0.18 + 0.13 * calm));
-    pool.addColorStop(0, `rgba(150,238,255,${0.055 + 0.12 * calm + 0.05 * focus})`);
+    pool.addColorStop(0, `rgba(120,245,255,${0.130 + 0.190 * calm + 0.100 * focus})`);
     pool.addColorStop(1, 'rgba(150,238,255,0)');
     bctx.fillStyle = pool;
     bctx.beginPath(); bctx.arc(cx, cy, min * (0.20 + 0.13 * calm), 0, Math.PI * 2); bctx.fill();
