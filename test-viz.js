@@ -409,4 +409,35 @@ const VizCore = require('./public/viz-core.js');
   console.log('\u2713 smoothSeries removes jitter, keeps the signal, does not lag, and respects nulls');
 }
 
+{
+  // legendEntries must name what the renderer is actually drawing, in the same
+  // order and the same colours. Generated from one source so it cannot drift —
+  // the chart's electrode colours HAD drifted from the visual's, so a ribbon and
+  // its own line on the graph were different colours.
+  const sensors = VizCore.legendEntries({ composites: false });
+  assert.strictEqual(sensors.length, 4, 'four electrodes');
+  assert.deepStrictEqual(sensors.map((e) => e.label), VizCore.CHANNEL_LABELS,
+    'labels must be the electrode names in order');
+  sensors.forEach((e, i) => assert.deepStrictEqual(e.color, VizCore.CHANNEL_COLORS[i],
+    `${e.label} must carry the colour the renderer draws it in`));
+
+  const comps = VizCore.legendEntries({ composites: true });
+  assert.strictEqual(comps.length, 4, 'four composites');
+  assert.deepStrictEqual(comps.map((e) => e.label), VizCore.PULSE_METRICS.map((m) => m.label));
+  comps.forEach((e, i) => assert.deepStrictEqual(e.color, VizCore.PULSE_METRICS[i].color));
+
+  // The two sets must be genuinely different, or the switch tells you nothing.
+  assert.notDeepStrictEqual(sensors.map((e) => e.label), comps.map((e) => e.label));
+
+  const withBreath = VizCore.legendEntries({ composites: true, breath: true });
+  assert.strictEqual(withBreath.length, 5, 'breath adds one entry');
+  assert.strictEqual(withBreath[4].label, 'Breath', 'and comes last');
+  assert.deepStrictEqual(withBreath[4].color, [255, 255, 255], 'drawn white, as the renderer draws it');
+  // No breath data means no breath entry — a legend must not name something that
+  // is not on screen.
+  assert.ok(!VizCore.legendEntries({ breath: false }).some((e) => e.label === 'Breath'),
+    'no breath signal means no breath entry');
+  console.log('\u2713 legendEntries names exactly what is drawn, in matching colours');
+}
+
 console.log('\nAll viz-core tests passed.');

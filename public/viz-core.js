@@ -26,6 +26,11 @@
     [110, 231, 183], // TP10 — mint
   ];
 
+  // Electrode names, in the same order as CHANNEL_COLORS. Kept here rather than
+  // read from DSP so visual.js depends only on viz-core — and so a legend can
+  // name what it is drawing without the renderer knowing about the BLE layer.
+  const CHANNEL_LABELS = ['TP9', 'AF7', 'AF8', 'TP10'];
+
   // Eclipse uses its own warm palette rather than the channel hues: the
   // eclipse metaphor wants a sun's corona, and hot magenta/orange/gold on a
   // LIGHT ground is what makes it read as vivid. (Saturated colour added onto
@@ -398,8 +403,24 @@
     { key: 'drowsy', label: 'Drowsy', color: [155, 140, 255], base: 0.78, out: 1 },
   ];
 
+  // What a visual is currently showing, as label/colour pairs — so a legend is
+  // generated from the same source the renderer draws from and cannot drift out
+  // of sync with it. That drift is not hypothetical: the chart's electrode
+  // colours had diverged from the visual's, so a ribbon and its own line on the
+  // graph were different colours.
+  function legendEntries({ composites = false, breath = false } = {}) {
+    const out = composites
+      ? PULSE_METRICS.map((m) => ({ label: m.label, color: m.color }))
+      : CHANNEL_LABELS.map((label, i) => ({ label, color: CHANNEL_COLORS[i] }));
+    // Breath last, and white, matching how it is drawn: a phase about a midpoint
+    // rather than one of the four levels.
+    if (breath) out.push({ label: 'Breath', color: [255, 255, 255], faint: true });
+    return out;
+  }
+
   return {
-    CHANNEL_COLORS, CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
+    CHANNEL_COLORS, CHANNEL_LABELS, legendEntries,
+    CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
     MODES, nextMode, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,

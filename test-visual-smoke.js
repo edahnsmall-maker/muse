@@ -35,7 +35,9 @@ function makeCtx() {
     if (typeof o === 'number' && !Number.isFinite(o)) badNumbers.push(`addColorStop offset ${o}`);
     if (typeof c === 'string' && /NaN|Infinity|undefined/.test(c)) badNumbers.push(`addColorStop color "${c}"`);
   } };
-  const ctx = { canvas: null, lineCap: 'butt', imageSmoothingQuality: 'low', imageSmoothingEnabled: true, __ops: [] };
+  const ctx = { canvas: null, lineCap: 'butt', imageSmoothingQuality: 'low',
+    imageSmoothingEnabled: true, font: '10px sans-serif', textAlign: 'left',
+    textBaseline: 'alphabetic', __ops: [] };
 
   // Validate PROPERTY assignments too, not just method arguments. Canvas
   // state like lineWidth/globalAlpha/fillStyle is set by assignment, so a
@@ -106,6 +108,11 @@ function makeCtx() {
   ctx.translate = record('translate');
   ctx.rotate = record('rotate');
   ctx.scale = record('scale');
+  // Text, for the Flow legend. Arg 0 is the string, so the numeric check must skip
+  // it; measureText has to return something plausible or layout maths goes NaN.
+  ctx.fillText = record('fillText');
+  ctx.strokeText = record('strokeText');
+  ctx.measureText = (t) => { calls.push('measureText'); return { width: String(t).length * 6 }; };
   ctx.createPattern = () => ({ setTransform: () => {} });
   return ctx;
 }

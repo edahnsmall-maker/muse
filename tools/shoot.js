@@ -160,7 +160,7 @@ const SCENARIOS = {
 
 // ---- args -----------------------------------------------------------------
 function parseArgs(argv) {
-  const out = { mode: null, all: false, scenario: 'realistic', at: [30], w: 1280, h: 720, outDir: null };
+  const out = { mode: null, all: false, scenario: 'realistic', at: [30], w: 1280, h: 720, outDir: null, series: null };
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--all') out.all = true;
@@ -169,6 +169,9 @@ function parseArgs(argv) {
     else if (a === '--at') out.at = argv[++i].split(',').map(Number).filter((n) => Number.isFinite(n) && n >= 0);
     else if (a === '--size') { const [w, h] = argv[++i].split('x').map(Number); out.w = w; out.h = h; }
     else if (a === '--out') out.outDir = argv[++i];
+    // Flow follows the data panel's Sensors/Composites switch, so a screenshot
+    // needs to be able to pick which one it is showing.
+    else if (a === '--series') out.series = argv[++i];
   }
   if (!out.at.length) out.at = [30];
   return out;
@@ -210,6 +213,7 @@ async function main() {
     p.on('pageerror', (e) => { console.error(`PAGE ERROR [${mode}]:`, e.message); process.exitCode = 1; });
     await p.goto('file://' + path.join(__dirname, 'harness.html'));
     await p.evaluate((m) => window.__setMode(m), mode);
+    if (args.series) await p.evaluate((sv) => window.__visual.setSeries(sv), args.series);
 
     let simSec = 0;
     for (const target of [...args.at].sort((a, b) => a - b)) {
@@ -227,7 +231,7 @@ async function main() {
         });
         simSec += step;
       }
-      const file = path.join(outDir, `${mode}-${args.scenario}-${String(Math.round(target)).padStart(4, '0')}s.png`);
+      const file = path.join(outDir, `${mode}-${args.scenario}${args.series ? '-' + args.series : ''}-${String(Math.round(target)).padStart(4, '0')}s.png`);
       await p.locator('#gl').screenshot({ path: file });
       written.push(file);
       console.log(`${file}`);

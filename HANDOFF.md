@@ -299,9 +299,14 @@ without the ~1s lag.
    value.
 3. **Scatter→recover in the report**, honestly framed this time. `recentReturns`
    already feeds the cue engine.
-4. **Bloom's animation.** The owner said the gradients are "pretty perfect" but the
+4. **Legends on the other per-channel modes.** Flow has one; `drawLegend(c, W, H,
+   entries)` in `visual.js` is deliberately reusable and takes W/H so it works for
+   both the full-resolution modes and the small-buffer ones. Field, Silk and Iris
+   have the same ambiguity. Entries come from `VizCore.legendEntries()` so a key can
+   never drift from what is actually drawn. The owner asked for Flow first.
+5. **Bloom's animation.** The owner said the gradients are "pretty perfect" but the
    animation/action needs work. Do not touch the gradients.
-5. Iris/Corona/Pulse tuning as the owner reports back.
+6. Iris/Corona/Pulse tuning as the owner reports back.
 
 ---
 

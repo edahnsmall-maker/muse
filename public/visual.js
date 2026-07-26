@@ -123,6 +123,48 @@ function createZenVisual(canvas) {
     c.fillRect(0, 0, BW, BH);
   }
 
+  /* A key for whatever a mode is currently drawing. Reusable on purpose: only
+   * Flow uses it today, but the other per-channel modes (Field, Silk, Iris) have
+   * the same ambiguity and are expected to want it.
+   *
+   * Entries come from VizCore.legendEntries so the key is generated from the same
+   * source the renderer draws from and cannot drift out of sync with it. That
+   * drift is not hypothetical — the data panel's electrode colours HAD diverged
+   * from the visual's, so a ribbon and its own line were different colours.
+   *
+   * Top-left, because the mode pills own top-centre, the readout bottom-right and
+   * the data panel bottom-left. Deliberately quiet: something to glance at, not
+   * to read. Takes W/H so it works for both the full-resolution modes and the
+   * small-buffer ones.
+   */
+  function drawLegend(c, W, H, entries) {
+    if (!entries || !entries.length) return;
+    const pad = Math.round(Math.min(W, H) * 0.030);
+    const size = Math.max(10, Math.round(H * 0.0165));
+    const lh = Math.round(size * 1.75);
+    const swatch = Math.round(size * 1.7);
+    c.save();
+    c.globalCompositeOperation = 'source-over';
+    c.font = `${size}px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
+    c.textBaseline = 'middle';
+    c.textAlign = 'left';
+    c.lineCap = 'round';
+    entries.forEach((e, i) => {
+      const y = pad + size + i * lh;
+      // A short line segment, not a dot: the data is drawn as lines, so the key
+      // should look like the thing it refers to.
+      c.strokeStyle = rgba(e.color, e.faint ? 0.5 : 0.8);
+      c.lineWidth = Math.max(1.5, size * 0.16);
+      c.beginPath();
+      c.moveTo(pad, y);
+      c.lineTo(pad + swatch, y);
+      c.stroke();
+      c.fillStyle = rgba(e.color, e.faint ? 0.42 : 0.66);
+      c.fillText(e.label, pad + swatch + Math.round(size * 0.6), y);
+    });
+    c.restore();
+  }
+
   // ---- Eclipse: a growing void with a corona of mental activity ---------
   // Stillness is rendered as ABSENCE: as calm rises the black void expands and
   // pushes the bright, busy corona out toward the margins. Settling literally
@@ -815,7 +857,15 @@ function createZenVisual(canvas) {
     // blew out to white.
     const baseW = Math.max(1, H * 0.0018);
 
-    // The breath, as a wave about the vertical midpoint: above the centre line is
+      // A legend, because the four traces change identity with the Sensors /
+    // Composites switch and there is otherwise no way to know whether the blue
+    // line is TP9 or Focus.
+    drawLegend(c, W, H, VizCore.legendEntries({
+      composites,
+      breath: history.some((h) => h.breath != null),
+    }));
+
+  // The breath, as a wave about the vertical midpoint: above the centre line is
     // the in-breath, below it the out-breath. Drawn from the same history buffer
     // as everything else, so it is the real recorded breath rather than a sine
     // generated at the current rate — you can see where the rhythm changed.
