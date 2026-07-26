@@ -77,6 +77,17 @@
       noiseAvg: avg(clean.map((s) => (typeof s.noise === 'number' ? s.noise : 0))),
       spikeTotal: clean.reduce((sum, s) => sum + (s.spikes || 0), 0),
       perChannel,
+      // How much of the sit produced usable signal AT THE FOREHEAD PAIR, which
+      // is where every composite actually comes from. The ear channels sit near
+      // the jaw and are routinely unusable, so averaging all four understates
+      // how bad a genuinely bad session was and overstates a good one.
+      //
+      // This exists because a real session came back with 3-11% usable signal on
+      // every channel and the report still printed an average calm, a range, a
+      // first-third/last-third comparison and a full sparkline, all with the same
+      // confidence as a clean sit. One "read it loosely" bullet does not undo
+      // four tables that look like measurements.
+      usableAvg: (perChannel[1].usableFraction + perChannel[2].usableFraction) / 2,
       trace: downsample(calms, tracepoints),
     };
   }
@@ -119,12 +130,30 @@
     else if (delta > 0) lines.push('The second half was calmer than the first.');
     else lines.push('The first half was calmer than the second — sits often go that way.');
 
-    if (s.spikeTotal > 0) {
-      lines.push(`${s.spikeTotal} time${s.spikeTotal === 1 ? '' : 's'} your attention shifted sharply and came back. That returning is the practice.`);
+    // This used to read "N times your attention shifted sharply and came back.
+    // That returning is the practice." It was removed, because it was not true.
+    //
+    // The count is band-power volatility: how often a channel's alpha/beta
+    // balance moved more than a threshold away from its own 3-second baseline.
+    // In a real 9-minute sit it came out at 389 — roughly one every 1.4 seconds —
+    // which no one's attention does. The number was measuring EEG restlessness
+    // and being reported as a spiritual accomplishment, which is worse than a
+    // neutral wrong number because it flatters. Now it is named for what it
+    // measures, and only mentioned at all as a rate, so an implausible value is
+    // obvious rather than encouraging.
+    if (s.spikeTotal > 0 && s.durationSec > 0) {
+      const perMin = s.spikeTotal / (s.durationSec / 60);
+      lines.push(`The signal shifted sharply about ${perMin.toFixed(1)} times a minute. `
+        + `This is electrical restlessness, not a count of times you came back — `
+        + `we don't yet have a validated way to detect that.`);
     }
 
     if (s.noiseAvg > 0.35) {
       lines.push('A lot of this sit was electrically noisy (movement, jaw, or a loose headband), so read it loosely.');
+    }
+    if (s.usableAvg != null && s.usableAvg < 0.25) {
+      lines.push(`Only about ${Math.round(s.usableAvg * 100)}% of the signal was usable, so the numbers `
+        + `below are not measurements of anything. Check the headband fit and sit again.`);
     }
     return lines;
   }
@@ -167,6 +196,16 @@
 
     L.push('## Numbers');
     L.push('');
+    // A banner, not a footnote. When the forehead pair was mostly unusable there
+    // is no signal for any of this to be derived from, and a table that looks
+    // identical to a clean session's is a false claim regardless of what a
+    // caveat further down says.
+    if (stats.usableAvg != null && stats.usableAvg < 0.25) {
+      L.push(`> **Not usable.** Only ${pct(stats.usableAvg)} of the forehead signal was readable this`);
+      L.push('> session, so the figures below describe noise, not your mind. They are kept only');
+      L.push('> so the session is not silently missing from your records.');
+      L.push('');
+    }
     L.push('| Measure | Value |');
     L.push('| --- | --- |');
     L.push(`| Average calm | ${pct(stats.calmAvg)} |`);
@@ -174,8 +213,9 @@
     L.push(`| First third → last third | ${pct(stats.firstThirdCalm)} → ${pct(stats.lastThirdCalm)} |`);
     L.push(`| Time settled | ${pct(stats.settledFraction)} |`);
     L.push(`| Time to first settle | ${stats.settlingTimeSec == null ? 'did not sustain one' : Math.round(stats.settlingTimeSec) + 's'} |`);
-    L.push(`| Sharp returns | ${stats.spikeTotal} |`);
+    L.push(`| Signal shifts (per min) | ${(stats.spikeTotal / Math.max(1, stats.durationSec / 60)).toFixed(1)} |`);
     L.push(`| Signal noise (movement) | ${pct(stats.noiseAvg)} |`);
+    L.push(`| Usable forehead signal | ${pct(stats.usableAvg)} |`);
     L.push('');
 
     L.push('## Per sensor');

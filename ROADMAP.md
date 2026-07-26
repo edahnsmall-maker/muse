@@ -177,6 +177,69 @@ moving.
 scatter→recover in the report, and HRV steadiness so `Equanimity` stops
 returning `null`.
 
+## Validation: calibration trials (the actual next priority)
+
+Recorded from the person using this, and it is a better design than what was
+built first. Markers currently ask you to *type*, which costs a sentence's worth
+of attention. **Single-task trials** cost almost nothing and produce cleaner data,
+because each trial isolates one variable instead of asking the data to explain
+everything at once.
+
+The shape: pick one thing, sit for 10–30 minutes, and press one button whenever
+that one thing happens. Nothing else.
+
+- **Return trial.** Press every time you notice you'd drifted and came back.
+  Tests whether anything in the signal marks the moment of noticing.
+- **Quiet trial.** Press when a stretch of quiet begins, press again when it
+  ends. Tests `calm` and `openness` against felt stillness — and gives *durations*,
+  not just instants.
+- **Thinking trial.** Press when you catch yourself in active discursive
+  thought. This is the direct test of the metric there is most reason to doubt.
+- **Focus trial.** Press when attention locks in, again when it slips. Tests
+  `focus` (frontal theta steadiness) against felt absorption.
+
+**"Isn't focus just thinking inverted?"** Probably not, and it matters. A return
+is a discrete *event* — a transition from distracted to engaged. Focus is a
+continuous *state*. They can move independently: someone can be intensely focused
+*on* a train of thought, and a skilled meditator might press rarely because they
+seldom leave, or often because they notice more finely. So return-rate is not
+monotonic with skill, which means it cannot be treated as a score. Collect them
+separately and let the data say whether they collapse into one axis.
+
+**What makes a trial worth anything** is a per-label confusion table, pooled
+across sits: for each press, what every metric was doing in the seconds before
+and after, versus a random baseline from the same session. If Focus does not
+separate focus-presses from random moments, Focus measures nothing — and that is
+a finding, not a failure. This is a table, not a model.
+
+- [ ] Trial mode: pick a trial, one big button, no typing, no other UI.
+- [ ] Per-label before/after comparison against a within-session random baseline.
+- [ ] Pool trials across sessions (needs the storage above).
+
+## Two things a real session exposed (2026-07-25)
+
+Both were the honesty commitment failing *in practice* while the code looked fine.
+Recorded because they are the kind of thing that will recur.
+
+1. **"Sharp returns: 389"** in a 9-minute sit — one every 1.4 seconds. The number
+   was band-power volatility, and the report described it as "your attention
+   shifted sharply and came back. That returning is the practice." A meaningless
+   number presented as a spiritual accomplishment. Worse than a neutral wrong
+   number, because it flatters. Now named for what it measures, reported as a
+   rate so an implausible value is obvious, and explicitly labelled as *not* a
+   count of returns. A test that had been asserting the old wording was deleted —
+   it was pinning the false claim in place.
+2. **A session with 3–11% usable signal** still printed an average calm, a range,
+   a first-third/last-third comparison and a full sparkline, all with the same
+   confidence as a clean sit. One "read it loosely" bullet does not undo four
+   tables that look like measurements. There is now a banner *above* the numbers,
+   and it fires on the forehead pair specifically, since that is where every
+   composite comes from.
+
+**The general rule this suggests:** every reported number needs a companion
+answer to "how much signal was this actually derived from," and the UI has to act
+on that answer rather than merely disclose it.
+
 ## Phase 2 — the real phone app
 
 **Goal:** each person at the center runs this on their own phone, no laptop
@@ -256,7 +319,8 @@ view so today's architecture doesn't foreclose it:
 |---|---|---|
 | Formal EEG sits (now) | Muse S Gen 2 (owned) | In use — via Mind Monitor (Phase 0), moving to BrainFlow direct BLE (Phase 2). Same 4-channel layout as Muse 2 (AF7/AF8 frontal, TP9/TP10 temporal, 256Hz) plus PPG/HR, accelerometer, and a breath sensor — a superset, fully compatible with this pipeline. |
 | Formal EEG sits (future option) | Neurosity Crown | Not yet needed |
-| HRV, cheap + very reliable | Polar H10 (~$90) | Not yet purchased — strong option to add for group events (Phase 3), more robust than EEG in a crowded room |
+| HRV, cheap + very reliable | Polar H10 (~$90) | **Recommended next purchase.** Speaks standard BLE (Heart Rate Service `0x180D` for RR intervals, plus Polar's PMD for raw ECG), so Path B can add it as a second `requestDevice()` and feed the same state object — genuinely a small job. Unlocks real HRV, which is what `Equanimity` needs to stop returning `null`, and it is far more robust than EEG in a crowded room (Phase 3). |
+| Breathing, real phase not just rate | Respiration belt (chest/abdomen strain) | Wanted, harder to source than expected. Muse S has no strain sensor — breathing is inferred from PPG via RSA, which gives **rate but not phase**, and phase is what a breath-paced visual actually wants. Off-the-shelf BLE options are either expensive (Hexoskin, ~$400+) or research kit; the cheap route is a piezo/stretch belt into an ESP32 speaking BLE, where the *hardware* is the work and the software side is easy. Worth it only if breath phase proves to matter for the experience. |
 | All-day tracking (Phase 4) | Apple Watch / Oura / Whoop-class wrist HRV | Correlations to be established later — different precision tradeoff than EEG, chosen for wearability |
 
 ## Signals — what's defensible to claim

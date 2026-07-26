@@ -82,9 +82,48 @@ const mk = (n, fn) => Array.from({ length: n }, (_, i) => Object.assign({ t: i, 
   const noisy = Summary.describe(Summary.summarize(mk(60, () => ({ calm: 0.5, noise: 0.8 }))));
   assert.ok(/nois/i.test(noisy.join(' ')), 'a very noisy sit should say so, so the numbers are read loosely');
 
+  // This assertion used to require the text to say "returning is the practice".
+  // That claim was false, so the test was pinning a lie in place. The spike count
+  // is band-power volatility — a real 9-minute session produced 389 of them,
+  // about one every 1.4 seconds, which no one's attention does. It must NOT be
+  // described as a count of times the person came back.
   const spiky = Summary.describe(Summary.summarize(mk(60, (i) => ({ calm: 0.5, spikes: i < 5 ? 1 : 0 }))));
-  assert.ok(/returning is the practice/i.test(spiky.join(' ')), 'returns should be framed as the practice, not as distraction');
+  const spikyText = spiky.join(' ');
+  assert.ok(/signal shifted/i.test(spikyText), `must name what it measures, got: ${spikyText}`);
+  assert.ok(!/returning is the practice/i.test(spikyText),
+    'must not claim electrical restlessness is a count of returns');
+  assert.ok(/not a count of times you came back/i.test(spikyText),
+    'must say explicitly what it is not');
   console.log('✓ describe() stays non-evaluative and normalises difficult sits');
+}
+
+// 7b) A session whose forehead signal was mostly unusable must be labelled as
+//     such, prominently. A real session came back with 3-11% usable signal and
+//     the report still printed an average, a range, a first/last-third
+//     comparison and a sparkline, all with the confidence of a clean sit.
+{
+  const unusable = Summary.summarize(mk(120, (i) => ({
+    calm: 0.5, noise: 0.9,
+    // Forehead pair (indices 1 and 2) almost entirely missing.
+    levels: [0.5, i % 20 === 0 ? 0.5 : null, i % 20 === 0 ? 0.5 : null, 0.5],
+  })));
+  assert.ok(unusable.usableAvg < 0.15, `usableAvg should reflect the forehead pair (got ${unusable.usableAvg})`);
+  const text = Summary.describe(unusable).join(' ');
+  assert.ok(/not measurements of anything/i.test(text), `must refuse to present it as data, got: ${text}`);
+
+  const md = Summary.toMarkdown(unusable, { dateISO: '2026-01-01T00:00:00Z' });
+  assert.ok(/Not usable/.test(md), 'the markdown report needs a banner, not just a footnote');
+  // The banner must come BEFORE the numbers table, or it is a footnote again.
+  assert.ok(md.indexOf('Not usable') < md.indexOf('| Measure | Value |'),
+    'the warning must precede the table it applies to');
+
+  // And a clean session must NOT get the banner — a warning that always fires
+  // is a warning nobody reads.
+  const clean = Summary.summarize(mk(120, () => ({ calm: 0.5, levels: [0.5, 0.5, 0.5, 0.5] })));
+  assert.ok(clean.usableAvg > 0.9, 'a clean session should report high usable signal');
+  assert.ok(!/Not usable/.test(Summary.toMarkdown(clean, { dateISO: '2026-01-01T00:00:00Z' })),
+    'a clean session must not be labelled unusable');
+  console.log('✓ an unusable-signal session is labelled as such, before its own numbers');
 }
 
 // 8) sparkline: fixed alphabet, one char per value, monotonic, range-safe.

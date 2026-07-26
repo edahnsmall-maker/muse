@@ -1,7 +1,7 @@
 # Muse Zen Spike
 
 A working prototype: wear your **Muse S (Gen 2)**, and a full-screen visual
-**responds to your own physiology in real time** — seven visual modes, live graphs of
+**responds to your own physiology in real time** — eight visual modes, live graphs of
 every sensor and composite score, in-the-moment cues, markers you can drop mid-sit,
 and a downloadable session report. This is Phase 0/1 — proving the biofeedback loop
 end to end before building the real app.
@@ -239,7 +239,7 @@ watching precisely because they explain sudden jumps in everything else.
 **What would actually make these valid** isn't more code — it's labelled data. That's
 what the marker system below exists to collect.
 
-## The visuals — seven modes, click a pill at the top or press `V` to cycle
+## The visuals — eight modes, click a pill at the top or press `V` to cycle
 
 **Why there was "still no color", definitively:** every WebGL version computed a
 *single* highlight colour and added that same colour for all four bands. The image
@@ -257,13 +257,14 @@ float-precision bugs that only showed up on real hardware. Canvas 2D uses explic
 rgba colours, real blur, and eliminates that entire bug class. It also made the
 renderer testable — see "Testing the untestable" below.
 
-The seven modes, in cycle order:
+The eight modes, in cycle order:
 
 | Mode | What it is | What drives it |
 |---|---|---|
 | **Eclipse** | A black void on a warm light ground, ringed by a solar corona. Stillness *is* the void: it grows as you settle. Thinking flares at its edge. | Void radius = the selected composite (12%→74% of max radius). Corona churn, speed and brightness = the Thinking score. Its own hot palette (magenta/orange/gold/rose), on light — saturated colour added onto near-black just goes pale grey, which was the real reason earlier versions looked colourless. |
 | **Iris** | Your whole session laid down as a rose window — a persistent record that accumulates rather than scrolling away. | Twelve petals, each sensor owning its own quadrant at its real anatomical angle. A live crown scallops with current activity; every 6s that crown is *fossilised* onto a record layer and the radius steps outward, like a growth ring. Nothing is erased, so at the end you're looking at the shape of the entire sit — which minutes were whole and which were broken stay visible. |
 | **Pulse** | A clock hand sweeps a dial once every 24 seconds, resetting at twelve. Each composite metric owns a ring; wherever the hand is now, that ring **bulges** by how much the metric is doing, and the bulge stays and fades as the hand travels on. | So a rising metric reads as a spiral of growth — small at three o'clock, bigger at six, biggest at nine — and a subsiding one reads as the reverse, the whole last revolution legible at a glance. Bulge is mostly *change* against each metric's own slow baseline (flaring is what the eye reads), with a little absolute level mixed back in so sustained calm doesn't look like nothing happening. Calm and Focus grow **inward**, inside the void; Thinking and Drowsy grow **outward** past the rim — so settling reads as the centre filling with light and thinking reads as flaring at the edges. |
+| **Corona** | The same clock sweep as Pulse, but all four metrics packed into the same radius band so they overlap directly, added together, with no crisp edge anywhere. | One corona whose colour and shape vary around the dial rather than four separate readouts. Pulse's dark gaps between rings read as lanes on a track; this has none. Much higher sensitivity, since with no outline to read there is nothing to see unless the shape genuinely moves. Kept **alongside** Pulse: the lanes are more legible, the corona is more beautiful, and which one actually helps someone settle is an open question only comparison answers. |
 | **Flow** | A live trace, thin and sharp where it's being written, dissolving as it ages. "Now" sits at ~74% across, history trailing left. | Follows the **Sensors/Composites switch** — four electrodes or four composites, in the matching colours. A bright point marks the live head; spikes leave marks that fade with the trace. |
 | **Bloom** | No lines at all. Soft colour gradients emerge, expand, and fade — but only when something significant actually happens. | A per-channel spike (bloom in that channel's colour), or a calm-zone transition: settling (warm) / stirring (cool). |
 | **Field** | One soft wavy band of colour per sensor — the "reference image" look, with real per-channel hue. | Band brightness/thickness = that electrode's alpha share; blur and width grow with calm ("dissolving"). |
@@ -292,13 +293,16 @@ alone), `realistic` (values near 0.5, the regime where under-scaled visuals look
 `settling`, `agitated`, `bursty` (real second-to-second structure, the one that
 distinguishes "working" from "drawing a circle"), `swing`.
 
-**It found five real bugs in one sitting**, none of which were visible in the code: Flow
+**It found six real bugs across two sittings**, none of which were visible in the code: Flow
 mapping values straight to y so a real session used 18% of the screen height; a string of
 beads along every line (adjacent age groups share an endpoint, and a round cap there gets
 drawn twice under additive blending); Pulse's trail stepping at twelve o'clock where the
 ring buffer wraps; Pulse's inward-growing rings bulging through the centre and out the
 other side as a spray of spikes; and Flow's peaks flattening against the frame edge
-because `expand()` hard-clamps.
+because `expand()` hard-clamps; and Flow's trace being legible as noise rather than
+signal, because `expandSoft` multiplies jitter by exactly the factor it multiplies
+signal — so fixing "the line is flat" produced "the line is too jumpy," and the real
+answer was a centred (non-lagging) moving average in time.
 
 **What it does not verify:** how it feels in motion, how it looks at full size in a dark
 room, or GPU-specific behaviour — headless GL is software-backed, so colour and precision
@@ -401,8 +405,8 @@ It also enforces a **performance invariant**: `ctx.filter` blurs every draw oper
 versions issued 4 (Eclipse), ~12 (Field) and ~12 (Flow) per frame. The fix in each case
 is to draw unblurred into a scratch layer and blit it **once** with the filter applied;
 the test now fails any mode averaging more than 2.2 blurred draws per frame, so this
-can't quietly regress. Current: Eclipse 1.00, Iris 1.00, Pulse 0.00, Flow 0.00,
-Bloom 0.00, Field 1.00, Breath 0.00.
+can't quietly regress. Current: Eclipse 1.00, Iris 1.00, Pulse 0.00, Corona 0.00,
+Flow 0.00, Bloom 0.00, Field 1.00, Breath 0.00.
 
 Knobs, in `public/visual.js` / `public/viz-core.js`:
 - `CHANNEL_COLORS` / `CORONA_COLORS` — the per-electrode hues (channel palette, and

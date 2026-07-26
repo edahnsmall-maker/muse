@@ -69,6 +69,7 @@
     { key: 'eclipse', label: 'Eclipse', blurb: 'stillness grows as a void; thinking flares at its edge' },
     { key: 'iris',    label: 'Iris',    blurb: 'your session laid down as a rose window' },
     { key: 'pulse',  label: 'Pulse',  blurb: 'a clock hand sweeps; each metric bulges where it flared' },
+    { key: 'corona', label: 'Corona', blurb: 'the same sweep, overlapping and bleeding into one field' },
     { key: 'flow',   label: 'Flow',   blurb: 'a live trace, dissolving as it ages' },
     { key: 'bloom',  label: 'Bloom',  blurb: 'gradients that appear on real events' },
     { key: 'field',  label: 'Field',  blurb: 'one soft band of colour per sensor' },
@@ -210,6 +211,37 @@
     if (hi <= lo) return 0.5;
     const t = (v - lo) / (hi - lo);
     return 0.5 + 0.5 * Math.tanh((t - 0.5) * knee);
+  }
+
+  // Centred moving average over a time series, null-safe and NON-wrapping.
+  //
+  // Needed because expandSoft() amplifies whatever jitter is already there:
+  // stretching the middle third of the range to fill the frame multiplies
+  // sample-to-sample noise by the same factor. Fixing "the line is flat" that
+  // way directly produced "the line is too jumpy". The answer is not less
+  // expansion — it is smoothing in TIME, which removes the jitter and keeps the
+  // real excursions.
+  //
+  // Centred rather than a running EMA on purpose: an EMA lags, and a lagging
+  // trace next to a live head that is not lagging looks wrong. A centred window
+  // has no phase error. Ends use whatever part of the window exists.
+  function smoothSeries(values, window = 5) {
+    if (!Array.isArray(values)) return [];
+    const half = Math.floor(window / 2);
+    if (half < 1) return values.slice();
+    const out = new Array(values.length);
+    for (let i = 0; i < values.length; i++) {
+      let sum = 0, n = 0;
+      for (let k = -half; k <= half; k++) {
+        const v = values[i + k];
+        if (v == null || Number.isNaN(v)) continue;
+        sum += v; n++;
+      }
+      // A run with no usable neighbours at all stays null rather than becoming
+      // a fabricated number.
+      out[i] = n ? sum / n : (values[i] == null ? null : values[i]);
+    }
+    return out;
   }
 
   // ---- Smooth deterministic wobble ---------------------------------------
@@ -359,7 +391,7 @@
 
   return {
     CHANNEL_COLORS, CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, EventDetector, BloomField, wobble, expand, expandSoft,
+    MODES, nextMode, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,
   };

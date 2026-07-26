@@ -376,4 +376,37 @@ const VizCore = require('./public/viz-core.js');
   console.log('\u2713 expandSoft saturates smoothly instead of clipping flat');
 }
 
+{
+  // smoothSeries: expandSoft multiplies jitter by the same factor it multiplies
+  // signal, so "the line is flat" was fixed straight into "the line is too
+  // jumpy". Smoothing in TIME is the answer, and it must not lag.
+  const f = VizCore.smoothSeries;
+  assert.deepStrictEqual(f([], 5), [], 'empty input is empty output');
+  assert.deepStrictEqual(f([1, 2, 3], 1), [1, 2, 3], 'a window of 1 is a no-op');
+
+  // Alternating jitter on a constant signal must flatten out.
+  const jitter = Array.from({ length: 60 }, (_, i) => (i % 2 ? 0.8 : 0.2));
+  const sm = f(jitter, 9);
+  const mid = sm.slice(10, 50);
+  assert.ok(Math.max(...mid) - Math.min(...mid) < 0.1,
+    `alternating jitter should flatten (span ${(Math.max(...mid) - Math.min(...mid)).toFixed(3)})`);
+
+  // A real ramp must survive, and must NOT be shifted — a centred window has no
+  // phase error, which matters because a lagging trace beside a non-lagging live
+  // head looks wrong.
+  const ramp = Array.from({ length: 100 }, (_, i) => i / 99);
+  const sr = f(ramp, 9);
+  assert.ok(Math.abs(sr[50] - ramp[50]) < 0.01, `a centred window must not shift a ramp (${sr[50]} vs ${ramp[50]})`);
+  assert.ok(sr[80] > sr[50] && sr[50] > sr[20], 'the ramp must still be monotonic');
+
+  // Nulls: neighbours are used where they exist, and a value with no usable
+  // neighbours at all stays null rather than becoming a fabricated number.
+  const withNulls = [null, null, 0.5, null, 0.5, null, null];
+  const sn = f(withNulls, 3);
+  assert.strictEqual(sn[0], null, 'a null with no usable neighbours stays null');
+  assert.ok(sn[3] != null && Math.abs(sn[3] - 0.5) < 1e-9, 'a null between two readings is filled from them');
+  assert.ok(f([null, null, null], 5).every((v) => v === null), 'all-null input stays all-null');
+  console.log('\u2713 smoothSeries removes jitter, keeps the signal, does not lag, and respects nulls');
+}
+
 console.log('\nAll viz-core tests passed.');

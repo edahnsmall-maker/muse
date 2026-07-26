@@ -66,7 +66,7 @@ function createZenVisual(canvas) {
   // Modes that bypass the shared small buffer and draw at full canvas
   // resolution. Both depend on crisp thin strokes, which a ~4x upscale
   // destroys; neither uses a blur filter, so they don't need the small buffer.
-  const DIRECT_MODES = new Set(['flow', 'pulse']);
+  const DIRECT_MODES = new Set(['flow', 'pulse', 'corona']);
 
   // Which series Flow graphs: the four electrodes, or the four composites.
   // Follows the data panel's Sensors/Composites switch, because a main visual
@@ -387,6 +387,7 @@ function createZenVisual(canvas) {
   // fat. There is no `filter` here at all, so it also costs zero blur passes.
   const FLOW_NOW_X = 0.74;
   const FLOW_GROUPS = 26;   // age bands; enough that the ramp reads as smooth
+  const FLOW_SMOOTH = 9;    // samples in the centred smoothing window (~2.2s)
 
   function renderFlow(c, W, H) {
     const bg = c.createLinearGradient(0, 0, 0, H);
@@ -407,7 +408,7 @@ function createZenVisual(canvas) {
       : VizCore.CHANNEL_COLORS;
     // A held value for a metric with no inputs, so a null doesn't collapse the
     // line to the floor and read as a real reading of zero.
-    const valueAt = (i, k) => {
+    const rawAt = (i, k) => {
       const h = history[i];
       if (!composites) return clamp01(h.levels[k]);
       for (let j = i; j >= 0; j--) {
@@ -417,13 +418,22 @@ function createZenVisual(canvas) {
       return null;
     };
 
+    // Smoothed once per frame per series, not per lookup — expandSoft below
+    // stretches the middle of the range to fill the frame, which multiplies
+    // sample-to-sample jitter by the same factor. Without this the trace is
+    // legible as noise rather than as a signal. ~9 samples at ~4Hz is a little
+    // over two seconds, which is shorter than any state worth seeing.
+    const series = [0, 1, 2, 3].map((k) => VizCore.smoothSeries(
+      history.map((_, i) => rawAt(i, k)), FLOW_SMOOTH
+    ));
+
     // expand() is the difference between a trace and a flat line. Every value
     // here is adaptively normalised against the wearer's own baseline, so a real
     // session occupies roughly 0.35..0.75 — mapped straight to y that is about
     // 12% of the screen height, which is what "the line isn't changing at all"
     // actually was. Same fix as Eclipse's void radius.
     const yOf = (i, k) => {
-      const v = valueAt(i, k);
+      const v = series[k][i];
       if (v == null) return null;
       return H * (0.09 + 0.82 * (1 - VizCore.expandSoft(v)));
     };
@@ -650,6 +660,102 @@ function createZenVisual(canvas) {
     c.globalCompositeOperation = 'source-over';
   }
 
+  // ---- Corona: the same sweep, as one bleeding field ---------------------
+  // Same clock-sweep mechanism as Pulse, different picture. Pulse gives each
+  // metric its own lane, which reads as an instrument — concentric rings with
+  // dark gaps between them, like lanes on a track. Corona packs all four into
+  // the SAME radius region so they overlap directly, adds them together, and
+  // draws no crisp edge at all. What you get is a single corona whose colour
+  // and shape vary around the dial, not four separate readouts.
+  //
+  // Kept alongside Pulse rather than replacing it: the lanes are more legible,
+  // the corona is more beautiful, and which one actually helps someone settle is
+  // an open question that only comparison can answer.
+  const CORONA_BASES = [0.52, 0.60, 0.68, 0.76];  // packed close, so they overlap
+  const coronaRings = VizCore.PULSE_METRICS.map(() => new VizCore.SweepRing({
+    bins: PULSE_BINS, revSec: PULSE_REV_SEC,
+  }));
+  // Much hotter than Pulse: the request was explicitly for more sensitivity, and
+  // with no crisp outline to read there is nothing to see unless the shape moves
+  // a lot. levelMix near zero means a steady mind draws a quiet even ring and
+  // all the visible structure is genuine change.
+  const coronaDevs = VizCore.PULSE_METRICS.map(() => new VizCore.DeviationTracker({
+    gain: 9.0, levelMix: 0.10, rate: 0.05,
+  }));
+
+  function renderCorona(c, W, H, tSec) {
+    const cx = W / 2, cy = H / 2;
+    const maxR = Math.min(W, H) * 0.46;
+
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0a1026');
+    bg.addColorStop(1, '#050813');
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+
+    VizCore.PULSE_METRICS.forEach((m, mi) => {
+      const raw = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
+      coronaRings[mi].write(tSec, coronaDevs[mi].update(raw == null ? null : VizCore.expandSoft(raw)));
+    });
+
+    c.globalCompositeOperation = 'lighter';
+    c.lineJoin = 'round';
+    c.lineCap = 'round';
+
+    VizCore.PULSE_METRICS.forEach((m, mi) => {
+      const prof = coronaRings[mi].profile({ smoothBins: 11 });
+      const r0 = maxR * CORONA_BASES[mi];
+      const bulge = maxR * 0.42;
+      const pts = [];
+      let peak = 0;
+      for (let b = 0; b <= PULSE_BINS; b++) {
+        const bin = b % PULSE_BINS;
+        const v = prof[bin];
+        if (v > peak) peak = v;
+        const a = (bin / PULSE_BINS) * Math.PI * 2;
+        const r = Math.max(1, r0 + bulge * v);
+        pts.push([cx + Math.sin(a) * r, cy - Math.cos(a) * r]);
+      }
+
+      // Nothing but stacked soft strokes — no fill, no outline. Widths run from
+      // very wide down to merely wide, all at low alpha, so each metric is a
+      // band of glow rather than a shape with a boundary. Additively they merge
+      // into one field where they overlap, which is the whole point: the dark
+      // gap between lanes is what made Pulse read as an instrument.
+      // Alphas are ~2.5x an earlier attempt. Additive colour at low alpha over
+      // near-black desaturates toward grey — the same lesson Eclipse taught —
+      // so a soft corona has to be drawn genuinely bright to stay coloured.
+      const glow = 0.45 + 0.55 * clamp01(peak);
+      const strokes = [
+        { w: 0.150, a: 0.075 },
+        { w: 0.080, a: 0.100 },
+        { w: 0.040, a: 0.130 },
+        { w: 0.016, a: 0.200 },
+      ];
+      for (const s of strokes) {
+        c.beginPath();
+        pts.forEach(([x, y]) => c.lineTo(x, y));
+        c.strokeStyle = rgba(m.color, s.a * glow);
+        c.lineWidth = Math.max(1, Math.min(W, H) * s.w);
+        c.stroke();
+      }
+    });
+
+    c.globalCompositeOperation = 'source-over';
+
+    // A soft well at the centre, drawn LAST and feathered, so the overlapping
+    // glow is pushed outward into a corona without a hard disc edge cutting
+    // across it. Deliberately not the crisp void Pulse has — a hard circle here
+    // reintroduces exactly the dial look this mode exists to avoid.
+    const voidR = maxR * 0.56;
+    const vg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, voidR));
+    vg.addColorStop(0, 'rgba(3,5,14,0.90)');
+    vg.addColorStop(0.5, 'rgba(4,6,17,0.58)');
+    vg.addColorStop(1, 'rgba(6,9,22,0)');
+    c.fillStyle = vg;
+    c.beginPath(); c.arc(cx, cy, Math.max(2, voidR), 0, Math.PI * 2); c.fill();
+  }
+
   // ---- Bloom: slow gradients that emerge on real events -----------------
   function renderBloom(nowMs) {
     paintBase(bctx);
@@ -799,6 +905,7 @@ function createZenVisual(canvas) {
       // upscale from the shared small buffer.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (mode === 'flow') renderFlow(ctx, canvas.width, canvas.height);
+      else if (mode === 'corona') renderCorona(ctx, canvas.width, canvas.height, tSec);
       else renderPulse(ctx, canvas.width, canvas.height, tSec);
     } else {
       if (mode === 'eclipse') renderEclipse(tSec);
