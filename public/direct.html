@@ -1259,12 +1259,23 @@ let accSettings = null;
 // Why PMD didn't start, shown ON SCREEN. Asking someone to open DevTools during a
 // meditation session is not a diagnostic strategy.
 let accError = null;
+// Diagnostics that distinguish the failure modes from each other. "reading…" was
+// ambiguous: it meant "no frames yet" and "frames arriving that will not decode"
+// and "the device rejected our start request" all at once.
+let accFrames = 0;        // notifications received
+let accDecoded = 0;       // notifications that produced samples
+let accStartError = null; // error code the device returned for the START command
+let accFirstHead = null;  // [measurementType, frameType] of the first frame
 const accFrameLog = [];     // first few raw frames, hex, for diagnosis
 const ACC_LOG_FRAMES = 6;
 const ACC_KEEP = 600;       // ~12s at 50Hz
 
 function onAccData(ev) {
   const view = ev.target.value;
+  accFrames++;
+  if (accFirstHead == null && view.byteLength > 9) {
+    accFirstHead = [view.getUint8(0), view.getUint8(9)];
+  }
   if (accFrameLog.length < ACC_LOG_FRAMES) {
     const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     accFrameLog.push(Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(' '));
@@ -1279,6 +1290,7 @@ function onAccData(ev) {
     channels: accSettings && accSettings.channels ? accSettings.channels[0] : 3,
   });
   if (!decoded) return;
+  accDecoded++;
   accSamples.push(...decoded.samples);
   if (accSamples.length > ACC_KEEP) accSamples.splice(0, accSamples.length - ACC_KEEP);
   const v = Polar.looksLikeGravity(accSamples.slice(-40));
@@ -1298,17 +1310,23 @@ async function tryStartAccelerometer(gatt) {
     // explicit that the conversion factor is mandatory for correct values, so
     // guessing settings is not an option.
     await ctl.startNotifications();
+    // A successful GATT write does NOT mean the command was accepted — the device
+    // answers on the control point with an error code. Watch every response, not
+    // just the settings one, or a rejected START looks identical to silence.
+    let settingsResolve = null;
     const settingsSeen = new Promise((resolve) => {
-      const onCtl = (e) => {
-        const r = Polar.parseControlResponse(e.target.value);
-        console.log('[PMD] control response:', r && r.raw);
-        if (r && r.command === Polar.PMD_CMD_GET_SETTINGS) {
-          ctl.removeEventListener('characteristicvaluechanged', onCtl);
-          resolve(r);
-        }
-      };
-      ctl.addEventListener('characteristicvaluechanged', onCtl);
+      settingsResolve = resolve;
       setTimeout(() => resolve(null), 3000);
+    });
+    ctl.addEventListener('characteristicvaluechanged', (e) => {
+      const r = Polar.parseControlResponse(e.target.value);
+      console.log('[PMD] control response:', r && r.raw);
+      if (!r) return;
+      if (r.command === Polar.PMD_CMD_GET_SETTINGS && settingsResolve) settingsResolve(r);
+      if (r.command === Polar.PMD_CMD_START) {
+        accStartError = r.errorCode || null;
+        if (r.errorCode) console.log('[PMD] START rejected, error code', r.errorCode);
+      }
     });
     await ctl.writeValue(new Uint8Array([Polar.PMD_CMD_GET_SETTINGS, Polar.PMD_TYPE_ACC]));
     const settingsResp = await settingsSeen;
@@ -1739,10 +1757,16 @@ setInterval(() => {
     // looking output can fake that. Once this is confirmed on real hardware it
     // should become a quiet indicator rather than a number.
     if (accAvailable) {
-      tail.push(row('Chest', null, {
-        text: accMag == null ? 'reading…'
-          : `${Math.round(accMag)}mG ${accVerdict && accVerdict.ok ? '\u2713' : '\u2717 want 1000'}`,
-      }));
+      // Each branch names a DIFFERENT failure, because the fix for each is
+      // different. "reading…" for all of them told me nothing.
+      let t;
+      if (accStartError) t = `start err ${accStartError}`;         // device refused
+      else if (accFrames === 0) t = 'no frames';                   // accepted, silent
+      else if (accDecoded === 0) {                                 // arriving, undecodable
+        t = accFirstHead ? `${accFrames}f t${accFirstHead[0]}/${accFirstHead[1]}` : `${accFrames}f no decode`;
+      } else if (accMag == null) t = 'decoding…';
+      else t = `${Math.round(accMag)}mG ${accVerdict && accVerdict.ok ? '\u2713' : '\u2717 want 1000'}`;
+      tail.push(row('Chest', null, { text: t }));
     } else if (accError) {
       // Say what happened rather than showing nothing and leaving it a mystery.
       tail.push(row('Chest', null, { text: accError }));

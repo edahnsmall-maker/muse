@@ -168,6 +168,10 @@ conversion factor is mandatory.
 | ~1000 mG with a ✓ | the decode is right; proceed to stage 2 |
 | a steady but wrong number (e.g. 25, or 256000) | scale error — wrong resolution or byte width |
 | thrashing wildly | structural error — wrong offsets or bit order |
+| `no frames` | START accepted but the device is sending nothing |
+| `start err N` | the device REFUSED the START command with error code N — the request bytes are wrong (most likely the setting count field, see below) |
+| `12f t2/1` | frames are arriving but none decode. The two numbers are `data[0]` (measurement type — must be 2 for ACC) and `data[9]` (frame type — 0/1/2 for 8/16/24-bit). If the first is not 2, the frame offsets are wrong; if the second is unexpected, the sample width is |
+| `decoding…` | decoded but not yet enough samples for a gravity verdict |
 | `not permitted — reconnect` | the PMD service was not declared in `requestDevice`'s `optionalServices` — see below |
 | row absent | PMD didn't start and no error was captured |
 
@@ -194,6 +198,14 @@ If it is wrong, the console holds the first six frames as hex plus the settings 
 device reported. That is enough to fix the offsets without further guessing. The
 first thing to try is flipping the delta bit order from LSB-first to MSB-first,
 which is the assumption most likely to be wrong.
+
+### If START is refused
+
+The most likely culprit is the **setting count field** in the start request. This
+implementation writes one byte (`01`) for "one value follows"; the settings *response*
+table describes counts differently, and the spec section that would settle it was not
+transcribable. If `start err N` appears, try a `uint16` count (`01 00`) instead — that
+is a two-character change in `buildAccStartCommand`.
 
 **Stage 2 (not built):** extract breathing. Band-pass the axis with the most
 respiratory variance (or the projection onto the principal axis) over roughly
