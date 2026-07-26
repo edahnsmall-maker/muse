@@ -783,13 +783,16 @@ function createZenVisual(canvas) {
 
     // expand() is the difference between a trace and a flat line. Every value
     // here is adaptively normalised against the wearer's own baseline, so a real
-    // session occupies roughly 0.35..0.75 — mapped straight to y that is about
-    // 12% of the screen height, which is what "the line isn't changing at all"
-    // actually was. Same fix as Eclipse's void radius.
+    // session occupies roughly 0.35..0.75. The trace still uses that expanded
+    // value, but it is drawn inside a protected vertical band instead of the
+    // full canvas: very-low values were dropping into the bottom controls and
+    // becoming hard to see.
+    const flowTop = H * 0.18;
+    const flowBottom = H * 0.76;
     const yOf = (i, k) => {
       const v = series[k][i];
       if (v == null) return null;
-      return H * (0.09 + 0.82 * (1 - VizCore.expandSoft(v)));
+      return flowTop + (flowBottom - flowTop) * (1 - VizCore.expandSoft(v));
     };
 
     // BUTT caps, not round: adjacent age groups deliberately share an endpoint,
