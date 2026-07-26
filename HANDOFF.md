@@ -246,19 +246,23 @@ breathing **directly** — no inference, no physiological lag, and it works at a
 heart rate.
 
 **The catch.** This needs Polar's proprietary **PMD** (Polar Measurement Data)
-service rather than the standard Heart Rate Service. Approximate UUIDs — *verify
-these against the device, do not trust them*:
+service rather than the standard Heart Rate Service. **The protocol is now transcribed
+from Polar's official specification into [`docs/polar-pmd.md`](docs/polar-pmd.md)** —
+UUIDs, measurement types, control-point commands, the settings TLV table, the data
+frame layout, the ACC frame types, and the delta-compression scheme. Read that first;
+it is quoted from the spec rather than remembered.
 
-```
-service        FB005C80-02E7-F387-1CAD-8ACD2D8DF0C8
-control point  FB005C81-02E7-F387-1CAD-8ACD2D8DF0C8   (write + notify)
-data           FB005C82-02E7-F387-1CAD-8ACD2D8DF0C8   (notify)
-```
+Two things from it that change the approach:
 
-Shape of the work: read the control point to discover supported measurement types,
-write a start-stream request for ACC with a sample rate / range / resolution setting,
-then decode a packed binary frame (type byte, timestamp, frame-type, then deltas —
-Polar uses delta compression, which is the part most likely to be got wrong).
+- **The conversion factor is mandatory.** The spec says outright that without it "the
+  sample values are not correct". So you must issue *Get measurement settings*
+  (command 1) and use the returned factor, resolution and channel count, rather than
+  hardcoding anything. This is discoverable at runtime, which removes most of the
+  guesswork.
+- **Two points remain UNVERIFIED** and are flagged as such in that file: the index base
+  for the delta-size and sample-count bytes (a `+1`/`+2` whose origin is ambiguous), and
+  the sign-extension wording, which is genuinely muddled in the PDF. Both are exactly
+  the kind of thing that yields a decode which runs and produces garbage.
 
 **Build it defensively, in this order:**
 
@@ -266,9 +270,12 @@ Polar uses delta compression, which is the part most likely to be got wrong).
    look at them, confirm the frame layout before parsing.
 2. **Decode into a pure, tested function** in `polar.js`, exactly like
    `parseHeartRateMeasurement`. Hand-build frames in `test-polar.js`.
-3. **Sanity-check against physics.** At rest the magnitude should sit near 1g, and
-   breathing should appear as a slow oscillation of a few tens of milli-g. If your
-   decode gives numbers that aren't accelerations, it's wrong.
+3. **Sanity-check against physics, not against a unit test built from these notes** —
+   that would only check the notes against themselves. At rest the total magnitude must
+   sit steadily near **1000 mG**; turning the strap over should invert one axis while
+   the magnitude holds; breathing should appear as a slow oscillation of a few tens of
+   mG. If the magnitude is 30, or 400000, or thrashing, the decode is wrong no matter
+   how smooth the numbers look.
 4. **Extract breathing:** band-pass the axis with the most respiratory variance (or
    the projection onto the principal axis) over roughly 0.1–0.5 Hz, then take the
    phase. Gate on amplitude the way `RSA_MIN_BPM` does — no signal must read as *no

@@ -250,8 +250,13 @@
    * total lag against a synthetic signal rather than leaving it a guess, so the
    * number is known instead of hoped for.
    *
+   * A held breath cannot be represented by this method at all: there is no
+   * respiratory modulation during a hold, so it correctly reports NO reading
+   * rather than a bar pinned at the top. See the recent-amplitude gate below.
+   *
    * If this proves too laggy to breathe along with, the real fix is the strap's
-   * ACCELEROMETER via Polar's PMD service: the H10 sits on the ribcage, so chest
+   * ACCELEROMETER via Polar's PMD service (protocol transcribed in
+   * docs/polar-pmd.md): the H10 sits on the ribcage, so chest
    * wall movement is direct breath measurement with no physiological lag at all.
    * That is a bigger protocol job. Head-mounted accelerometry on the Muse is NOT
    * the answer — the head barely moves with breathing and mostly reports
@@ -289,7 +294,7 @@
   // The respiratory waveform: instantaneous HR with its slow drift removed and
   // amplitude normalised, so it reads -1 (fully exhaled) .. +1 (fully inhaled)
   // regardless of how big a given person's RSA happens to be.
-  function breathSignal(rrs, { hz = 4, trendSec = 10 } = {}) {
+  function breathSignal(rrs, { hz = 4, trendSec = 10, recentSec = 12 } = {}) {
     const hr = resampleHr(rrs, hz);
     if (!hr) return null;
     const half = Math.max(1, Math.round((trendSec * hz) / 2));
@@ -308,12 +313,30 @@
     const rms = Math.sqrt(detr.reduce((a, b) => a + b * b, 0) / detr.length);
     if (!(rms > 1e-9)) return null;
 
-    // RSA_MIN_BPM: below about this much respiratory swing in heart rate there is
-    // no breath to read, only noise being amplified. Reporting a phase from that
-    // produced a value pegged at the rail, which looks like a confident reading
-    // of a fully-held inhale. Returning null is the honest answer.
-    if (rms < RSA_MIN_BPM) return null;
+    // Gate on RECENT amplitude, not the whole window.
+    //
+    // This is the breath-hold bug, reported from real use: hold at the top of an
+    // inhale and the bar settled into a confident flat line around +50% instead
+    // of reporting nothing. A held breath has NO respiratory modulation, so there
+    // is nothing for this method to see — what was being drawn was heart rate
+    // decaying back toward its own recent average, which the normalisation below
+    // then inflated. Checking the full window could never catch it, because 55 of
+    // the last 60 seconds were still full of real breathing.
+    //
+    // Note what this cannot do: RSA cannot distinguish "holding at full inhale"
+    // from "no signal at all", because both look identical in heart timing. So a
+    // hold correctly reads as no reading rather than as a pinned bar. Getting the
+    // truthful picture — the chest held expanded, the bar staying at the top —
+    // needs chest-wall movement from the strap accelerometer.
+    const recentN = Math.max(8, Math.round(recentSec * hz));
+    const recent = detr.slice(-Math.min(recentN, detr.length));
+    const recentRms = Math.sqrt(recent.reduce((a, b) => a + b * b, 0) / recent.length);
+    if (recentRms < RSA_MIN_BPM) return null;
 
+    // Normalise by the FULL-window RMS, not the recent one. A shrinking
+    // denominator amplifies whatever residual is left as the oscillation dies —
+    // which is precisely what turned a decaying artifact into a stable plateau.
+    //
     // tanh, not a hard clamp. Clamping made the output sit at exactly +/-1 for
     // long stretches — the bar pegged at 100 and stopped moving, which reads as a
     // held breath rather than as "the signal is bigger than expected".

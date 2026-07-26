@@ -313,4 +313,42 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
   console.log('✓ resampleHr produces an evenly-spaced grid covering real elapsed time');
 }
 
+// 17) BREATH-HOLD. Reported from real use: holding at the top of an inhale
+//     produced a confident flat line around +50% instead of no reading. A held
+//     breath has no respiratory modulation, so there is nothing for RSA to see.
+//     The old gate checked the whole 60s window, which still contained ~55s of
+//     real breathing, so it could never fire.
+{
+  const rrs = [];
+  let t = 0;
+  // 45 seconds of real breathing...
+  while (t < 45) { const rr = 1000 - 70 * Math.sin((2 * Math.PI * t) / 5); rrs.push(rr); t += rr / 1000; }
+  const breathing = Polar.breathPhaseNow(rrs);
+  assert.ok(breathing != null, 'normal breathing must produce a reading');
+
+  // ...then a 15-second hold: heart rate settles, no respiratory modulation at
+  // all. A tiny residual drift remains, which is exactly what used to be
+  // inflated into a plateau.
+  const held = rrs.slice();
+  for (let i = 0; i < 15; i++) held.push(1000 + (i % 2 ? 0.4 : -0.4));
+  const holdResult = Polar.breathPhaseNow(held);
+  assert.strictEqual(holdResult, null,
+    `a held breath must read as NO SIGNAL, not as a confident plateau (got ${JSON.stringify(holdResult)})`);
+
+  // And the whole-window RMS is still large during the hold, proving the old
+  // gate could not have caught this.
+  const wholeWindowRms = Math.sqrt(
+    Polar.resampleHr(held, 4).reduce((a, b, _, arr) => a + (b - arr.reduce((x, y) => x + y, 0) / arr.length) ** 2, 0)
+    / Polar.resampleHr(held, 4).length);
+  assert.ok(wholeWindowRms > Polar.RSA_MIN_BPM,
+    `the full window still looks active during a hold (${wholeWindowRms.toFixed(2)} bpm) — which is why gating on it failed`);
+
+  // Recovery: once breathing resumes, a reading must come back.
+  const resumed = held.slice();
+  let t2 = 0;
+  while (t2 < 20) { const rr = 1000 - 70 * Math.sin((2 * Math.PI * t2) / 5); resumed.push(rr); t2 += rr / 1000; }
+  assert.ok(Polar.breathPhaseNow(resumed) != null, 'resuming breathing must restore the reading');
+  console.log('\u2713 a held breath reads as no signal, and a reading returns when breathing resumes');
+}
+
 console.log('\nAll Polar tests passed.');
