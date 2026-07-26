@@ -906,9 +906,11 @@ function computeChannelLabels() {
 // naive previous-tick threshold almost every tick (a wall of white/black
 // static on real hardware, not the occasional flash it was meant to be).
 const bandLevel = DSP.CHANNEL_NAMES.map(() => 0.5);
+const bandFresh = DSP.CHANNEL_NAMES.map(() => false);
 const bandSpikeDetector = DSP.CHANNEL_NAMES.map(() => new DSP.SpikeDetector());
 const bandState = DSP.CHANNEL_NAMES.map((_, i) => ({
   get level() { return bandLevel[i]; },
+  get fresh() { return bandFresh[i]; },
   get spike() { return bandSpikeDetector[i].spike; },
 }));
 
@@ -916,8 +918,10 @@ function updateBandState(channels) {
   channels.forEach((ch, i) => {
     if (ch.pct != null && !ch.artifact) {
       bandLevel[i] = ch.pct;
+      bandFresh[i] = true;
       bandSpikeDetector[i].update(ch.pct);
     } else {
+      bandFresh[i] = false;
       bandSpikeDetector[i].update(null); // still decays the spike, just doesn't move the baseline
     }
   });
@@ -1223,7 +1227,7 @@ setInterval(() => {
     noise: result.artifactRate,
     activity: result.activity,
     metrics: pulseMetrics,
-    bands: bandState.map((s) => ({ level: s.level, spike: s.spike })),
+    bands: bandState.map((s) => ({ level: s.level, spike: s.spike, fresh: s.fresh })),
   });
 
   const stale = Date.now() - lastDataAt > 2000;

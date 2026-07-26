@@ -39,7 +39,7 @@ function createZenVisual(canvas) {
   let state = {
     calm: 0.5, noise: 0, breathPeriod: 0, activity: 0.5,
     metrics: {},   // composite scores by key, for Pulse
-    bands: [0, 1, 2, 3].map(() => ({ level: 0.5, spike: 0 })),
+    bands: [0, 1, 2, 3].map(() => ({ level: 0.5, spike: 0, fresh: true })),
   };
   let smooth = {
     calm: 0.5, noise: 0, breathPeriod: 0, activity: 0.5,
@@ -771,6 +771,11 @@ function createZenVisual(canvas) {
       }
       return null;
     };
+    const freshAt = (i, k) => {
+      if (composites) return true;
+      const h = history[i];
+      return !(h.held && h.held[k]);
+    };
 
     // Smoothed once per frame per series, not per lookup — expandSoft below
     // stretches the middle of the range to fill the frame, which multiplies
@@ -820,6 +825,14 @@ function createZenVisual(canvas) {
         const mid = (i0 + i1) / 2 / (n - 1);   // 0 = oldest, 1 = live head
         const age = 1 - mid;
         const vis = Math.pow(1 - age, 0.85);   // dissolves out to the left
+        let freshCount = 0, seenCount = 0;
+        for (let i = i0; i <= i1; i++) {
+          if (series[ch][i] == null) continue;
+          seenCount++;
+          if (freshAt(i, ch)) freshCount++;
+        }
+        const freshRatio = seenCount ? freshCount / seenCount : 1;
+        const heldDim = composites ? 1 : (0.24 + 0.76 * freshRatio);
 
         // Halo widens and dims with age — this IS the blur, done in geometry.
         // Core stays narrow and bright at the head and gives out as it ages.
@@ -838,10 +851,11 @@ function createZenVisual(canvas) {
           for (let i = i0; i <= i1; i++) {
             const y = yOf(i, ch);
             if (y == null) { started = false; continue; }
+            if (!freshAt(i, ch) && (i % 8) >= 4) { started = false; continue; }
             const x = xOf(i);
             if (!started) { c.moveTo(x, y); started = true; } else c.lineTo(x, y);
           }
-          c.strokeStyle = rgba(col, p.a);
+          c.strokeStyle = rgba(col, p.a * heldDim);
           c.lineWidth = Math.max(0.5, p.w);
           c.stroke();
         }
@@ -850,9 +864,10 @@ function createZenVisual(canvas) {
       // The live head: a small bright point, so it reads as being written now.
       const hy = yOf(n - 1, ch);
       const hr = Math.max(1.5, baseW * 2.6);
+      const headFresh = freshAt(n - 1, ch);
       const hg = c.createRadialGradient(nowX, hy, 0, nowX, hy, hr * 3);
-      hg.addColorStop(0, rgba(mixColor(col, [255, 255, 255], 0.55), 0.95));
-      hg.addColorStop(0.35, rgba(col, 0.35));
+      hg.addColorStop(0, rgba(mixColor(col, [255, 255, 255], 0.55), headFresh ? 0.95 : 0.28));
+      hg.addColorStop(0.35, rgba(col, headFresh ? 0.35 : 0.10));
       hg.addColorStop(1, rgba(col, 0));
       c.fillStyle = hg;
       c.beginPath(); c.arc(nowX, hy, hr * 3, 0, Math.PI * 2); c.fill();
@@ -1989,7 +2004,11 @@ function createZenVisual(canvas) {
       // every frame, so a short or missing array must never reach it.
       const bands = [0, 1, 2, 3].map((i) => {
         const src = (next.bands && next.bands[i]) || state.bands[i] || {};
-        return { level: src.level != null ? src.level : 0.5, spike: src.spike || 0 };
+        return {
+          level: src.level != null ? src.level : 0.5,
+          spike: src.spike || 0,
+          fresh: src.fresh !== false,
+        };
       });
       state = {
         calm: next.calm != null ? next.calm : state.calm,
@@ -2005,6 +2024,7 @@ function createZenVisual(canvas) {
       };
       history.push({
         levels: bands.map((b) => clamp01(b.level)),
+        held: bands.map((b) => b.fresh === false),
         spikes: bands.map((b) => clamp01(b.spike)),
         // Composites too, so Flow can graph whichever series the data panel is
         // showing. Held values (not zeros) for metrics with no inputs.
