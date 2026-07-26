@@ -917,7 +917,10 @@ function renderLegend() {
     el.addEventListener('click', () => {
       viewMode = el.dataset.view;
       // The visual follows the view: in composite view it is tuned to the
-      // selected composite, not to the raw sensor-derived calm score.
+      // selected composite, not to the raw sensor-derived calm score — and
+      // Flow graphs the composites rather than the raw electrodes, so the main
+      // visual and the panel are showing the same four things.
+      visual.setSeries(viewMode);
       renderLegend(); renderChart();
     });
   });

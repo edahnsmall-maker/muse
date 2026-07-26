@@ -199,6 +199,19 @@
     return Math.max(0, Math.min(1, (v - lo) / (hi - lo)));
   }
 
+  // Same idea as expand(), but saturating instead of clamping. A hard clamp
+  // draws every excursion beyond the band as a dead flat line pressed against
+  // the edge of the frame — fine for a radius, ugly for a trace, and visible in
+  // headless screenshots as flat-topped peaks. This asymptotes toward 0 and 1
+  // without ever reaching them, so an unusually big excursion still reads as
+  // bigger than a merely large one.
+  function expandSoft(v, lo = 0.35, hi = 0.75, knee = 2.4) {
+    if (v == null || Number.isNaN(v)) return 0.5;
+    if (hi <= lo) return 0.5;
+    const t = (v - lo) / (hi - lo);
+    return 0.5 + 0.5 * Math.tanh((t - 0.5) * knee);
+  }
+
   // ---- Smooth deterministic wobble ---------------------------------------
   // Sum of a few sines — no RNG, no per-frame state, and bounded, so it
   // can't drift or accumulate precision problems over a long session.
@@ -262,10 +275,45 @@
     }
 
     // The bulge to actually draw: what was recorded, faded by how long ago the
-    // hand passed. The oldest bin always lands near 0, so the trail dies out on
-    // its own rather than leaving a hard step where the ring buffer wraps.
-    faded(bin, curve = 1.15) {
-      return this.values[bin] * Math.pow(1 - this.age(bin), curve);
+    // hand passed.
+    //
+    // `leadIn` is what closes the seam. Fading on age alone leaves the freshest
+    // bin at full height sitting immediately next to the oldest bin at zero —
+    // adjacent in space, a whole revolution apart in time — which draws as a
+    // hard step at twelve o'clock. Ramping the newest few bins up from nothing
+    // makes the trail taper at BOTH ends, so it closes on itself invisibly. The
+    // cost is that the bulge lags the hand by a fraction of a second, which is
+    // not perceptible.
+    faded(bin, curve = 1.15, leadIn = 0.06) {
+      const a = this.age(bin);
+      const tail = Math.pow(1 - a, curve);
+      const lead = leadIn > 0 ? Math.min(1, a / leadIn) : 1;
+      return this.values[bin] * tail * lead;
+    }
+
+    // The whole ring as a smoothed profile, ready to become radii.
+    //
+    // `smoothBins` matters more than it looks. Physiological scores jitter
+    // second to second, and one bin per sample turns that jitter into a
+    // seismograph outline — sharp angular spikes that read as a broken shape
+    // rather than a bleeding gradient. A short circular moving average keeps the
+    // real rise and fall while removing the noise, and it must WRAP, or the
+    // smoothing itself reintroduces a discontinuity at twelve o'clock.
+    profile({ curve = 1.15, leadIn = 0.06, smoothBins = 7 } = {}) {
+      const raw = new Array(this.bins);
+      for (let b = 0; b < this.bins; b++) raw[b] = this.faded(b, curve, leadIn);
+      const half = Math.max(0, Math.floor(smoothBins / 2));
+      if (!half) return raw;
+      const out = new Array(this.bins);
+      for (let b = 0; b < this.bins; b++) {
+        let sum = 0, n = 0;
+        for (let k = -half; k <= half; k++) {
+          sum += raw[(b + k + this.bins) % this.bins];
+          n++;
+        }
+        out[b] = sum / n;
+      }
+      return out;
     }
   }
 
@@ -292,16 +340,26 @@
   // Which metrics Pulse draws, and in what colour. Deliberately the same hues
   // as the data panel's composite legend, so a ring and its line on the graph
   // are recognisably the same thing.
+  // `base` is where that metric's ring sits, as a fraction of the disc radius,
+  // and `out` is which way its bulge grows. The arrangement is deliberate: the
+  // steadier, quieter states live INSIDE the void and glow outward from within
+  // it, while the noisy, flaring ones live outside and peak past the rim. So
+  // settling reads as the centre filling with light, and thinking reads as
+  // something spiking at the edges — which is how they actually feel.
+  //
+  // The bases overlap rather than being neatly stacked: rings bleed into each
+  // other like gradients instead of sitting in tidy separate lanes, but each
+  // still starts somewhere different so you can pick it out.
   const PULSE_METRICS = [
-    { key: 'calm', label: 'Calm', color: [242, 200, 121] },
-    { key: 'thinking', label: 'Thinking', color: [255, 125, 171] },
-    { key: 'focus', label: 'Focus', color: [125, 211, 252] },
-    { key: 'drowsy', label: 'Drowsy', color: [155, 140, 255] },
+    { key: 'calm', label: 'Calm', color: [242, 200, 121], base: 0.30, out: -1 },
+    { key: 'focus', label: 'Focus', color: [125, 211, 252], base: 0.46, out: -1 },
+    { key: 'thinking', label: 'Thinking', color: [255, 125, 171], base: 0.62, out: 1 },
+    { key: 'drowsy', label: 'Drowsy', color: [155, 140, 255], base: 0.78, out: 1 },
   ];
 
   return {
     CHANNEL_COLORS, CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, EventDetector, BloomField, wobble, expand,
+    MODES, nextMode, EventDetector, BloomField, wobble, expand, expandSoft,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,
   };

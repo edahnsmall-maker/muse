@@ -263,11 +263,47 @@ The seven modes, in cycle order:
 |---|---|---|
 | **Eclipse** | A black void on a warm light ground, ringed by a solar corona. Stillness *is* the void: it grows as you settle. Thinking flares at its edge. | Void radius = the selected composite (12%→74% of max radius). Corona churn, speed and brightness = the Thinking score. Its own hot palette (magenta/orange/gold/rose), on light — saturated colour added onto near-black just goes pale grey, which was the real reason earlier versions looked colourless. |
 | **Iris** | Your whole session laid down as a rose window — a persistent record that accumulates rather than scrolling away. | Twelve petals, each sensor owning its own quadrant at its real anatomical angle. A live crown scallops with current activity; every 6s that crown is *fossilised* onto a record layer and the radius steps outward, like a growth ring. Nothing is erased, so at the end you're looking at the shape of the entire sit — which minutes were whole and which were broken stay visible. |
-| **Pulse** | A clock hand sweeps a dial once every 5 seconds, resetting at twelve. Each composite metric owns a ring; wherever the hand is now, that ring **bulges** by how much the metric is doing, and the bulge stays and fades as the hand travels on. | So a rising metric reads as a spiral of growth — small at three o'clock, bigger at six, biggest at nine — and a subsiding one reads as the reverse, the whole last revolution legible at a glance. Bulge is mostly *change* against each metric's own slow baseline (flaring is what the eye reads), with a little absolute level mixed back in so sustained calm doesn't look like nothing happening. Black void at the centre, colours matching the graph legend. |
-| **Flow** | A live trace, thin and sharp where it's being written, dissolving as it ages. "Now" sits just right of centre, history trailing left, one line per electrode. | Line height = that electrode's alpha share; a bright point marks the live head; spikes leave marks that fade with the trace. |
+| **Pulse** | A clock hand sweeps a dial once every 24 seconds, resetting at twelve. Each composite metric owns a ring; wherever the hand is now, that ring **bulges** by how much the metric is doing, and the bulge stays and fades as the hand travels on. | So a rising metric reads as a spiral of growth — small at three o'clock, bigger at six, biggest at nine — and a subsiding one reads as the reverse, the whole last revolution legible at a glance. Bulge is mostly *change* against each metric's own slow baseline (flaring is what the eye reads), with a little absolute level mixed back in so sustained calm doesn't look like nothing happening. Calm and Focus grow **inward**, inside the void; Thinking and Drowsy grow **outward** past the rim — so settling reads as the centre filling with light and thinking reads as flaring at the edges. |
+| **Flow** | A live trace, thin and sharp where it's being written, dissolving as it ages. "Now" sits at ~74% across, history trailing left. | Follows the **Sensors/Composites switch** — four electrodes or four composites, in the matching colours. A bright point marks the live head; spikes leave marks that fade with the trace. |
 | **Bloom** | No lines at all. Soft colour gradients emerge, expand, and fade — but only when something significant actually happens. | A per-channel spike (bloom in that channel's colour), or a calm-zone transition: settling (warm) / stirring (cool). |
 | **Field** | One soft wavy band of colour per sensor — the "reference image" look, with real per-channel hue. | Band brightness/thickness = that electrode's alpha share; blur and width grow with calm ("dissolving"). |
 | **Breath** | Austere. One slow gradient breathing in and out. Nothing per-channel, nothing to read or chase. | Your *measured* breathing rate, or one of the guided patterns below. This is the "mirror mode" of the roadmap's Zen framing. |
+
+### Seeing the visuals: `tools/shoot.js`
+
+Every visual here was written blind for most of this project's life — the renderer
+draws to a canvas, nothing in the authoring environment could display one, so
+aesthetics could only be checked by the person wearing the headband. That loop is slow,
+and it is the real reason three earlier shader attempts never converged.
+
+`tools/shoot.js` closes it. Chromium is already present via Playwright, so the renderer
+runs for real against a **deterministic clock** (`tools/harness.html` replaces
+`performance.now` and `requestAnimationFrame` before `visual.js` loads, so a given
+simulated second always produces the same frame), driven by scripted physiology, and is
+photographed at chosen moments.
+
+```bash
+node tools/shoot.js --mode pulse --scenario bursty --at 20,70
+node tools/shoot.js --all --scenario realistic --at 45
+```
+
+Scenarios: `flat` (nothing moves — anything that still looks alive is animating on time
+alone), `realistic` (values near 0.5, the regime where under-scaled visuals look dead),
+`settling`, `agitated`, `bursty` (real second-to-second structure, the one that
+distinguishes "working" from "drawing a circle"), `swing`.
+
+**It found five real bugs in one sitting**, none of which were visible in the code: Flow
+mapping values straight to y so a real session used 18% of the screen height; a string of
+beads along every line (adjacent age groups share an endpoint, and a round cap there gets
+drawn twice under additive blending); Pulse's trail stepping at twelve o'clock where the
+ring buffer wraps; Pulse's inward-growing rings bulging through the centre and out the
+other side as a spray of spikes; and Flow's peaks flattening against the frame edge
+because `expand()` hard-clamps.
+
+**What it does not verify:** how it feels in motion, how it looks at full size in a dark
+room, or GPU-specific behaviour — headless GL is software-backed, so colour and precision
+can differ from real hardware. It informs judgement; it does not replace the person
+sitting in front of it.
 
 ### Two modes render at full resolution, and that's load-bearing
 
@@ -585,6 +621,9 @@ constant signal becomes its own baseline, so both read the same. Rewritten as a
 - **Pulse's rings sit almost flat** → the bulge is mostly *change* against each metric's
   own slow baseline, so a genuinely steady mind produces a genuinely quiet dial. Rings
   for metrics the page can't compute (anything reading "—") never move at all.
+- **A line in Flow looks dead** → check the **Sensors/Composites** switch first. Flow
+  graphs whichever series the panel is showing; TP9's hue is deliberately the same as
+  Focus's, so an electrode in Sensors view can easily be mistaken for a flat composite.
 - **Eclipse's void barely moves, or swings wildly** → that's the `expand()` band, and
   it's a fitted guess. See the `expand` knob above; widening or narrowing 0.35–0.75 is
   a one-line change.

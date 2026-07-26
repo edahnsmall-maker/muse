@@ -218,24 +218,79 @@ const VizCore = require('./public/viz-core.js');
 {
   // The described behaviour: a bulge laid down at three o'clock is still there,
   // smaller, when the hand reaches nine — and gone by the time it comes back.
+  // leadIn disabled here so this test measures the tail alone; the lead-in
+  // taper gets its own test below.
   const ring = new VizCore.SweepRing({ bins: 12, revSec: 12 });
+  const fade = (b) => ring.faded(b, 1.15, 0);
   ring.write(3, 1);
-  const atThree = ring.faded(3);
+  const atThree = fade(3);
   ring.write(6, 0);
-  const atSix = ring.faded(3);
+  const atSix = fade(3);
   ring.write(9, 0);
-  const atNine = ring.faded(3);
+  const atNine = fade(3);
   assert.ok(atThree > 0.9, `fresh bulge should be near full (got ${atThree.toFixed(2)})`);
   assert.ok(atSix < atThree && atSix > 0.4, `should have faded but still be visible (got ${atSix.toFixed(2)})`);
   assert.ok(atNine < atSix && atNine > 0.05, `should be nearly gone (got ${atNine.toFixed(2)})`);
   // Nearly all the way round again: the bulge has faded to a few percent and is
   // about to be overwritten, so the trail dies out rather than meeting itself.
   ring.write(14.5, 0);
-  const almostRound = ring.faded(3);
+  const almostRound = fade(3);
   assert.ok(almostRound < 0.08, `a revolution later the bulge should be a few percent (got ${almostRound.toFixed(3)})`);
   ring.write(15.1, 0);           // the hand now reaches bin 3 and overwrites it
   assert.strictEqual(ring.values[3], 0, 'passing over a bin replaces its value outright');
   console.log('✓ SweepRing bulges persist and fade over one revolution, then vanish');
+}
+
+{
+  // The seam. Without a lead-in the freshest bin sits at full height right next
+  // to the oldest bin at zero — adjacent in space, a revolution apart in time —
+  // and that draws as a hard step. With it, the trail tapers at both ends and
+  // closes on itself. This was clearly visible in a headless screenshot before
+  // the fix, which is how it was found.
+  const ring = new VizCore.SweepRing({ bins: 144, revSec: 5 });
+  for (let i = 0; i <= 200; i++) ring.write(i * 0.02, 1);   // 4s of a constant 1
+  const cur = ring.cursor;
+  const newest = ring.faded(cur);
+  const oldest = ring.faded((cur + 1) % 144);
+  assert.ok(Math.abs(newest - oldest) < 0.1,
+    `bins either side of the wrap must not differ much or the seam shows (newest ${newest.toFixed(3)}, oldest ${oldest.toFixed(3)})`);
+  // ...and somewhere in between the trail must actually reach full height, or
+  // the taper has flattened the whole thing.
+  let maxV = 0;
+  for (let b = 0; b < 144; b++) maxV = Math.max(maxV, ring.faded(b));
+  assert.ok(maxV > 0.85, `the trail must still peak near full height (got ${maxV.toFixed(2)})`);
+  console.log('✓ SweepRing tapers at both ends, so the wrap seam is invisible');
+}
+
+{
+  // Angular smoothing. Physiological scores jitter second to second, and one
+  // bin per sample renders that as a seismograph outline — sharp spikes that
+  // read as a broken shape rather than a bleeding gradient. Found in a headless
+  // screenshot; this pins the fix.
+  const ring = new VizCore.SweepRing({ bins: 144, revSec: 24 });
+  for (let i = 0; i <= 1200; i++) {
+    // A smooth underlying rise with alternating jitter on top.
+    const t = i * 0.02;
+    ring.write(t, 0.5 + 0.3 * Math.sin(t / 6) + (i % 2 ? 0.18 : -0.18));
+  }
+  const rough = ring.profile({ smoothBins: 1 });
+  const smooth = ring.profile({ smoothBins: 9 });
+  const roughness = (a) => {
+    let sum = 0;
+    for (let b = 0; b < a.length; b++) sum += Math.abs(a[b] - a[(b + 1) % a.length]);
+    return sum;
+  };
+  assert.ok(roughness(smooth) < roughness(rough) * 0.4,
+    `smoothing must remove most of the bin-to-bin jitter (${roughness(rough).toFixed(2)} -> ${roughness(smooth).toFixed(2)})`);
+  // But it must not flatten the real signal away.
+  const span = Math.max(...smooth) - Math.min(...smooth);
+  assert.ok(span > 0.3, `the underlying rise and fall must survive smoothing (span ${span.toFixed(2)})`);
+  // And it must WRAP, or the smoothing reintroduces the seam it exists to avoid.
+  const wrapJump = Math.abs(smooth[0] - smooth[smooth.length - 1]);
+  const typical = roughness(smooth) / smooth.length;
+  assert.ok(wrapJump < typical * 6,
+    `smoothing must wrap around twelve o'clock (jump ${wrapJump.toFixed(4)} vs typical ${typical.toFixed(4)})`);
+  console.log('✓ SweepRing.profile smooths bin jitter, keeps the real signal, and wraps');
 }
 
 {
@@ -296,6 +351,29 @@ const VizCore = require('./public/viz-core.js');
   const hues = new Set(VizCore.PULSE_METRICS.map((m) => m.color.join(',')));
   assert.strictEqual(hues.size, VizCore.PULSE_METRICS.length, 'each metric needs its own distinct colour');
   console.log('✓ PULSE_METRICS are distinct, labelled, and have valid colours');
+}
+
+{
+  // expandSoft saturates instead of clamping: a hard clamp draws every big
+  // excursion as a flat line pressed against the edge of the frame, which shows
+  // up in screenshots as flat-topped peaks.
+  const f = VizCore.expandSoft;
+  assert.ok(f(0.55) > 0.49 && f(0.55) < 0.51, 'mid-band maps to mid-range');
+  assert.ok(f(0.75) < 1 && f(0.75) > 0.8, 'top of band is high but not pinned');
+  assert.ok(f(0.35) > 0 && f(0.35) < 0.2, 'bottom of band is low but not pinned');
+  // The property that matters: beyond the band it must still be monotonic.
+  assert.ok(f(1.2) > f(0.95) && f(0.95) > f(0.75), 'excursions above the band stay distinguishable');
+  assert.ok(f(-0.4) < f(0.1) && f(0.1) < f(0.35), 'excursions below the band stay distinguishable');
+  // Over the real domain — every metric is clamped to 0..1 upstream — it must
+  // never actually touch the limits, because touching them is what draws as a
+  // flat line pressed against the edge of the frame. (Far outside that domain
+  // tanh saturates to exactly 1 in float64, which is fine and unreachable here.)
+  assert.ok(f(1) < 1 && f(1) > 0.99, `top of the real domain is high but not pinned (got ${f(1)})`);
+  assert.ok(f(0) > 0 && f(0) < 0.01, `bottom of the real domain is low but not pinned (got ${f(0)})`);
+  assert.strictEqual(f(null), 0.5, 'missing input is neutral');
+  assert.strictEqual(f(NaN), 0.5, 'NaN is neutral');
+  assert.strictEqual(f(0.5, 0.5, 0.5), 0.5, 'degenerate band must not divide by zero');
+  console.log('\u2713 expandSoft saturates smoothly instead of clipping flat');
 }
 
 console.log('\nAll viz-core tests passed.');

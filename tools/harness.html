@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>visual harness</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05060a; overflow: hidden; }
+  #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+</style>
+<canvas id="gl"></canvas>
+
+<script>
+/*
+ * A deterministic clock, installed BEFORE the renderer loads.
+ *
+ * This is the whole point of the harness: visual.js drives itself off
+ * performance.now() and requestAnimationFrame, so left alone it would render at
+ * whatever rate the machine felt like and no two screenshots would match. Here
+ * time only moves when we say so, which means a given simulated second always
+ * produces the same frame — screenshots become comparable across runs, and a
+ * visual regression is something you can actually see rather than guess at.
+ */
+(function () {
+  let now = 0;
+  let pending = null;
+  performance.now = function () { return now; };
+  window.requestAnimationFrame = function (cb) { pending = cb; return 1; };
+  window.__advanceMs = function (dtMs, steps) {
+    const per = dtMs / Math.max(1, steps);
+    for (let i = 0; i < steps; i++) {
+      now += per;
+      const cb = pending;
+      pending = null;
+      if (cb) cb(now);
+    }
+  };
+  window.__hasPending = function () { return !!pending; };
+})();
+</script>
+
+<script src="../public/viz-core.js"></script>
+<script src="../public/visual.js"></script>
+
+<script>
+window.__visual = createZenVisual(document.getElementById('gl'));
+window.__setMode = function (key) {
+  const i = VizCore.MODES.findIndex(function (m) { return m.key === key; });
+  if (i < 0) throw new Error('unknown mode: ' + key);
+  return window.__visual.setMode(i);
+};
+window.__modes = VizCore.MODES.map(function (m) { return m.key; });
+</script>

@@ -68,6 +68,13 @@ function createZenVisual(canvas) {
   // destroys; neither uses a blur filter, so they don't need the small buffer.
   const DIRECT_MODES = new Set(['flow', 'pulse']);
 
+  // Which series Flow graphs: the four electrodes, or the four composites.
+  // Follows the data panel's Sensors/Composites switch, because a main visual
+  // showing raw electrodes while the panel and readout show composites is just
+  // two unrelated pictures — and that mismatch is exactly what made a composite
+  // look "dead" when the flat blue line was in fact an electrode.
+  let seriesMode = 'sensors';
+
   let sessionSec = 0;   // monotonic, for placing blooms along a slow sweep
   let breathPhase = 0;  // integrated radians — see renderBreath
   let patternT = 0;     // seconds accumulated for patterned breathing
@@ -378,7 +385,7 @@ function createZenVisual(canvas) {
   // which produced exactly what it sounds like: hard vertical seams where the
   // zones met, and a live edge that was still soft because it had been drawn
   // fat. There is no `filter` here at all, so it also costs zero blur passes.
-  const FLOW_NOW_X = 0.56;
+  const FLOW_NOW_X = 0.74;
   const FLOW_GROUPS = 26;   // age bands; enough that the ramp reads as smooth
 
   function renderFlow(c, W, H) {
@@ -392,9 +399,39 @@ function createZenVisual(canvas) {
     const nowX = W * FLOW_NOW_X;
     const n = history.length;
     const xOf = (i) => nowX - ((n - 1 - i) / (FLOW_MAX - 1)) * nowX;
-    const yOf = (i, ch) => H * (0.09 + 0.82 * (1 - clamp01(history[i].levels[ch])));
 
-    c.lineCap = 'round';
+    // Which four series, and in which colours.
+    const composites = seriesMode === 'composites';
+    const colors = composites
+      ? VizCore.PULSE_METRICS.map((m) => m.color)
+      : VizCore.CHANNEL_COLORS;
+    // A held value for a metric with no inputs, so a null doesn't collapse the
+    // line to the floor and read as a real reading of zero.
+    const valueAt = (i, k) => {
+      const h = history[i];
+      if (!composites) return clamp01(h.levels[k]);
+      for (let j = i; j >= 0; j--) {
+        const v = history[j].metrics && history[j].metrics[k];
+        if (v != null) return v;
+      }
+      return null;
+    };
+
+    // expand() is the difference between a trace and a flat line. Every value
+    // here is adaptively normalised against the wearer's own baseline, so a real
+    // session occupies roughly 0.35..0.75 — mapped straight to y that is about
+    // 12% of the screen height, which is what "the line isn't changing at all"
+    // actually was. Same fix as Eclipse's void radius.
+    const yOf = (i, k) => {
+      const v = valueAt(i, k);
+      if (v == null) return null;
+      return H * (0.09 + 0.82 * (1 - VizCore.expandSoft(v)));
+    };
+
+    // BUTT caps, not round: adjacent age groups deliberately share an endpoint,
+    // and a round cap there gets drawn twice under additive blending — visible
+    // as a string of beads along every line.
+    c.lineCap = 'butt';
     c.lineJoin = 'round';
     c.globalCompositeOperation = 'lighter';
 
@@ -404,7 +441,8 @@ function createZenVisual(canvas) {
     const baseW = Math.max(1, H * 0.0018);
 
     for (let ch = 0; ch < 4; ch++) {
-      const col = VizCore.CHANNEL_COLORS[ch];
+      const col = colors[ch] || [200, 210, 255];
+      if (yOf(n - 1, ch) == null) continue;   // nothing to say about this series
       for (let gi = 0; gi < FLOW_GROUPS; gi++) {
         const i0 = Math.round((gi * (n - 1)) / FLOW_GROUPS);
         const i1 = Math.round(((gi + 1) * (n - 1)) / FLOW_GROUPS);
@@ -426,9 +464,15 @@ function createZenVisual(canvas) {
         for (const p of passes) {
           if (p.a <= 0.004) continue;
           c.beginPath();
+          // A composite can have had no data at the start of a sit, so the path
+          // must be able to begin partway through rather than anchoring to a
+          // fabricated point.
+          let started = false;
           for (let i = i0; i <= i1; i++) {
-            const x = xOf(i), y = yOf(i, ch);
-            if (i === i0) c.moveTo(x, y); else c.lineTo(x, y);
+            const y = yOf(i, ch);
+            if (y == null) { started = false; continue; }
+            const x = xOf(i);
+            if (!started) { c.moveTo(x, y); started = true; } else c.lineTo(x, y);
           }
           c.strokeStyle = rgba(col, p.a);
           c.lineWidth = Math.max(0.5, p.w);
@@ -456,7 +500,9 @@ function createZenVisual(canvas) {
       for (let ch = 0; ch < 4; ch++) {
         const sp = clamp01(h.spikes[ch]);
         if (sp < 0.5) continue;
-        const x = xOf(i), y = yOf(i, ch);
+        const y = yOf(i, ch);
+        if (y == null) continue;
+        const x = xOf(i);
         const r = Math.max(2, H * 0.012) * (1 + 1.6 * (1 - vis));
         const g = c.createRadialGradient(x, y, 0, x, y, r);
         g.addColorStop(0, `rgba(255,255,255,${0.34 * sp * vis})`);
@@ -476,16 +522,30 @@ function createZenVisual(canvas) {
   //
   // Also full-resolution: the bulge outlines want a crisp edge, same reason as
   // Flow. A black disc holds the centre so it reads as a corona.
-  const PULSE_REV_SEC = 5;
+  // 24 seconds per revolution, not the 5 originally sketched. Verified from
+  // headless screenshots: at 5s the sweep is FASTER than the timescale these
+  // metrics move on, so every revolution sees a near-constant value and draws a
+  // near-perfect circle — which read as a loading spinner and carried no
+  // information. A slower hand lets a real rise-and-fall fit inside one turn,
+  // which is the whole point: shape you can read at a glance.
+  const PULSE_REV_SEC = 24;
   const PULSE_BINS = 144;
   const pulseRings = VizCore.PULSE_METRICS.map(() => new VizCore.SweepRing({
     bins: PULSE_BINS, revSec: PULSE_REV_SEC,
   }));
-  const pulseDevs = VizCore.PULSE_METRICS.map(() => new VizCore.DeviationTracker());
+  // Higher gain than the default: the raw scores are adaptively normalised and
+  // move very little, and a dial that barely twitches is not reporting anything.
+  // Low levelMix on purpose: a metric that is merely HIGH should sit quiet and
+  // near its base radius, and a metric that MOVES should flare. Mixing in a lot
+  // of absolute level was what drew a steadily-busy mind as a perfect circle —
+  // which looked like a loading spinner and said nothing.
+  const pulseDevs = VizCore.PULSE_METRICS.map(() => new VizCore.DeviationTracker({
+    gain: 6.0, levelMix: 0.14, rate: 0.035,
+  }));
 
   function renderPulse(c, W, H, tSec) {
     const cx = W / 2, cy = H / 2;
-    const maxR = Math.min(W, H) * 0.44;
+    const maxR = Math.min(W, H) * 0.50;
 
     const bg = c.createLinearGradient(0, 0, 0, H);
     bg.addColorStop(0, '#0a1024');
@@ -494,36 +554,55 @@ function createZenVisual(canvas) {
     c.fillRect(0, 0, W, H);
 
     // Feed each ring. Metrics the page hasn't supplied simply don't move.
+    // expand() first, for the same reason as everywhere else: without it the
+    // input only ever travels across the middle third of its range.
     VizCore.PULSE_METRICS.forEach((m, mi) => {
       const raw = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
-      pulseRings[mi].write(tSec, pulseDevs[mi].update(raw));
+      pulseRings[mi].write(tSec, pulseDevs[mi].update(raw == null ? null : VizCore.expand(raw)));
     });
 
-    const handBin = pulseRings[0].cursor;
-    const handAng = (handBin / PULSE_BINS) * Math.PI * 2;
-
-    // Each metric owns a band of radius, so four rings can bulge at once
-    // without becoming an unreadable pile.
-    const inner = maxR * 0.34;
-    const bandH = (maxR - inner) / VizCore.PULSE_METRICS.length;
+    // The void first, so the inner rings glow from INSIDE it rather than being
+    // painted over by it. It is a soft-edged well, not a hard disc — a hard edge
+    // reintroduces exactly the instrument-dial look this mode should not have.
+    const voidR = maxR * 0.56;
+    const vg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, voidR));
+    vg.addColorStop(0, 'rgba(1,2,7,0.96)');
+    vg.addColorStop(0.62, 'rgba(2,4,12,0.88)');
+    vg.addColorStop(1, 'rgba(6,9,22,0)');
+    c.fillStyle = vg;
+    c.beginPath(); c.arc(cx, cy, Math.max(2, voidR), 0, Math.PI * 2); c.fill();
 
     c.globalCompositeOperation = 'lighter';
     VizCore.PULSE_METRICS.forEach((m, mi) => {
       const ring = pulseRings[mi];
-      const r0 = inner + bandH * mi + bandH * 0.10;
-      const bulge = bandH * 1.55;
+      const r0 = maxR * m.base;
+      // Generous amplitude, and deliberately more than the base spacing, so the
+      // rings interpenetrate and bleed instead of sitting in tidy lanes.
+      //
+      // Inward-growing rings are capped at a fraction of their own base radius.
+      // Without that cap a strong reading drives the radius through zero and out
+      // the other side, which draws as a spray of spikes through the centre —
+      // clearly visible in a headless screenshot, and impossible to spot from
+      // the code alone.
+      const bulge = m.out < 0
+        ? -Math.min(maxR * 0.40, r0 * 0.72)
+        : maxR * 0.40;
+      const prof = ring.profile({ smoothBins: 9 });
       const pts = [];
       let peak = 0;
       for (let b = 0; b <= PULSE_BINS; b++) {
         const bin = b % PULSE_BINS;
-        const v = ring.faded(bin);
+        const v = prof[bin];
         if (v > peak) peak = v;
         const a = (bin / PULSE_BINS) * Math.PI * 2;
         const r = Math.max(1, r0 + bulge * v);
         pts.push([cx + Math.sin(a) * r, cy - Math.cos(a) * r]);
       }
-
-      // Soft body between the base circle and the bulged outline.
+      // Gradient body between the base circle and the bulged outline. The
+      // gradient spans a FIXED generous radius range rather than being derived
+      // from the current bulge: derived stops collapse to nothing whenever the
+      // bulge is small, which is exactly when the ring most needs to still look
+      // like a soft bloom instead of a hairline circle.
       c.beginPath();
       pts.forEach(([x, y]) => c.lineTo(x, y));
       for (let b = PULSE_BINS; b >= 0; b--) {
@@ -531,50 +610,44 @@ function createZenVisual(canvas) {
         c.lineTo(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0);
       }
       c.closePath();
-      const g = c.createRadialGradient(cx, cy, Math.max(1, r0), cx, cy, Math.max(2, r0 + bulge));
-      g.addColorStop(0, rgba(m.color, 0.30));
-      g.addColorStop(1, rgba(m.color, 0.03));
+      const span = maxR * 0.34;
+      const gIn = Math.max(1, r0 - (m.out < 0 ? span : span * 0.25));
+      const gOut = Math.max(2, r0 + (m.out > 0 ? span : span * 0.25));
+      const g = c.createRadialGradient(cx, cy, gIn, cx, cy, gOut);
+      g.addColorStop(0, rgba(m.color, m.out < 0 ? 0.34 : 0.05));
+      g.addColorStop(0.5, rgba(m.color, 0.22));
+      g.addColorStop(1, rgba(m.color, m.out > 0 ? 0.30 : 0.04));
       c.fillStyle = g;
       c.fill();
 
-      // Crisp outline — the thing that makes the bulge legible as a shape.
+      // Three stacked strokes along the bulge, widest and faintest first. Same
+      // technique as Flow: softness built out of geometry, so the ring bleeds
+      // like a gradient rather than being an outline with a fill behind it.
+      c.lineJoin = 'round';
+      c.lineCap = 'round';
+      const glow = 0.35 + 0.65 * clamp01(peak);
+      const strokes = [
+        { w: Math.min(W, H) * 0.075, a: 0.055 * glow },
+        { w: Math.min(W, H) * 0.032, a: 0.085 * glow },
+        { w: Math.min(W, H) * 0.012, a: 0.13 * glow },
+      ];
+      for (const s of strokes) {
+        c.beginPath();
+        pts.forEach(([x, y]) => c.lineTo(x, y));
+        c.strokeStyle = rgba(m.color, s.a);
+        c.lineWidth = Math.max(1, s.w);
+        c.stroke();
+      }
+
+      // Keep the thin bright edge: it carries the actual information, and it is
+      // legible in a way a pure gradient is not.
       c.beginPath();
       pts.forEach(([x, y]) => c.lineTo(x, y));
-      c.strokeStyle = rgba(m.color, 0.30 + 0.45 * clamp01(peak));
-      c.lineWidth = Math.max(1, Math.min(W, H) * 0.0022);
-      c.lineJoin = 'round';
+      c.strokeStyle = rgba(m.color, 0.16 + 0.30 * clamp01(peak));
+      c.lineWidth = Math.max(1, Math.min(W, H) * 0.0018);
       c.stroke();
     });
-
-    // The hand: a bright leading edge, so it's obvious where "now" is and which
-    // way time runs. Brightest at the rim, fading inward.
-    const hx = cx + Math.sin(handAng) * maxR * 1.02;
-    const hy = cy - Math.cos(handAng) * maxR * 1.02;
-    const ix = cx + Math.sin(handAng) * inner * 0.9;
-    const iy = cy - Math.cos(handAng) * inner * 0.9;
-    const hg = c.createLinearGradient(ix, iy, hx, hy);
-    hg.addColorStop(0, 'rgba(226,236,255,0)');
-    hg.addColorStop(1, 'rgba(232,240,255,0.42)');
-    c.strokeStyle = hg;
-    c.lineWidth = Math.max(1, Math.min(W, H) * 0.0035);
-    c.beginPath(); c.moveTo(ix, iy); c.lineTo(hx, hy); c.stroke();
     c.globalCompositeOperation = 'source-over';
-
-    // The void at the centre — still, and unaffected by any of it.
-    const vg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, inner));
-    vg.addColorStop(0, '#02030a');
-    vg.addColorStop(0.72, '#03040c');
-    vg.addColorStop(1, 'rgba(6,8,20,0)');
-    c.fillStyle = vg;
-    c.beginPath(); c.arc(cx, cy, Math.max(2, inner), 0, Math.PI * 2); c.fill();
-
-    // Twelve o'clock tick, so the reset point is visible rather than implied.
-    c.strokeStyle = 'rgba(210,220,255,0.18)';
-    c.lineWidth = Math.max(1, Math.min(W, H) * 0.0018);
-    c.beginPath();
-    c.moveTo(cx, cy - maxR * 1.03);
-    c.lineTo(cx, cy - maxR * 1.10);
-    c.stroke();
   }
 
   // ---- Bloom: slow gradients that emerge on real events -----------------
@@ -797,6 +870,11 @@ function createZenVisual(canvas) {
       history.push({
         levels: bands.map((b) => clamp01(b.level)),
         spikes: bands.map((b) => clamp01(b.spike)),
+        // Composites too, so Flow can graph whichever series the data panel is
+        // showing. Held values (not zeros) for metrics with no inputs.
+        metrics: VizCore.PULSE_METRICS.map((m) => (
+          state.metrics[m.key] == null ? null : clamp01(state.metrics[m.key])
+        )),
         calm: clamp01(state.calm),
       });
       if (history.length > FLOW_MAX) history.shift();
@@ -817,6 +895,12 @@ function createZenVisual(canvas) {
     },
     cycleMode() { return this.setMode(VizCore.nextMode(modeIndex)); },
     currentMode() { return VizCore.MODES[modeIndex]; },
+    // Follows the data panel's Sensors/Composites switch — see seriesMode.
+    setSeries(which) {
+      seriesMode = which === 'composites' ? 'composites' : 'sensors';
+      return seriesMode;
+    },
+    currentSeries() { return seriesMode; },
     modes() { return VizCore.MODES; },
     cyclePattern() {
       patternIndex = VizCore.nextPattern(patternIndex);
