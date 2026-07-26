@@ -71,17 +71,19 @@
     background: rgba(255,255,255,.05); border-color: var(--glass-line); box-shadow: none;
     color: rgba(255,255,255,.62); cursor: default; }
   #devices button.linked.warn { color: #ffc98a; border-color: rgba(255,201,138,.4); }
-  /* Breath reads as a CENTRED bar, not a left-to-right fill: the midpoint is the
-     turnaround, above it is the in-breath swelling and below it the out-breath
-     contracting. A 0..100 fill would make an exhale look like a low score. */
-  .rRow .rVal { white-space: nowrap; }
-  .rBarC { position: relative; display: inline-block; width: 54px; height: 16px;
-    vertical-align: middle; }
-  .rBarC::before { content: ''; position: absolute; left: 0; right: 0; top: 50%;
-    height: 1px; background: rgba(255,255,255,.28); }
-  .rBarC i { position: absolute; left: 0; right: 0; display: block; }
-  .rBarC i.up { bottom: 50%; background: linear-gradient(0deg, rgba(134,225,255,.85), rgba(134,225,255,.35)); }
-  .rBarC i.dn { top: 50%; background: linear-gradient(180deg, rgba(167,139,250,.8), rgba(167,139,250,.3)); }
+  /* Breath sits in the SAME bar column as every other metric, so the rows line
+     up — but centred rather than filling from the left. Middle is the turnaround
+     (or a held breath), the in-breath pushes right of centre and the out-breath
+     pushes left. A 0..100 left-to-right fill would render an exhale as a low
+     score, which is a different claim entirely. */
+  .rBarC { position: relative; width: 64px; height: 5px; border-radius: 5px;
+    background: rgba(255,255,255,.11); flex: none; overflow: hidden; }
+  .rBarC::before { content: ''; position: absolute; left: 50%; top: -2px; bottom: -2px;
+    width: 1px; background: rgba(255,255,255,.45); }
+  .rBarC i { position: absolute; top: 0; bottom: 0; display: block; border-radius: 5px;
+    transition: width .25s linear, left .25s linear, right .25s linear; }
+  .rBarC i.rt { left: 50%; background: linear-gradient(90deg, rgba(134,225,255,.55), rgba(190,240,255,.95)); }
+  .rBarC i.lf { right: 50%; background: linear-gradient(270deg, rgba(167,139,250,.5), rgba(205,190,255,.9)); }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
@@ -1022,19 +1024,43 @@ function updateBandState(channels) {
 // tick) so a few minutes of history fits legibly on one small chart.
 // Two series sets. Sensors = what the hardware actually reports. Composites =
 // interpreted scores, each carrying its evidence tier (see metrics.js).
+const rgbHex = (c) => '#' + c.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
 const SENSOR_SERIES = [
   { key: 'calm', label: 'Calm', color: '#f2c879' },
   { key: 'noise', label: 'Noise', color: '#e0697a' },
-  { key: 'TP9', label: 'TP9', color: '#7dd3fc' },
-  { key: 'AF7', label: 'AF7', color: '#a78bfa' },
-  { key: 'AF8', label: 'AF8', color: '#34d399' },
-  { key: 'TP10', label: 'TP10', color: '#60a5fa' },
+  // DERIVED from VizCore.CHANNEL_COLORS, never hand-copied. These had drifted:
+  // AF8 was coral in the visual and green on the graph, TP10 mint in the visual
+  // and blue on the graph — so a ribbon and its own line were different colours,
+  // breaking the invariant viz-core explicitly documents. Deriving also fixed
+  // TP9 and TP10 both being blue and only 54 apart in RGB.
+  ...DSP.CHANNEL_NAMES.map((name, i) => ({
+    key: name, label: name, color: rgbHex(VizCore.CHANNEL_COLORS[i]),
+  })),
 ];
 const COMPOSITE_COLORS = {
-  calm: '#f2c879', thinking: '#ff7dab', focus: '#7dd3fc', drowsy: '#9b8cff',
-  blink: '#7ce8c0', jaw: '#e0697a', asymmetry: '#c0b3ff', equanimity: '#8fe3a8',
-  hrv: '#ff8f6b', breath: '#86e1ff',
+  // Every pair must be TELLABLE APART — test-ui.js enforces a minimum RGB
+  // separation. This palette had three collisions that all shipped: breath was
+  // 17 from focus (so a correctly-drawn line was invisible on top of another
+  // one), equanimity 31 from blink, and hrv 51 from jaw. A line you cannot
+  // distinguish is worse than an absent one, because you conclude the metric is
+  // broken. Closest pair is now 77.
+  calm: '#f2c879',        // gold
+  thinking: '#ff7dab',    // pink
+  focus: '#7dd3fc',       // light blue
+  drowsy: '#9b8cff',      // violet
+  hrv: '#c2410c',         // burnt orange — moved off calm's gold
+  equanimity: '#8fe3a8',  // mint
+  asymmetry: '#c0b3ff',
   openness: '#ffd9a0',
+  // Blinks and jaw are ARTIFACTS, not mind states. Desaturated on purpose so
+  // they read as "this is interference" rather than as another thing you are
+  // doing with your mind.
+  blink: '#696464',       // neutral grey
+  jaw: '#7396a0',         // slate
+  // White, and deliberately the most visible line on the chart: breath is a
+  // PHASE oscillating about a midpoint rather than a level, so it is a different
+  // kind of thing from the others and should read that way.
+  breath: '#ffffff',
 };
 const COMPOSITE_SERIES = activeComposites.concat(CHART_ONLY_COMPOSITES).map((k) => ({
   key: k, label: Metrics.get(k).label, color: COMPOSITE_COLORS[k] || '#cccccc',
@@ -1423,7 +1449,8 @@ function breathRow() {
   } else {
     const a = Math.max(-1, Math.min(1, breathAmount));
     const pct = Math.round(Math.abs(a) * 50);
-    bar = `<span class="rBarC"><i class="${a >= 0 ? 'up' : 'dn'}" style="height:${pct}%"></i></span>`;
+    // Right of centre on the in-breath, left on the out-breath.
+    bar = `<span class="rBarC"><i class="${a >= 0 ? 'rt' : 'lf'}" style="width:${pct}%"></i></span>`;
     val = `${rate == null ? '' : rate + '/min '}${breathRising ? 'in' : 'out'}`;
   }
   return `<div class="rRow"><span class="rLabel">Breath</span>`

@@ -160,12 +160,11 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       breathAmount = 0.8; breathRising = true;
       const el = document.createElement('div');
       el.innerHTML = breathRow();
-      const bar = el.querySelector('.rBarC');
-      const fill = bar.querySelector('i');
-      return { cls: fill.className, height: fill.style.height, text: el.textContent };
+      const fill = el.querySelector('.rBarC i');
+      return { cls: fill.className, height: fill.style.width, text: el.textContent };
     });
-    assert.strictEqual(inhale.cls, 'up', 'a positive breath amount must fill UPWARD from the midpoint');
-    assert.strictEqual(inhale.height, '40%', 'and reach 40% of the bar for an amount of 0.8 (half-range)');
+    assert.strictEqual(inhale.cls, 'rt', 'a positive breath amount must fill RIGHT of centre');
+    assert.strictEqual(inhale.height, '40%', 'and reach 40% of the bar width for an amount of 0.8 (half-range)');
     assert.ok(/in/.test(inhale.text), 'and be labelled as an in-breath');
     // Exactly ONE row. An earlier version rendered breath as a composite bar, a
     // rate row AND a phase bar — three rows all labelled "Breath".
@@ -181,9 +180,9 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const el = document.createElement('div');
       el.innerHTML = breathRow();
       const fill = el.querySelector('.rBarC i');
-      return { cls: fill.className, height: fill.style.height, text: el.textContent };
+      return { cls: fill.className, height: fill.style.width, text: el.textContent };
     });
-    assert.strictEqual(exhale.cls, 'dn', 'a negative breath amount must fill DOWNWARD');
+    assert.strictEqual(exhale.cls, 'lf', 'a negative breath amount must fill LEFT of centre');
     assert.strictEqual(exhale.height, '30%');
     assert.ok(/out/.test(exhale.text), 'and be labelled as an out-breath');
 
@@ -196,7 +195,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       el.innerHTML = breathRow();
       return { fills: el.querySelectorAll('.rBarC i').length, text: el.textContent };
     });
-    assert.strictEqual(absent.fills, 0, 'with no signal the bar must be empty, not centred');
+    assert.strictEqual(absent.fills, 0, 'with no signal the bar must be empty, not sitting at centre');
     assert.ok(!/\b(in|out)\b/.test(absent.text),
       `and must not claim a direction (got: ${absent.text})`);
 
@@ -205,6 +204,39 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(!composites.includes('breath'),
       'breath must not be a composite readout row as well — an exhale is not a low score');
     console.log('✓ breath is exactly one centred row, empty when there is no signal, not duplicated');
+  }
+
+  // 7) Chart series colours must be TELLABLE APART. This has caused the same
+  //    confusion twice: TP9's hue was identical to Focus's, so an electrode read
+  //    as a dead composite; then breath shipped at an RGB distance of 17 from
+  //    Focus, so a correctly-drawn line was invisible on top of another one.
+  //    Lines that cannot be distinguished are worse than absent — you conclude
+  //    the metric is broken.
+  {
+    const report = await page.evaluate(() => {
+      const hex = (h) => [1, 3, 5].map((i) => parseInt(h.substr(i, 2), 16));
+      const dist = (a, b) => Math.sqrt(a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0));
+      const check = (series) => {
+        const worst = [];
+        for (let i = 0; i < series.length; i++) {
+          for (let j = i + 1; j < series.length; j++) {
+            worst.push({
+              a: series[i].key, b: series[j].key,
+              d: Math.round(dist(hex(series[i].color), hex(series[j].color))),
+            });
+          }
+        }
+        return worst.sort((x, y) => x.d - y.d)[0];
+      };
+      // Only within-group matters: sensors and composites are never shown at once.
+      return { sensors: check(SENSOR_SERIES), composites: check(COMPOSITE_SERIES) };
+    });
+    const MIN = 60;
+    for (const [group, w] of Object.entries(report)) {
+      assert.ok(w.d >= MIN,
+        `${group}: "${w.a}" and "${w.b}" are only ${w.d} apart in RGB — pick a distinguishable colour (min ${MIN})`);
+    }
+    console.log(`✓ chart colours are distinguishable (closest pair: sensors ${report.sensors.d}, composites ${report.composites.d})`);
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);

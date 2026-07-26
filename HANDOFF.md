@@ -206,6 +206,16 @@ metrics move over tens of seconds, so every revolution saw a near-constant value
 drew a perfect circle — a loading spinner carrying no information. It sweeps every
 24s now.
 
+**Chart colours must be tellable apart, and this has bitten three times.** TP9's
+hue was identical to Focus's, so an electrode read as a dead composite; `breath`
+shipped 17 RGB units from Focus, so a correctly-drawn line was invisible on top of
+another; `equanimity`/`blink` were 31 apart and `hrv`/`jaw` 51. A line you cannot
+distinguish is worse than an absent one, because you conclude the metric is broken.
+`test-ui.js` now enforces a minimum separation within each series group, and the
+electrode colours are **derived** from `VizCore.CHANNEL_COLORS` rather than
+hand-copied — they had drifted, so a ribbon in the visual and its own line on the
+graph were different colours.
+
 **A test that asserts the wrong thing is worse than no test.** One was pinning a false
 claim about "sharp returns"; another compared two `AdaptiveNormalizer`s, which is
 meaningless because any constant signal becomes its own baseline. When a test fails
