@@ -224,14 +224,19 @@
     font-size: 10px; letter-spacing: .18em; text-transform: uppercase; }
   #readoutTitle::before { content: ""; width: 7px; height: 7px; border: 1px solid #80e7ff;
     transform: rotate(45deg); opacity: .75; }
-  .rRow { display: grid; grid-template-columns: minmax(74px, 1fr) 64px 34px; align-items: center;
-    gap: 9px; justify-content: flex-end; min-height: 27px; }
+  /* Three columns: label, bar, value. The value column must be allowed to GROW —
+     it was a fixed 34px, so any text value containing a space ("73 bpm", "30 ms",
+     "6/min in") wrapped inside its own cell onto a second line. The label column
+     gives up the space instead. */
+  .rRow { display: grid; grid-template-columns: minmax(56px, 1fr) 64px minmax(34px, max-content);
+    align-items: center; gap: 9px; justify-content: flex-end; min-height: 27px; }
   .rLabel { opacity: .72; }
   .rBar { width: 64px; height: 5px; border-radius: 5px; background: rgba(255,255,255,.11);
     overflow: hidden; flex: none; }
   .rBar i { display: block; height: 100%; border-radius: 5px; transition: width .25s linear;
     box-shadow: 0 0 10px currentColor; }
-  .rVal { min-width: 26px; text-align: right; color: rgba(255,255,255,.92); font-weight: 500; }
+  .rVal { min-width: 26px; text-align: right; color: rgba(255,255,255,.92); font-weight: 500;
+    white-space: nowrap; }
   .rRow.primary .rLabel { color: rgba(255,255,255,.95); opacity: 1; }
 
   /* Tier lights. Colour, not just a symbol, so the confidence of a score is
@@ -1249,6 +1254,9 @@ let accSamples = [];        // recent {x,y,z} in mG
 let accMag = null;          // mean magnitude, the gravity check
 let accVerdict = null;      // { meanMilliG, ok } from Polar.looksLikeGravity
 let accSettings = null;
+// Why PMD didn't start, shown ON SCREEN. Asking someone to open DevTools during a
+// meditation session is not a diagnostic strategy.
+let accError = null;
 const accFrameLog = [];     // first few raw frames, hex, for diagnosis
 const ACC_LOG_FRAMES = 6;
 const ACC_KEEP = 600;       // ~12s at 50Hz
@@ -1322,7 +1330,13 @@ async function tryStartAccelerometer(gatt) {
     console.log('[PMD] accelerometer stream requested with', JSON.stringify(cfg));
   } catch (err) {
     accAvailable = false;
-    console.log('[PMD] accelerometer unavailable:', err && err.message);
+    // Trim to something that fits a narrow panel while still naming the cause.
+    const m = (err && err.message) || 'unknown';
+    accError = /not found|No Services|no such/i.test(m) ? 'not supported'
+      : /not permitted|blocklist|SecurityError/i.test(m) ? 'blocked by browser'
+      : /GATT/i.test(m) ? 'GATT busy — retry'
+      : m.slice(0, 28);
+    console.log('[PMD] accelerometer unavailable:', m);
   }
 }
 
@@ -1544,17 +1558,19 @@ function breathRow() {
     bar = `<span class="rBarC"><i class="${a >= 0 ? 'rt' : 'lf'}" style="width:${pct}%"></i></span>`;
     val = `${rate == null ? '' : rate + '/min '}${breathRising ? 'in' : 'out'}`;
   }
-  return `<div class="rRow"><span class="rLabel">Breath</span>`
-    + `<span class="tierLight tier-moderate" title="proxy — estimated from heart timing, lags ~1s"></span>`
-    + bar + `<span class="rVal">${val}</span></div>`;
+  // EXACTLY three children, matching .rRow's three grid columns. A fourth (a tier
+  // light) wraps the value onto its own line — which is what put "6/min in" on a
+  // row of its own. Tier confidence lives in the info overlay by design.
+  return `<div class="rRow" title="estimated from heart timing; lags about a second">`
+    + `<span class="rLabel">Breath</span>${bar}<span class="rVal">${val}</span></div>`;
 }
 
 // A minimal readout for when the strap is connected but the headband isn't. The
 // strap alone genuinely measures three things — heart rate, HRV, and a real
 // breathing rate from RSA — and none of them need EEG.
 function renderStrapOnlyReadout() {
-  const line = (label, text, tier) => `<div class="rRow"><span class="rLabel">${label}</span>`
-    + (tier ? `<span class="tierLight tier-${tier}"></span>` : '')
+  // Three children only — see breathRow().
+  const line = (label, text) => `<div class="rRow"><span class="rLabel">${label}</span>`
     + `<span class="rBar"></span><span class="rVal">${text}</span></div>`;
   const rows = [];
   rows.push(line('Heart', hrBpm == null ? 'reading…' : `${hrBpm} bpm`, 'solid'));
@@ -1714,11 +1730,13 @@ setInterval(() => {
     // looking output can fake that. Once this is confirmed on real hardware it
     // should become a quiet indicator rather than a number.
     if (accAvailable) {
-      tail.push(row('Chest (decode)', null, {
+      tail.push(row('Chest', null, {
         text: accMag == null ? 'reading…'
-          : `${Math.round(accMag)} mG ${accVerdict && accVerdict.ok ? '\u2713' : '\u2717 expect ~1000'}`,
-        tier: accVerdict && accVerdict.ok ? 'solid' : null,
+          : `${Math.round(accMag)}mG ${accVerdict && accVerdict.ok ? '\u2713' : '\u2717 want 1000'}`,
       }));
+    } else if (accError) {
+      // Say what happened rather than showing nothing and leaving it a mystery.
+      tail.push(row('Chest', null, { text: accError }));
     }
     // Say when the strap's numbers should not be trusted, rather than showing
     // them at the same confidence as clean ones.

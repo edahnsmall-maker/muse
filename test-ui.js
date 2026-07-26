@@ -268,6 +268,50 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log('✓ the accelerometer decode reports its own gravity verdict');
   }
 
+  // 9) READOUT ROWS MUST NOT WRAP. Measured, not eyeballed. This has now broken
+  //    twice: once when .rVal had no nowrap so "8/min · strap" split across three
+  //    lines, and again when .rRow became a THREE-column grid while breathRow()
+  //    still emitted four children, pushing the value onto its own grid row. Both
+  //    reached the user. A single-line row is a measurable property, so measure it.
+  {
+    const rows = await page.evaluate(() => {
+      // Values containing a space are the hazard — a bare number always fits.
+      const host = document.createElement('div');
+      host.id = 'wrapProbe';
+      // Same width the real panel gives its rows.
+      const readout = document.getElementById('readout');
+      host.style.cssText = `position:absolute;left:-9999px;top:0;width:${readout.clientWidth}px;`
+        + `font:${getComputedStyle(readout).font};`;
+      document.body.appendChild(host);
+      breathAmount = 0.5; breathRising = true; strapBreathSec = 10;   // -> "6/min in"
+      host.innerHTML = breathRow();
+      const probe = (label) => {
+        const r = host.querySelector('.rRow');
+        const kids = r.children.length;
+        const h = r.getBoundingClientRect().height;
+        return { label, kids, h: Math.round(h) };
+      };
+      const results = [probe('breath')];
+      // And a text-valued row from the main helper: "73 bpm" is the case that wrapped.
+      host.innerHTML = '<div class="rRow"><span class="rLabel">Heart</span>'
+        + '<span class="rBar"></span><span class="rVal">73 bpm</span></div>';
+      results.push(probe('heart 73 bpm'));
+      host.innerHTML = '<div class="rRow"><span class="rLabel">HRV (RMSSD)</span>'
+        + '<span class="rBar"></span><span class="rVal">30 ms</span></div>';
+      results.push(probe('hrv 30 ms'));
+      host.remove();
+      return results;
+    });
+    for (const r of rows) {
+      assert.strictEqual(r.kids, 3,
+        `${r.label}: .rRow is a 3-column grid, so a row must have exactly 3 children (has ${r.kids}) — a 4th wraps the value onto its own line`);
+      assert.ok(r.h <= 34,
+        `${r.label}: row is ${r.h}px tall, so its value wrapped onto a second line (expect a single ~27px row)`);
+    }
+    await page.evaluate(() => { breathAmount = null; breathRising = null; strapBreathSec = null; });
+    console.log(`✓ readout rows stay on one line (${rows.map((r) => r.label + ' ' + r.h + 'px').join(', ')})`);
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

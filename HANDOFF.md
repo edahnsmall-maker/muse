@@ -327,6 +327,11 @@ without the ~1s lag.
 
 - **Do not remove a visual mode to replace it.** The standing instruction is to *add*
   alongside, so they can be compared. That is why there are 17.
+- **Do not add a fourth child to a `.rRow`.** It is a three-column grid (label /
+  bar / value); a fourth element pushes the value onto its own grid row. Tier
+  confidence lives in the info overlay, not the live table. `test-ui.js` measures
+  row height, because this reached the user twice — once from a missing
+  `white-space: nowrap` and once from exactly this extra child.
 - **Do not add a second row for the same quantity.** Breath once rendered three times
   (composite bar + rate row + phase bar), all labelled "Breath", saying different
   things.
