@@ -111,11 +111,11 @@ function createZenVisual(canvas) {
   // variability, and rate of abrupt shifts) makes the corona reach further and
   // flare harder. Movement noise is NOT thinking and is handled separately.
   function renderEclipse(tSec) {
-    // Light ground, unlike every other mode. Saturated colour composited onto
-    // near-black trends toward pale grey; on a light ground it reads vivid.
+    // Dark ground keeps Eclipse restful. The colour should glow out of the
+    // void, not turn the whole room into a lightbox.
     const bg = bctx.createLinearGradient(0, 0, 0, BH);
-    bg.addColorStop(0, '#f8f5f2');
-    bg.addColorStop(1, '#ece7e3');
+    bg.addColorStop(0, '#050711');
+    bg.addColorStop(1, '#010208');
     bctx.fillStyle = bg;
     bctx.fillRect(0, 0, BW, BH);
 
@@ -667,8 +667,8 @@ function createZenVisual(canvas) {
     bctx.fillRect(0, 0, BW, BH);
 
     const halo = bctx.createRadialGradient(cx, cy, 0, cx, cy, rad.rMax * 1.38);
-    halo.addColorStop(0, rgba(mixColor(mood.base, [246, 220, 170], mood.focus * 0.35), 0.05 + 0.09 * mood.intensity));
-    halo.addColorStop(0.58, rgba(mood.base, 0.035 + 0.055 * mood.cool));
+    halo.addColorStop(0, 'rgba(24,28,42,0.08)');
+    halo.addColorStop(0.58, 'rgba(12,15,26,0.045)');
     halo.addColorStop(1, 'rgba(0,0,0,0)');
     bctx.fillStyle = halo;
     bctx.fillRect(0, 0, BW, BH);
@@ -683,17 +683,17 @@ function createZenVisual(canvas) {
     drawIrisSedimentRing(bctx, rNow, ringW, mood, 0.78 + 0.18 * breath, true);
 
     bctx.globalCompositeOperation = 'source-over';
-    const centerR = Math.max(2, rad.r0 * (0.92 + 0.16 * breath));
+    const centerR = Math.max(2, rad.r0);
     const cg = bctx.createRadialGradient(cx, cy, 0, cx, cy, centerR * 2.8);
-    cg.addColorStop(0, rgba(mixColor(mood.base, [255, 242, 205], 0.42 + 0.22 * mood.focus), 0.55));
-    cg.addColorStop(0.46, rgba(mood.base, 0.18 + 0.18 * mood.intensity));
+    cg.addColorStop(0, 'rgba(246,235,210,0.32)');
+    cg.addColorStop(0.46, 'rgba(42,44,54,0.14)');
     cg.addColorStop(1, 'rgba(0,0,0,0)');
     bctx.fillStyle = cg;
     bctx.beginPath();
     bctx.arc(cx, cy, centerR * 2.8, 0, Math.PI * 2);
     bctx.fill();
 
-    bctx.strokeStyle = rgba(mood.accent, 0.12 + 0.18 * mood.focus);
+    bctx.strokeStyle = 'rgba(142,152,170,0.16)';
     bctx.lineWidth = Math.max(0.55, rad.rMax * 0.0026);
     bctx.beginPath();
     bctx.arc(cx, cy, centerR, 0, Math.PI * 2);
