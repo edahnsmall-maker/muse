@@ -66,18 +66,23 @@
   }
 
   const MODES = [
-    { key: 'eclipse', label: 'Eclipse', blurb: 'stillness grows as a void; thinking flares at its edge' },
-    { key: 'iris',    label: 'Iris',    blurb: 'your session laid down as a rose window' },
-    { key: 'pulse',  label: 'Pulse',  blurb: 'a clock hand sweeps; each metric bulges where it flared' },
-    { key: 'corona', label: 'Corona', blurb: 'the same sweep, overlapping and bleeding into one field' },
-    { key: 'silk',   label: 'Silk',   blurb: 'iridescent folds settle into a line; thoughts lift slow peaks' },
-    { key: 'flow',   label: 'Flow',   blurb: 'a live trace, dissolving as it ages' },
-    { key: 'bloom',  label: 'Bloom',  blurb: 'gradients that appear on real events' },
-    { key: 'field',  label: 'Field',  blurb: 'one soft band of colour per sensor' },
-    { key: 'breath', label: 'Breath', blurb: 'just slow breathing — nothing to read' },
-    { key: 'prism',  label: 'Prism',  blurb: 'glass-light veils cool with calm and warm with thinking' },
-    { key: 'lattice', label: 'Lattice', blurb: 'sacred geometry steadies as focus returns' },
-    { key: 'horizon', label: 'Horizon', blurb: 'a cinematic focus line that smooths as the mind settles' },
+    { key: 'eclipse', label: 'Eclipse', family: 'core', blurb: 'stillness grows as a void; thinking flares at its edge' },
+    { key: 'iris',    label: 'Iris',    family: 'core', blurb: 'your session laid down as a rose window' },
+    { key: 'pulse',  label: 'Pulse',  family: 'core', blurb: 'a clock hand sweeps; each metric bulges where it flared' },
+    { key: 'corona', label: 'Corona', family: 'core', blurb: 'the same sweep, overlapping and bleeding into one field' },
+    { key: 'silk',   label: 'Silk',   family: 'core', blurb: 'iridescent folds settle into a line; thoughts lift slow peaks' },
+    { key: 'flow',   label: 'Flow',   family: 'core', blurb: 'a live trace, dissolving as it ages' },
+    { key: 'bloom',  label: 'Bloom',  family: 'core', blurb: 'gradients that appear on real events' },
+    { key: 'field',  label: 'Field',  family: 'core', blurb: 'one soft band of colour per sensor' },
+    { key: 'breath', label: 'Breath', family: 'core', blurb: 'just slow breathing — nothing to read' },
+    { key: 'glassbloom', label: 'Slow Bloom', family: 'glass', blurb: 'Bloom rebuilt as slow glass flowers and overlapping light' },
+    { key: 'glasssilk', label: 'Glass Silk', family: 'glass', blurb: 'Silk rebuilt as luminous panes that settle into a calm seam' },
+    { key: 'prism',  label: 'Prism', family: 'glass', blurb: 'glass-light veils cool with calm and warm with thinking' },
+    { key: 'lattice', label: 'Lattice', family: 'glass', blurb: 'sacred geometry steadies as focus returns' },
+    { key: 'horizon', label: 'Horizon', family: 'glass', blurb: 'a cinematic focus line that smooths as the mind settles' },
+    { key: 'aurora', label: 'Aurora', family: 'glass', blurb: 'slow curtains of colour ripple with thought and cool with calm' },
+    { key: 'cathedral', label: 'Cathedral', family: 'glass', blurb: 'a quiet stained-glass rose that becomes orderly with focus' },
+    { key: 'tide', label: 'Tide', family: 'glass', blurb: 'slow concentric waves flatten as calm returns' },
   ];
 
   function nextMode(index) { return (index + 1) % MODES.length; }

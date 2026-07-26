@@ -91,13 +91,16 @@
      The explicit z-index keeps them above #overlay rather than relying on DOM
      order, so re-ordering the markup can't silently make them unclickable again. */
   #modeBar { position: absolute; top: 3.5vmin; left: 50%; transform: translate(-50%, -10px);
-    z-index: 10; display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
-    width: min(860px, 88vw); max-height: 132px; overflow-y: auto;
-    padding: 8px; border: 1px solid var(--glass-line); border-radius: 18px;
+    z-index: 10; display: flex; flex-direction: column; gap: 8px;
+    width: min(920px, 90vw); max-height: 176px; overflow-y: auto;
+    padding: 9px; border: 1px solid var(--glass-line); border-radius: 18px;
     background: rgba(5,10,22,.46); box-shadow: 0 0 0 1px rgba(255,255,255,.035) inset, 0 18px 70px rgba(0,0,0,.35);
     backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
     opacity: 0; pointer-events: none; transition: opacity .45s, transform .35s; }
   #modeBar.show.open { opacity: 1; pointer-events: auto; transform: translate(-50%, 0); }
+  .modeRow { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .modeRowTitle { min-width: 74px; text-align: right; color: rgba(202,222,238,.34);
+    font-size: 9px; letter-spacing: .18em; text-transform: uppercase; }
   .pill { min-height: 34px; display: inline-flex; align-items: center; justify-content: center;
     font-size: 12px; letter-spacing: .11em; padding: 0 15px; border-radius: 12px;
     border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.045);
@@ -108,7 +111,7 @@
   .pill.active { color: #f7fbff; border-color: var(--glass-line-hot);
     background: linear-gradient(180deg, rgba(134,225,255,.18), rgba(255,255,255,.06));
     box-shadow: 0 0 22px rgba(102,211,255,.20), 0 1px 0 rgba(255,255,255,.14) inset; }
-  #patternBar { position: absolute; top: calc(3.5vmin + 150px); left: 50%; transform: translateX(-50%);
+  #patternBar { position: absolute; top: calc(3.5vmin + 194px); left: 50%; transform: translateX(-50%);
     z-index: 10; display: none; gap: 7px; }
   #patternBar.show { display: flex; }
   #breathCue { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
@@ -304,9 +307,15 @@ const breathCueEl = document.getElementById('breathCue');
 
 function renderModeBar() {
   const cur = visual.currentMode().key;
-  modeBarEl.innerHTML = visual.modes()
-    .map((m) => `<span class="pill${m.key === cur ? ' active' : ''}" data-mode="${m.key}" title="${m.blurb}">${m.label}</span>`)
-    .join('');
+  const modes = visual.modes();
+  const row = (family, label) => {
+    const pills = modes
+      .filter((m) => (m.family || 'core') === family)
+      .map((m) => `<span class="pill${m.key === cur ? ' active' : ''}" data-mode="${m.key}" title="${m.blurb}">${m.label}</span>`)
+      .join('');
+    return `<div class="modeRow"><span class="modeRowTitle">${label}</span>${pills}</div>`;
+  };
+  modeBarEl.innerHTML = row('core', 'core') + row('glass', 'glass');
   modeBarEl.querySelectorAll('.pill').forEach((el) => {
     el.addEventListener('click', () => {
       const idx = visual.modes().findIndex((m) => m.key === el.dataset.mode);

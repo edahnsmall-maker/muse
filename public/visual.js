@@ -1618,6 +1618,283 @@ function createZenVisual(canvas) {
     bctx.globalCompositeOperation = 'source-over';
   }
 
+  // ---- Slow Bloom: Bloom rebuilt as glass flowers ------------------------
+  function renderGlassBloom(nowMs, tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const min = Math.min(BW, BH);
+    const cx = BW / 2, cy = BH * 0.52;
+
+    const bg = bctx.createRadialGradient(cx, cy, 0, cx, cy, min * 0.78);
+    bg.addColorStop(0, '#070b19');
+    bg.addColorStop(0.62, '#030612');
+    bg.addColorStop(1, '#010207');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    const active = blooms.update(nowMs);
+    const ambientCount = 5;
+    const flowers = [];
+    for (let i = 0; i < ambientCount; i++) {
+      const a = tSec * (0.012 + i * 0.002) + i * Math.PI * 2 / ambientCount;
+      flowers.push({
+        x: 0.5 + Math.sin(a) * (0.11 + 0.05 * thinking),
+        y: 0.52 - Math.cos(a) * (0.10 + 0.04 * focus),
+        alpha: 0.32 + 0.18 * calm,
+        radius: 0.12 + 0.035 * Math.sin(tSec * 0.02 + i),
+        color: mixColor([86, 220, 255], [255, 142, 178], smoothstep(0.36, 0.92, thinking)),
+      });
+    }
+    for (const b of active) {
+      flowers.push({
+        x: b.x, y: b.y, alpha: b.alpha, radius: b.radius * 1.55,
+        color: mixColor(b.color, [255, 245, 216], 0.18 + 0.28 * focus),
+      });
+    }
+
+    bctx.globalCompositeOperation = 'lighter';
+    for (const f of flowers) {
+      const x = f.x * BW, y = f.y * BH;
+      const R = Math.max(2, f.radius * min * (1.3 + 0.45 * calm));
+      const petalCount = 8;
+      for (let p = 0; p < petalCount; p++) {
+        const a = p * Math.PI * 2 / petalCount + tSec * 0.018 * (p % 2 ? -1 : 1);
+        const px = x + Math.sin(a) * R * 0.18;
+        const py = y - Math.cos(a) * R * 0.18;
+        const g = bctx.createRadialGradient(px, py, 0, px, py, R * (0.74 + 0.12 * Math.sin(p)));
+        g.addColorStop(0, rgba(f.color, 0.12 * f.alpha));
+        g.addColorStop(0.42, rgba(f.color, 0.050 * f.alpha));
+        g.addColorStop(1, rgba(f.color, 0));
+        bctx.fillStyle = g;
+        bctx.beginPath(); bctx.arc(px, py, R, 0, Math.PI * 2); bctx.fill();
+      }
+      bctx.strokeStyle = rgba(mixColor(f.color, [255, 255, 255], 0.32), 0.055 + 0.085 * focus);
+      bctx.lineWidth = Math.max(0.5, min * 0.0016);
+      bctx.beginPath(); bctx.arc(x, y, R * (0.38 + 0.18 * calm), 0, Math.PI * 2); bctx.stroke();
+    }
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Glass Silk: Silk as panes and a settling seam ---------------------
+  function renderGlassSilk(tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const min = Math.min(BW, BH);
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * calm;
+    const breath = 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / Math.max(1, period));
+
+    const bg = bctx.createLinearGradient(0, 0, 0, BH);
+    bg.addColorStop(0, '#020510');
+    bg.addColorStop(0.58, '#060819');
+    bg.addColorStop(1, '#020207');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'lighter';
+    lctx.lineCap = 'round';
+    const layers = 56;
+    const width = BW * 1.08;
+    const amp = min * (0.018 + 0.135 * clamp01(thinking + 0.52 * (1 - calm)));
+    for (let i = 0; i < layers; i++) {
+      const u = i / (layers - 1);
+      const y0 = BH * (0.30 + u * 0.42);
+      const ridge = smoothstep(0.22, 0.0, Math.abs(u - 0.5));
+      const cool = mixColor([67, 215, 255], [155, 117, 255], u);
+      const col = mixColor(cool, [255, 130, 175], smoothstep(0.42, 0.92, thinking + clamp01(state.bands[i % 4].spike) * 0.4));
+      const phase = tSec * (0.020 + 0.080 * thinking) + i * (0.07 - 0.035 * calm);
+      lctx.strokeStyle = rgba(col, 0.025 + 0.085 * ridge + 0.030 * focus);
+      lctx.lineWidth = Math.max(0.5, min * (0.0025 + 0.0055 * ridge + 0.002 * focus));
+      lctx.beginPath();
+      for (let s = 0; s <= 90; s++) {
+        const x = BW * 0.5 - width / 2 + (s / 90) * width;
+        const px = s / 90 - 0.5;
+        const calmLine = y0 + (u - 0.5) * min * 0.05 * calm;
+        const fold = amp * (
+          Math.sin(px * Math.PI * 2.0 + phase)
+          + 0.54 * Math.sin(px * Math.PI * 4.3 - phase * 0.7)
+          + thinking * 0.38 * Math.sin(px * Math.PI * 16 + tSec * 1.6 + i)
+        );
+        const y = calmLine + fold * (1 - 0.78 * Math.pow(calm, 1.7)) + (breath - 0.5) * min * 0.020;
+        if (s === 0) lctx.moveTo(x, y); else lctx.lineTo(x, y);
+      }
+      lctx.stroke();
+    }
+    lctx.globalCompositeOperation = 'source-over';
+
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(2, Math.round(min / 70))}px)`;
+    bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
+
+    const seam = bctx.createLinearGradient(BW * 0.12, 0, BW * 0.88, 0);
+    seam.addColorStop(0, 'rgba(90,220,255,0)');
+    seam.addColorStop(0.48, `rgba(144,233,255,${0.08 + 0.16 * calm + 0.10 * focus})`);
+    seam.addColorStop(0.52, `rgba(255,233,190,${0.08 + 0.16 * focus})`);
+    seam.addColorStop(1, 'rgba(90,220,255,0)');
+    bctx.strokeStyle = seam;
+    bctx.lineWidth = Math.max(1, min * (0.002 + 0.004 * focus));
+    bctx.beginPath();
+    bctx.moveTo(BW * 0.13, BH * (0.51 + (breath - 0.5) * 0.012));
+    bctx.bezierCurveTo(BW * 0.35, BH * (0.50 - 0.025 * (1 - calm)), BW * 0.62,
+      BH * (0.52 + 0.020 * (1 - calm)), BW * 0.87, BH * (0.51 + (breath - 0.5) * 0.012));
+    bctx.stroke();
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Aurora: slow curtains of colour ----------------------------------
+  function renderAurora(tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const min = Math.min(BW, BH);
+
+    const bg = bctx.createLinearGradient(0, 0, 0, BH);
+    bg.addColorStop(0, '#01030a');
+    bg.addColorStop(0.48, '#050817');
+    bg.addColorStop(1, '#010207');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'lighter';
+    lctx.lineCap = 'round';
+    const curtains = 7;
+    for (let i = 0; i < curtains; i++) {
+      const ch = i % 4;
+      const level = clamp01(smooth.levels[ch]);
+      const spike = clamp01(state.bands[ch].spike);
+      const col = mixColor(mixColor([73, 232, 199], [87, 205, 255], level), [255, 118, 154], clamp01(thinking * 0.65 + spike * 0.55));
+      const xBase = BW * (0.12 + i * 0.13) + Math.sin(tSec * 0.025 + i) * min * 0.035;
+      const top = BH * (0.08 + 0.03 * Math.sin(i));
+      const bottom = BH * (0.78 + 0.08 * calm);
+      lctx.strokeStyle = rgba(col, 0.055 + 0.035 * focus + 0.055 * spike);
+      lctx.lineWidth = Math.max(1, min * (0.045 + 0.020 * level + 0.020 * thinking));
+      lctx.beginPath();
+      for (let s = 0; s <= 44; s++) {
+        const y = top + (s / 44) * (bottom - top);
+        const f = s / 44;
+        const x = xBase
+          + Math.sin(f * Math.PI * 2.1 + tSec * (0.05 + 0.12 * thinking) + i) * min * (0.05 + 0.08 * (1 - calm))
+          + Math.sin(f * Math.PI * 6.0 - tSec * 0.08 + i * 1.7) * min * 0.015 * thinking;
+        if (s === 0) lctx.moveTo(x, y); else lctx.lineTo(x, y);
+      }
+      lctx.stroke();
+    }
+    lctx.globalCompositeOperation = 'source-over';
+
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(3, Math.round(min / 48))}px)`;
+    bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
+    const floor = bctx.createRadialGradient(BW / 2, BH * 0.75, 0, BW / 2, BH * 0.75, min * 0.52);
+    floor.addColorStop(0, `rgba(125,238,215,${0.045 + 0.080 * calm})`);
+    floor.addColorStop(1, 'rgba(125,238,215,0)');
+    bctx.fillStyle = floor;
+    bctx.fillRect(0, 0, BW, BH);
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Cathedral: a stained-glass rose for focus -------------------------
+  function renderCathedral(tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const cx = BW / 2, cy = BH * 0.50;
+    const min = Math.min(BW, BH);
+
+    const bg = bctx.createRadialGradient(cx, cy, 0, cx, cy, min * 0.72);
+    bg.addColorStop(0, '#080817');
+    bg.addColorStop(0.60, '#030511');
+    bg.addColorStop(1, '#010207');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    bctx.globalCompositeOperation = 'lighter';
+    const petals = 18;
+    const rot = tSec * (0.004 + 0.018 * (1 - calm));
+    for (let r = 0; r < 5; r++) {
+      const rr = min * (0.11 + r * 0.070 + calm * 0.014);
+      for (let p = 0; p < petals; p++) {
+        const a = rot + (p / petals) * Math.PI * 2 + (r % 2) * Math.PI / petals;
+        const ch = p % 4;
+        const spike = clamp01(state.bands[ch].spike);
+        const level = clamp01(smooth.levels[ch]);
+        const col = mixColor(mixColor([95, 218, 255], [135, 239, 187], level), [255, 126, 164], clamp01(thinking * 0.70 + spike * 0.4));
+        const x = cx + Math.sin(a) * rr;
+        const y = cy - Math.cos(a) * rr;
+        const pr = min * (0.030 + 0.010 * focus + 0.018 * spike);
+        const g = bctx.createRadialGradient(x, y, 0, x, y, pr * 2.2);
+        g.addColorStop(0, rgba(col, 0.10 + 0.11 * focus + 0.12 * spike));
+        g.addColorStop(0.62, rgba(col, 0.030 + 0.040 * focus));
+        g.addColorStop(1, rgba(col, 0));
+        bctx.fillStyle = g;
+        bctx.beginPath(); bctx.ellipse(x, y, pr * (0.55 + 0.4 * calm), pr * 1.7, -a, 0, Math.PI * 2); bctx.fill();
+      }
+    }
+    bctx.strokeStyle = rgba([205, 240, 255], 0.055 + 0.12 * focus);
+    bctx.lineWidth = Math.max(0.5, min * 0.0015);
+    for (let p = 0; p < petals; p++) {
+      const a = rot + (p / petals) * Math.PI * 2;
+      bctx.beginPath();
+      bctx.moveTo(cx + Math.sin(a) * min * 0.08, cy - Math.cos(a) * min * 0.08);
+      bctx.lineTo(cx + Math.sin(a) * min * 0.44, cy - Math.cos(a) * min * 0.44);
+      bctx.stroke();
+    }
+    bctx.beginPath(); bctx.arc(cx, cy, min * (0.075 + 0.020 * calm), 0, Math.PI * 2); bctx.stroke();
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Tide: slow waves flattening into calm -----------------------------
+  function renderTide(tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const cx = BW / 2, cy = BH * 0.54;
+    const min = Math.min(BW, BH);
+
+    const bg = bctx.createLinearGradient(0, 0, 0, BH);
+    bg.addColorStop(0, '#020511');
+    bg.addColorStop(0.55, '#050917');
+    bg.addColorStop(1, '#010207');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    bctx.globalCompositeOperation = 'lighter';
+    const rings = 12;
+    for (let i = 0; i < rings; i++) {
+      const u = i / Math.max(1, rings - 1);
+      const r = min * (0.07 + u * 0.50);
+      const ch = i % 4;
+      const level = clamp01(smooth.levels[ch]);
+      const spike = clamp01(state.bands[ch].spike);
+      const col = mixColor(mixColor([84, 220, 255], [116, 239, 196], calm), [255, 128, 154], clamp01(thinking * 0.62 + spike * 0.50));
+      const amp = min * (0.004 + 0.030 * thinking + 0.022 * spike) * (1 - 0.62 * calm);
+      const pts = 128;
+      bctx.beginPath();
+      for (let p = 0; p <= pts; p++) {
+        const a = (p / pts) * Math.PI * 2;
+        const wave = Math.sin(a * (3 + (i % 3)) + tSec * (0.07 + 0.10 * thinking) + i)
+          + 0.45 * Math.sin(a * 9 - tSec * 0.05 + i * 0.6);
+        const rr = r + amp * wave + min * 0.010 * (level - 0.5);
+        const x = cx + Math.sin(a) * rr;
+        const y = cy - Math.cos(a) * rr * (0.62 + 0.18 * calm);
+        if (p === 0) bctx.moveTo(x, y); else bctx.lineTo(x, y);
+      }
+      bctx.strokeStyle = rgba(col, 0.040 + 0.055 * (1 - u) + 0.060 * focus);
+      bctx.lineWidth = Math.max(0.5, min * (0.0013 + 0.0024 * (1 - u) + 0.0015 * focus));
+      bctx.stroke();
+    }
+    const pool = bctx.createRadialGradient(cx, cy, 0, cx, cy, min * (0.18 + 0.13 * calm));
+    pool.addColorStop(0, `rgba(150,238,255,${0.055 + 0.12 * calm + 0.05 * focus})`);
+    pool.addColorStop(1, 'rgba(150,238,255,0)');
+    bctx.fillStyle = pool;
+    bctx.beginPath(); bctx.arc(cx, cy, min * (0.20 + 0.13 * calm), 0, Math.PI * 2); bctx.fill();
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
   let last = performance.now();
   const start = last;
   function frame(now) {
@@ -1657,9 +1934,14 @@ function createZenVisual(canvas) {
       else if (mode === 'bloom') renderBloom(now);
       else if (mode === 'field') renderField(tSec);
       else if (mode === 'breath') renderBreath(dtSec);
+      else if (mode === 'glassbloom') renderGlassBloom(now, tSec);
+      else if (mode === 'glasssilk') renderGlassSilk(tSec);
       else if (mode === 'prism') renderPrism(tSec);
       else if (mode === 'lattice') renderLattice(tSec);
-      else renderHorizon(tSec);
+      else if (mode === 'horizon') renderHorizon(tSec);
+      else if (mode === 'aurora') renderAurora(tSec);
+      else if (mode === 'cathedral') renderCathedral(tSec);
+      else renderTide(tSec);
 
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';
