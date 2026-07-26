@@ -6,6 +6,12 @@ every sensor and composite score, in-the-moment cues, markers you can drop mid-s
 and a downloadable session report. This is Phase 0/1 — proving the biofeedback loop
 end to end before building the real app.
 
+> **Picking this project up cold, or handing it to another agent? Read
+> [`HANDOFF.md`](HANDOFF.md) first.** It is the map: architecture, the honesty rules
+> that are load-bearing, the bugs already paid for, the next task specified in detail,
+> and a "do not" list. `ROADMAP.md` is the product intent; this README is the
+> per-feature detail.
+
 **The one thing to read first:** every interpretive score here (Calm, Thinking,
 Focus…) is *unvalidated*. They're built from real, literature-backed signals, but the
 weights and thresholds were chosen by hand, and nothing has been checked against
