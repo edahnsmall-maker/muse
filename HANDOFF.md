@@ -327,6 +327,11 @@ without the ~1s lag.
 
 - **Do not remove a visual mode to replace it.** The standing instruction is to *add*
   alongside, so they can be compared. That is why there are 17.
+- **Do not add a BLE service without declaring it in `requestDevice`.** Web
+  Bluetooth grants access per service at pairing time; anything not in `filters` or
+  `optionalServices` fails with "Origin is not allowed to access the service", even
+  on an already-connected device. This silently blocked the H10 accelerometer for a
+  whole round trip — the decode was correct, the permission was never asked for.
 - **Do not add a fourth child to a `.rRow`.** It is a three-column grid (label /
   bar / value); a fourth element pushes the value onto its own grid row. Tier
   confidence lives in the info overlay, not the live table. `test-ui.js` measures

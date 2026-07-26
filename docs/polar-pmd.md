@@ -168,7 +168,27 @@ conversion factor is mandatory.
 | ~1000 mG with a ✓ | the decode is right; proceed to stage 2 |
 | a steady but wrong number (e.g. 25, or 256000) | scale error — wrong resolution or byte width |
 | thrashing wildly | structural error — wrong offsets or bit order |
-| row absent | PMD didn't start; the console says why |
+| `not permitted — reconnect` | the PMD service was not declared in `requestDevice`'s `optionalServices` — see below |
+| row absent | PMD didn't start and no error was captured |
+
+### Web Bluetooth will refuse a service you did not declare
+
+This cost a full round trip. Web Bluetooth grants access **per service, at pairing
+time**. Any service not named in `filters` or `optionalServices` fails with
+`Origin is not allowed to access the service` — *even on a device you are already
+connected to over a different service*. The strap request filters on the Heart Rate
+Service, so PMD has to be listed explicitly:
+
+```js
+navigator.bluetooth.requestDevice({
+  filters: [{ services: [Polar.HR_SERVICE] }],
+  optionalServices: [Polar.PMD_SERVICE],     // <- without this, ACC can never start
+});
+```
+
+Changing this means the user must click connect again, since the grant is made when
+the device is picked. `test-ui.js` captures the real `requestDevice` options and
+asserts PMD is among them.
 
 If it is wrong, the console holds the first six frames as hex plus the settings the
 device reported. That is enough to fix the offsets without further guessing. The

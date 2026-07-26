@@ -235,8 +235,10 @@
     overflow: hidden; flex: none; }
   .rBar i { display: block; height: 100%; border-radius: 5px; transition: width .25s linear;
     box-shadow: 0 0 10px currentColor; }
-  .rVal { min-width: 26px; text-align: right; color: rgba(255,255,255,.92); font-weight: 500;
-    white-space: nowrap; }
+  /* nowrap keeps a value on one line; max-width + ellipsis stops an unexpectedly
+     long one (a raw BLE error message, say) running off the edge of the panel. */
+  .rVal { min-width: 26px; max-width: 128px; text-align: right; color: rgba(255,255,255,.92);
+    font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rRow.primary .rLabel { color: rgba(255,255,255,.95); opacity: 1; }
 
   /* Tier lights. Colour, not just a symbol, so the confidence of a score is
@@ -1332,10 +1334,11 @@ async function tryStartAccelerometer(gatt) {
     accAvailable = false;
     // Trim to something that fits a narrow panel while still naming the cause.
     const m = (err && err.message) || 'unknown';
-    accError = /not found|No Services|no such/i.test(m) ? 'not supported'
-      : /not permitted|blocklist|SecurityError/i.test(m) ? 'blocked by browser'
+    accError = /Origin is not allowed/i.test(m) ? 'not permitted — reconnect'
+      : /not found|No Services|no such/i.test(m) ? 'not supported'
+      : /blocklist|SecurityError/i.test(m) ? 'blocked by browser'
       : /GATT/i.test(m) ? 'GATT busy — retry'
-      : m.slice(0, 28);
+      : m.slice(0, 18);
     console.log('[PMD] accelerometer unavailable:', m);
   }
 }
@@ -1393,6 +1396,12 @@ async function connectStrap() {
     setStatus('choose your heart strap in the browser picker…');
     strapDevice = await navigator.bluetooth.requestDevice({
       filters: [{ services: [Polar.HR_SERVICE] }],
+      // MUST declare every service we intend to touch. Web Bluetooth grants access
+      // per-service at pairing time, and anything not listed here — even on a
+      // device you are already connected to — fails with "Origin is not allowed to
+      // access the service". That was the entire reason the accelerometer never
+      // started: the decode was fine, the permission was never asked for.
+      optionalServices: [Polar.PMD_SERVICE],
     });
     strapDevice.addEventListener('gattserverdisconnected', () => {
       setStatus('heart strap disconnected');

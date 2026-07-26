@@ -312,6 +312,36 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ readout rows stay on one line (${rows.map((r) => r.label + ' ' + r.h + 'px').join(', ')})`);
   }
 
+  // 10) The strap request MUST declare the PMD service in optionalServices.
+  //     Web Bluetooth grants access per-service at pairing time; anything not
+  //     declared fails with "Origin is not allowed to access the service" even on a
+  //     device you are already connected to. This is exactly why the accelerometer
+  //     never started — the decode was fine, the permission was never requested.
+  //     Capturing the real options is a direct assertion on the actual cause.
+  {
+    const opts = await page.evaluate(async () => {
+      let captured = null;
+      navigator.bluetooth.requestDevice = (o) => {
+        captured = o;
+        return Promise.reject(Object.assign(new Error('cancelled'), { name: 'NotFoundError' }));
+      };
+      strapConnecting = false; strapDevice = null;
+      await connectStrap();
+      return captured;
+    });
+    assert.ok(opts, 'connectStrap must call requestDevice');
+    assert.ok(Array.isArray(opts.optionalServices),
+      'the strap request must declare optionalServices');
+    const declared = opts.optionalServices.map((u) => String(u).toLowerCase());
+    const pmd = await page.evaluate(() => Polar.PMD_SERVICE.toLowerCase());
+    assert.ok(declared.includes(pmd),
+      `optionalServices must include the PMD service ${pmd} or the accelerometer can never start (got ${JSON.stringify(declared)})`);
+    // And the heart rate service must still be the filter, or the picker shows
+    // every Bluetooth device in range.
+    assert.ok(opts.filters && opts.filters.length, 'must still filter on the heart rate service');
+    console.log('✓ the strap request declares the PMD service, so the accelerometer can be reached');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');
