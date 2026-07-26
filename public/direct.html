@@ -74,6 +74,7 @@
   /* Breath reads as a CENTRED bar, not a left-to-right fill: the midpoint is the
      turnaround, above it is the in-breath swelling and below it the out-breath
      contracting. A 0..100 fill would make an exhale look like a low score. */
+  .rRow .rVal { white-space: nowrap; }
   .rBarC { position: relative; display: inline-block; width: 54px; height: 16px;
     vertical-align: middle; }
   .rBarC::before { content: ''; position: absolute; left: 0; right: 0; top: 50%;
@@ -724,7 +725,11 @@ let primaryMetric = 'calm';
 // returns null for them, the readout shows an em dash, and that is the honest
 // state — "we have no heart data" rather than silently omitting the row so you
 // can't tell whether it's missing or zero.
-const activeComposites = ['calm', 'thinking', 'focus', 'drowsy', 'hrv', 'equanimity', 'breath', 'blink', 'jaw'];
+const activeComposites = ['calm', 'thinking', 'focus', 'drowsy', 'hrv', 'equanimity', 'blink', 'jaw'];
+// Graphed over time and legend-able, but deliberately NOT a row in the composite
+// readout: a 0-100 bar is the wrong shape for breath (an exhale is not a low
+// score), and it gets exactly one row of its own — the centred bar below.
+const CHART_ONLY_COMPOSITES = ['breath'];
 
 function computeFeatures(result) {
   const wins = FRONTAL.map((ch) => buffers[ch].slice(-WINDOW)).filter((w) => w.length >= WINDOW);
@@ -1031,7 +1036,7 @@ const COMPOSITE_COLORS = {
   hrv: '#ff8f6b', breath: '#86e1ff',
   openness: '#ffd9a0',
 };
-const COMPOSITE_SERIES = activeComposites.map((k) => ({
+const COMPOSITE_SERIES = activeComposites.concat(CHART_ONLY_COMPOSITES).map((k) => ({
   key: k, label: Metrics.get(k).label, color: COMPOSITE_COLORS[k] || '#cccccc',
 }));
 const CHART_SERIES = [...SENSOR_SERIES, ...COMPOSITE_SERIES.filter(
@@ -1402,17 +1407,28 @@ setInterval(updateBreathing, 2000);
 // in-breath and out-breath, per the request. Amount is a real phase estimate
 // from RSA, so it lags the actual breath by about a fifth of a cycle (measured,
 // see test-polar.js) — labelled "est" so that is visible rather than implied.
+// ONE breath row, not three. An earlier version rendered breath as a composite
+// bar, a rate row, AND a phase bar — three rows all labelled "Breath", each
+// saying something different. Rate and direction now share the phase row.
 function breathRow() {
-  const a = breathAmount == null ? 0 : Math.max(-1, Math.min(1, breathAmount));
-  const pct = Math.round(Math.abs(a) * 50);
-  const fill = a >= 0
-    ? `<i class="up" style="height:${pct}%"></i>`
-    : `<i class="dn" style="height:${pct}%"></i>`;
-  const label = breathRising ? 'in' : 'out';
+  const rateSec = strapBreathSec != null ? strapBreathSec : breathPeriod;
+  const rate = rateSec == null ? null : Math.round(60 / rateSec);
+  let bar, val;
+  if (breathAmount == null) {
+    // No respiratory signal is a real state — a fast heart has little RSA, and
+    // breath-holding has none. An empty bar and "no signal" is honest; a bar
+    // parked at the midpoint would claim we can see the turnaround.
+    bar = '<span class="rBarC"></span>';
+    val = rate == null ? 'reading…' : `${rate}/min`;
+  } else {
+    const a = Math.max(-1, Math.min(1, breathAmount));
+    const pct = Math.round(Math.abs(a) * 50);
+    bar = `<span class="rBarC"><i class="${a >= 0 ? 'up' : 'dn'}" style="height:${pct}%"></i></span>`;
+    val = `${rate == null ? '' : rate + '/min '}${breathRising ? 'in' : 'out'}`;
+  }
   return `<div class="rRow"><span class="rLabel">Breath</span>`
-    + `<span class="tierLight tier-moderate" title="proxy"></span>`
-    + `<span class="rBarC">${fill}</span>`
-    + `<span class="rVal">${label}</span></div>`;
+    + `<span class="tierLight tier-moderate" title="proxy — estimated from heart timing, lags ~1s"></span>`
+    + bar + `<span class="rVal">${val}</span></div>`;
 }
 
 // A minimal readout for when the strap is connected but the headband isn't. The
@@ -1426,9 +1442,7 @@ function renderStrapOnlyReadout() {
   rows.push(line('Heart', hrBpm == null ? 'reading…' : `${hrBpm} bpm`, 'solid'));
   rows.push(line('HRV (RMSSD)', hrvRmssd == null
     ? `reading… (${rrBuffer.length}/20 beats)` : `${Math.round(hrvRmssd)} ms`, 'solid'));
-  rows.push(line('Breath rate', strapBreathSec == null
-    ? `needs ~40 beats` : `${Math.round(60 / strapBreathSec)}/min`));
-  if (breathAmount != null) rows.push(breathRow());
+  rows.push(breathRow());
   if (strapUnreliable()) {
     rows.push(line('Strap', strapContact === false
       ? 'no skin contact' : `${Math.round(rrBuffer.rejectRate() * 100)}% rejected`));
@@ -1567,17 +1581,10 @@ setInterval(() => {
     tail.push(row('Calm', result.calm, { tier: 'moderate', color: COMPOSITE_COLORS.calm }));
     tail.push(row('Brainwaves', null, { text: brainLabel }));
   }
-  // The strap's RSA estimate takes precedence over the Muse's PPG when both
-  // exist: ECG-grade beat timing at the chest is far cleaner than an optical
-  // pulse read through the skin of a temple.
-  const bestBreath = strapBreathSec != null ? strapBreathSec : breathPeriod;
-  if (ppgAvailable || strapConnected()) {
-    tail.push(row('Breath', null, {
-      text: bestBreath == null ? 'reading…'
-        : `${Math.round(60 / bestBreath)}/min${strapBreathSec != null ? ' \u00b7 strap' : ''}`,
-    }));
-  }
-  if (breathAmount != null) tail.push(breathRow());
+  // One row for breath, always, whenever any breath source exists. The strap's
+  // RSA estimate takes precedence over the Muse's PPG: ECG-grade beat timing at
+  // the chest is far cleaner than an optical pulse read through a temple.
+  if (ppgAvailable || strapConnected()) tail.push(breathRow());
   if (strapConnected()) {
     tail.push(row('Heart', null, { text: hrBpm == null ? 'reading…' : `${hrBpm} bpm`, tier: 'solid' }));
     tail.push(row('HRV (RMSSD)', null, {

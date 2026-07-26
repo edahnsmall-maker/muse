@@ -45,6 +45,12 @@
   // several-fold and would read as a sudden flood of parasympathetic calm.
   const RR_MAX_STEP_FRACTION = 0.25;
 
+  // Minimum respiratory swing in heart rate, in bpm, for a breath phase to be
+  // worth reporting. Real RSA at rest is several bpm; below this the "waveform"
+  // is noise. RSA also shrinks as heart rate rises, so a fast heart legitimately
+  // yields no reading — which must show as no reading, not as a pegged bar.
+  const RSA_MIN_BPM = 1.2;
+
   /*
    * Heart Rate Measurement characteristic (0x2A37).
    *
@@ -301,7 +307,17 @@
     // otherwise squash the entire rest of the waveform toward zero.
     const rms = Math.sqrt(detr.reduce((a, b) => a + b * b, 0) / detr.length);
     if (!(rms > 1e-9)) return null;
-    return detr.map((v) => Math.max(-1, Math.min(1, v / (rms * 1.5))));
+
+    // RSA_MIN_BPM: below about this much respiratory swing in heart rate there is
+    // no breath to read, only noise being amplified. Reporting a phase from that
+    // produced a value pegged at the rail, which looks like a confident reading
+    // of a fully-held inhale. Returning null is the honest answer.
+    if (rms < RSA_MIN_BPM) return null;
+
+    // tanh, not a hard clamp. Clamping made the output sit at exactly +/-1 for
+    // long stretches — the bar pegged at 100 and stopped moving, which reads as a
+    // held breath rather than as "the signal is bigger than expected".
+    return detr.map((v) => Math.tanh(v / (rms * 1.3)));
   }
 
   // Where in the breath you are right now.
@@ -319,7 +335,7 @@
   return {
     HR_SERVICE, HR_MEASUREMENT, BATTERY_SERVICE, BATTERY_LEVEL,
     resampleHr, breathSignal, breathPhaseNow,
-    RR_UNIT_MS, RR_MIN_MS, RR_MAX_MS, RR_MAX_STEP_FRACTION,
+    RR_UNIT_MS, RR_MIN_MS, RR_MAX_MS, RR_MAX_STEP_FRACTION, RSA_MIN_BPM,
     parseHeartRateMeasurement,
     rmssd, sdnn, meanRR, bpmFromRR,
     RrBuffer, SteadinessTracker,

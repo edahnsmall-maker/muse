@@ -400,7 +400,10 @@ Four things use it:
 
 - **A centred bar in the metrics panel.** Midpoint is the turnaround; it fills upward
   on the in-breath and downward on the out-breath. Deliberately not a 0–100
-  left-to-right fill, which would render an exhale as a low score.
+  left-to-right fill, which would render an exhale as a low score. **Exactly one
+  row**, carrying the rate and direction with it — a first version rendered breath as
+  a composite bar, a rate row *and* a phase bar, three rows all labelled "Breath"
+  saying different things.
 - **A `breath` series in the live graph**, oscillating about the centre line.
 - **"Follow me" genuinely follows** now, driven by measured phase rather than a
   generated rhythm.
@@ -415,9 +418,18 @@ Four things use it:
 1. **RSA lags the breath** — the heart responds to breathing, it doesn't predict it.
 2. Detrending with a centred window makes the most recent sample the least reliable.
 
+There is also a **third limit found in real use**: the first version normalised by RMS
+and hard-clamped to ±1, so a weak or noisy signal spent long stretches pegged at the
+rail — the bar sat at 100 and stopped moving, which reads as a confidently-detected
+held inhale. It now saturates smoothly (`tanh`) and, more importantly, **refuses to
+report at all below `RSA_MIN_BPM`** of respiratory swing in heart rate. Real RSA at
+rest is several bpm; below that threshold there is no breath in the signal, only noise
+being amplified. RSA also shrinks as heart rate rises, so a fast heart legitimately
+yields no reading — and that now shows as *no reading* rather than a pegged bar.
+
 `test-polar.js` cross-correlates the recovered waveform against a known synthetic
 breath and reports the total lag: **1.0 second in a 5-second cycle**, correlation
-0.47. Good enough to watch and follow loosely; **not** a metronome to breathe
+0.43. Good enough to watch and follow loosely; **not** a metronome to breathe
 against. The bar is labelled "est" and the metric carries this caveat in its registry
 entry.
 
@@ -678,7 +690,10 @@ Four things use it:
 
 - **A centred bar in the metrics panel.** Midpoint is the turnaround; it fills upward
   on the in-breath and downward on the out-breath. Deliberately not a 0–100
-  left-to-right fill, which would render an exhale as a low score.
+  left-to-right fill, which would render an exhale as a low score. **Exactly one
+  row**, carrying the rate and direction with it — a first version rendered breath as
+  a composite bar, a rate row *and* a phase bar, three rows all labelled "Breath"
+  saying different things.
 - **A `breath` series in the live graph**, oscillating about the centre line.
 - **"Follow me" genuinely follows** now, driven by measured phase rather than a
   generated rhythm.
@@ -693,9 +708,18 @@ Four things use it:
 1. **RSA lags the breath** — the heart responds to breathing, it doesn't predict it.
 2. Detrending with a centred window makes the most recent sample the least reliable.
 
+There is also a **third limit found in real use**: the first version normalised by RMS
+and hard-clamped to ±1, so a weak or noisy signal spent long stretches pegged at the
+rail — the bar sat at 100 and stopped moving, which reads as a confidently-detected
+held inhale. It now saturates smoothly (`tanh`) and, more importantly, **refuses to
+report at all below `RSA_MIN_BPM`** of respiratory swing in heart rate. Real RSA at
+rest is several bpm; below that threshold there is no breath in the signal, only noise
+being amplified. RSA also shrinks as heart rate rises, so a fast heart legitimately
+yields no reading — and that now shows as *no reading* rather than a pegged bar.
+
 `test-polar.js` cross-correlates the recovered waveform against a known synthetic
 breath and reports the total lag: **1.0 second in a 5-second cycle**, correlation
-0.47. Good enough to watch and follow loosely; **not** a metronome to breathe
+0.43. Good enough to watch and follow loosely; **not** a metronome to breathe
 against. The bar is labelled "est" and the metric carries this caveat in its registry
 entry.
 

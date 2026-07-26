@@ -76,18 +76,29 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   //    the device buttons must not live inside it. This is the exact call that
   //    used to destroy them.
   {
-    await page.evaluate(() => setStatus('choose your Muse in the browser picker…'));
-    await page.waitForTimeout(80);
+    // museConnecting mirrors the real path: the picker is open, so the tick must
+    // NOT clear the message. Without this the tick wipes it within 250ms — which
+    // is correct product behaviour, and was the source of an earlier flaky run.
+    await page.evaluate(() => {
+      museConnecting = true;
+      setStatus('choose your Muse in the browser picker…');
+    });
+    // Wait for the device bar to have actually re-rendered rather than sleeping a
+    // guessed interval: renderDevices() runs on the page's own 250ms tick.
+    await waitFor(page, () => document.getElementById('connect').disabled,
+      'the headband button to disable while a connection is in flight');
     const st = await page.evaluate(() => ({
       connect: !!document.getElementById('connect'),
       strap: !!document.getElementById('connectStrap'),
-      disabled: document.getElementById('connect').disabled,
       statusText: document.getElementById('status').textContent,
     }));
     assert.ok(st.connect, 'the headband button must SURVIVE a status message');
     assert.ok(st.strap, 'the strap button must SURVIVE a status message');
-    assert.ok(!st.disabled, 'and must remain clickable');
-    assert.ok(/picker/.test(st.statusText), 'the status message should still have been shown');
+    assert.ok(/picker/.test(st.statusText),
+      'and the message must persist while the picker is open, not be wiped by the tick');
+    await page.evaluate(() => { museConnecting = false; });
+    await waitFor(page, () => !document.getElementById('connect').disabled,
+      'the button to re-enable once the attempt ends');
     console.log('✓ device buttons survive a status message (the bug that made them unpressable)');
   }
 
@@ -156,6 +167,14 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(inhale.cls, 'up', 'a positive breath amount must fill UPWARD from the midpoint');
     assert.strictEqual(inhale.height, '40%', 'and reach 40% of the bar for an amount of 0.8 (half-range)');
     assert.ok(/in/.test(inhale.text), 'and be labelled as an in-breath');
+    // Exactly ONE row. An earlier version rendered breath as a composite bar, a
+    // rate row AND a phase bar — three rows all labelled "Breath".
+    const rowCount = await page.evaluate(() => {
+      const el = document.createElement('div');
+      el.innerHTML = breathRow();
+      return el.querySelectorAll('.rRow').length;
+    });
+    assert.strictEqual(rowCount, 1, 'breath must be exactly one row');
 
     const exhale = await page.evaluate(() => {
       breathAmount = -0.6; breathRising = false;
@@ -168,16 +187,24 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(exhale.height, '30%');
     assert.ok(/out/.test(exhale.text), 'and be labelled as an out-breath');
 
-    // No breath signal must mean NO row, not a row parked at the midpoint —
-    // "we cannot see your breath" and "you are at the turnaround" are different.
+    // No respiratory signal: the bar must be EMPTY rather than parked at the
+    // midpoint, and must not claim a direction. "We can't see your breath" and
+    // "you're at the turnaround" are different statements.
     const absent = await page.evaluate(() => {
-      breathAmount = null;
-      renderStrapOnlyReadout();
-      return document.getElementById('readout').textContent;
+      breathAmount = null; breathRising = null;
+      const el = document.createElement('div');
+      el.innerHTML = breathRow();
+      return { fills: el.querySelectorAll('.rBarC i').length, text: el.textContent };
     });
-    assert.ok(!/\bin\b|\bout\b/.test(absent.replace(/not connected/, '')),
-      `with no breath signal there must be no in/out row (got: ${absent})`);
-    console.log('✓ the breath bar fills up on the inhale, down on the exhale, and is absent with no signal');
+    assert.strictEqual(absent.fills, 0, 'with no signal the bar must be empty, not centred');
+    assert.ok(!/\b(in|out)\b/.test(absent.text),
+      `and must not claim a direction (got: ${absent.text})`);
+
+    // Breath must not ALSO appear as a 0-100 composite row.
+    const composites = await page.evaluate(() => activeComposites.slice());
+    assert.ok(!composites.includes('breath'),
+      'breath must not be a composite readout row as well — an exhale is not a low score');
+    console.log('✓ breath is exactly one centred row, empty when there is no signal, not duplicated');
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
