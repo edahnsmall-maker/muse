@@ -191,12 +191,10 @@ function createZenVisual(canvas) {
   //
   // Cheap by construction: the record layer is written on deposit ticks only
   // (not per frame) and composited back with a single drawImage.
-  const IRIS_DEPOSIT_SEC = 6;
-  // Reaching the rim used to take 200 × 5s ≈ 17 minutes, which meant the disc
-  // was a small blob for the entire window in which someone decides whether it
-  // is worth looking at. 84 × 6s ≈ 8.4 minutes, and each ring is a band you can
-  // actually see rather than a sub-pixel sliver.
-  const IRIS_MAX_RINGS = 84;
+  const IRIS_DEPOSIT_SEC = 5;
+  // 120 five-second layers gives Iris a ten-minute outward record. Each layer
+  // keeps the same time thickness; color and brightness carry the mind state.
+  const IRIS_MAX_RINGS = 120;
   const IRIS_PETALS = 6;        // per half-turn => 12 lobes around the disc
   let irisRing = 0;
   let irisLastDeposit = 0;
@@ -547,6 +545,166 @@ function createZenVisual(canvas) {
       bctx.stroke();
     }
     bctx.globalCompositeOperation = 'source-over';
+  }
+
+  function irisSedimentRadii() {
+    const rMax = Math.min(BW, BH) * 0.55;
+    const r0 = rMax * 0.12;
+    const step = (rMax - r0) / IRIS_MAX_RINGS;
+    return { rMax, r0, step, rNow: Math.min(rMax, r0 + irisRing * step) };
+  }
+
+  function irisMindColor() {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(state.metrics && state.metrics.thinking != null ? state.metrics.thinking : smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const noise = clamp01(smooth.noise);
+
+    // The attached session reports sit mostly near the middle: calm averages
+    // around 0.53, marked thinking was about 0.57..0.61, and calm ranged
+    // roughly 0.33..0.76. These thresholds make that middle visually legible.
+    const heat = smoothstep(0.52, 0.68, thinking) * (1 - 0.35 * calm);
+    const cool = smoothstep(0.50, 0.68, calm) * (1 - 0.25 * thinking);
+    const gold = smoothstep(0.38, 0.66, focus) * (1 - 0.35 * heat);
+
+    let base = [92, 132, 178]; // uncertain/mixed blue-gray
+    if (heat > cool + 0.12) {
+      base = mixColor([168, 36, 72], [255, 94, 62], clamp01(heat));
+    } else if (cool > heat + 0.08) {
+      base = mixColor([44, 150, 176], [88, 221, 164], clamp01(cool));
+    } else {
+      base = mixColor([88, 116, 190], [170, 88, 164], clamp01(0.35 + heat));
+    }
+    base = mixColor(base, [235, 205, 120], gold * 0.40);
+    base = mixColor(base, [112, 112, 120], smoothstep(0.22, 0.58, noise) * 0.72);
+
+    const accent = mixColor(base, heat > cool ? [255, 182, 126] : [172, 245, 220], 0.28 + 0.22 * gold);
+    const intensity = clamp01(0.34 + 0.34 * Math.max(heat, cool) + 0.24 * gold - 0.24 * noise);
+    return { base, accent, calm, thinking, focus, noise, heat, cool, gold, intensity };
+  }
+
+  function drawIrisSedimentRing(c, rMid, width, mood, alphaScale = 1, crisp = true) {
+    const cx = BW / 2, cy = BH / 2;
+    const petalAmp = width * 0.72;
+    const N = 192;
+    const innerPts = [];
+    const outerPts = [];
+    let minInner = Infinity;
+    let maxOuter = 0;
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const petal = Math.pow(Math.abs(Math.cos(a * IRIS_PETALS)), 0.72);
+      const lace = 0.18 * Math.sin(a * IRIS_PETALS * 2);
+      const centerR = Math.max(1, rMid + petalAmp * (petal - 0.52 + lace * (0.35 + 0.45 * mood.focus)));
+      const innerR = Math.max(1, centerR - width * 0.50);
+      const outerR = Math.max(innerR + 1, centerR + width * 0.50);
+      minInner = Math.min(minInner, innerR);
+      maxOuter = Math.max(maxOuter, outerR);
+      innerPts.push([cx + Math.sin(a) * innerR, cy - Math.cos(a) * innerR]);
+      outerPts.push([cx + Math.sin(a) * outerR, cy - Math.cos(a) * outerR]);
+    }
+
+    const g = c.createRadialGradient(cx, cy, Math.max(1, minInner), cx, cy, Math.max(2, maxOuter));
+    g.addColorStop(0, rgba(mood.base, 0.05 * alphaScale));
+    g.addColorStop(0.45, rgba(mood.base, (0.22 + 0.34 * mood.intensity) * alphaScale));
+    g.addColorStop(0.72, rgba(mood.accent, (0.12 + 0.22 * mood.focus) * alphaScale));
+    g.addColorStop(1, rgba(mood.base, 0.03 * alphaScale));
+    c.fillStyle = g;
+    c.beginPath();
+    outerPts.forEach(([x, y], i) => (i === 0 ? c.moveTo(x, y) : c.lineTo(x, y)));
+    for (let i = innerPts.length - 1; i >= 0; i--) c.lineTo(innerPts[i][0], innerPts[i][1]);
+    c.closePath();
+    c.fill();
+
+    if (!crisp) return;
+    c.strokeStyle = rgba(mood.accent, (0.045 + 0.12 * mood.focus + 0.07 * mood.intensity) * alphaScale);
+    c.lineWidth = Math.max(0.45, width * 0.055);
+    c.beginPath();
+    for (let i = 0; i <= N; i++) {
+      const a = (i / N) * Math.PI * 2;
+      const petal = Math.pow(Math.abs(Math.cos(a * IRIS_PETALS)), 0.72);
+      const lace = 0.18 * Math.sin(a * IRIS_PETALS * 2);
+      const centerR = Math.max(1, rMid + petalAmp * (petal - 0.52 + lace * (0.35 + 0.45 * mood.focus)));
+      const x = cx + Math.sin(a) * centerR;
+      const y = cy - Math.cos(a) * centerR;
+      if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+    }
+    c.stroke();
+  }
+
+  function renderIrisSediment(tSec) {
+    const cx = BW / 2, cy = BH / 2;
+    const rad = irisSedimentRadii();
+    const mood = irisMindColor();
+    const ringW = Math.max(2, rad.step * 2.2);
+    const progress = clamp01((sessionSec - irisLastDeposit) / IRIS_DEPOSIT_SEC);
+    const rNow = Math.max(2, Math.min(rad.rMax, rad.r0 + (irisRing + progress) * rad.step));
+
+    if (sessionSec - irisLastDeposit >= IRIS_DEPOSIT_SEC) {
+      irisLastDeposit = sessionSec;
+      if (irisRing >= IRIS_MAX_RINGS) {
+        rctx.clearRect(0, 0, BW, BH);
+        irisRing = 0;
+      }
+      const depositRad = irisSedimentRadii();
+      const depositR = Math.max(2, depositRad.rNow);
+      lctx.clearRect(0, 0, BW, BH);
+      lctx.globalCompositeOperation = 'source-over';
+      drawIrisSedimentRing(lctx, depositR, ringW, mood, 1, false);
+      rctx.globalCompositeOperation = 'lighter';
+      rctx.filter = 'blur(1.5px)';
+      rctx.drawImage(lay, 0, 0);
+      rctx.filter = 'none';
+      drawIrisSedimentRing(rctx, depositR, ringW * 0.72, mood, 0.85, true);
+      rctx.globalCompositeOperation = 'source-over';
+      irisRing++;
+    }
+
+    const bg = bctx.createLinearGradient(0, 0, 0, BH);
+    bg.addColorStop(0, '#060814');
+    bg.addColorStop(1, '#02030a');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    const halo = bctx.createRadialGradient(cx, cy, 0, cx, cy, rad.rMax * 1.38);
+    halo.addColorStop(0, rgba(mixColor(mood.base, [246, 220, 170], mood.focus * 0.35), 0.05 + 0.09 * mood.intensity));
+    halo.addColorStop(0.58, rgba(mood.base, 0.035 + 0.055 * mood.cool));
+    halo.addColorStop(1, 'rgba(0,0,0,0)');
+    bctx.fillStyle = halo;
+    bctx.fillRect(0, 0, BW, BH);
+
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.globalAlpha = 0.94;
+    bctx.drawImage(rec, 0, 0);
+    bctx.globalAlpha = 1;
+
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * mood.calm;
+    const breath = 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / Math.max(1, period));
+    drawIrisSedimentRing(bctx, rNow, ringW, mood, 0.78 + 0.18 * breath, true);
+
+    bctx.globalCompositeOperation = 'source-over';
+    const centerR = Math.max(2, rad.r0 * (0.92 + 0.16 * breath));
+    const cg = bctx.createRadialGradient(cx, cy, 0, cx, cy, centerR * 2.8);
+    cg.addColorStop(0, rgba(mixColor(mood.base, [255, 242, 205], 0.42 + 0.22 * mood.focus), 0.55));
+    cg.addColorStop(0.46, rgba(mood.base, 0.18 + 0.18 * mood.intensity));
+    cg.addColorStop(1, 'rgba(0,0,0,0)');
+    bctx.fillStyle = cg;
+    bctx.beginPath();
+    bctx.arc(cx, cy, centerR * 2.8, 0, Math.PI * 2);
+    bctx.fill();
+
+    bctx.strokeStyle = rgba(mood.accent, 0.12 + 0.18 * mood.focus);
+    bctx.lineWidth = Math.max(0.55, rad.rMax * 0.0026);
+    bctx.beginPath();
+    bctx.arc(cx, cy, centerR, 0, Math.PI * 2);
+    bctx.stroke();
+
+    if (mood.noise > 0.18) {
+      bctx.fillStyle = `rgba(170,170,180,${0.03 + 0.05 * smoothstep(0.18, 0.55, mood.noise)})`;
+      bctx.beginPath();
+      bctx.arc(cx, cy, rad.rMax * 1.02, 0, Math.PI * 2);
+      bctx.fill();
+    }
   }
 
   // ---- Flow: a live trace that dissolves as it ages ----------------------
@@ -1243,7 +1401,7 @@ function createZenVisual(canvas) {
       else renderPulse(ctx, canvas.width, canvas.height, tSec);
     } else {
       if (mode === 'eclipse') renderEclipse(tSec);
-      else if (mode === 'iris') renderIrisRose(tSec);
+      else if (mode === 'iris') renderIrisSediment(tSec);
       else if (mode === 'bloom') renderBloom(now);
       else if (mode === 'field') renderField(tSec);
       else renderBreath(dtSec);
