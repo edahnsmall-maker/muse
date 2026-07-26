@@ -239,6 +239,35 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ chart colours are distinguishable (closest pair: sensors ${report.sensors.d}, composites ${report.composites.d})`);
   }
 
+  // 8) The accelerometer decode reports its own gravity verdict, and says so
+  //    plainly when the decode is wrong. A delta-compressed decode cannot be
+  //    validated by a test built from the same assumptions, so the runtime shows
+  //    the magnitude and whether it looks like gravity.
+  {
+    const good = await page.evaluate(() => {
+      accAvailable = true;
+      accSamples = [{ x: 20, y: -60, z: 998 }, { x: 25, y: -55, z: 1002 },
+                    { x: 18, y: -62, z: 995 }, { x: 22, y: -58, z: 1000 }];
+      accVerdict = Polar.looksLikeGravity(accSamples);
+      accMag = accVerdict.meanMilliG;
+      return { ok: accVerdict.ok, mag: Math.round(accMag) };
+    });
+    assert.ok(good.ok, 'a body at rest must be judged as gravity');
+    assert.ok(Math.abs(good.mag - 1000) < 60, `and read near 1000 mG (got ${good.mag})`);
+
+    const bad = await page.evaluate(() => {
+      // What a wrong resolution assumption produces: right shape, wrong scale.
+      accSamples = [{ x: 1, y: -2, z: 25 }, { x: 1, y: -1, z: 25 }, { x: 0, y: -2, z: 24 }, { x: 1, y: -2, z: 25 }];
+      accVerdict = Polar.looksLikeGravity(accSamples);
+      accMag = accVerdict.meanMilliG;
+      return accVerdict.ok;
+    });
+    assert.strictEqual(bad, false,
+      'a mis-scaled decode must be rejected, however smooth the numbers look');
+    await page.evaluate(() => { accAvailable = false; accVerdict = null; accMag = null; accSamples = []; });
+    console.log('✓ the accelerometer decode reports its own gravity verdict');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

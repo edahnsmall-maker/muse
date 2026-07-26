@@ -264,7 +264,13 @@ Two things from it that change the approach:
   the sign-extension wording, which is genuinely muddled in the PDF. Both are exactly
   the kind of thing that yields a decode which runs and produces garbage.
 
-**Build it defensively, in this order:**
+**Stage 1 is done** — decoding, the control-point handshake, raw-frame logging and a
+live gravity check in the readout. See "Implementation status" in
+[`docs/polar-pmd.md`](docs/polar-pmd.md) for how to verify it on hardware and what
+each failure mode looks like. Stage 2 (extracting breathing from the decoded axes) is
+specified there too.
+
+**The build order that was used, and should be kept for stage 2:**
 
 1. **Log raw frames first.** Do not write a decoder from assumption. Dump bytes,
    look at them, confirm the frame layout before parsing.

@@ -148,6 +148,41 @@ themselves. Use gravity:
 If the magnitude is 30, or 400000, or thrashing, the decode is wrong no matter how smooth
 the numbers look.
 
+## Implementation status
+
+**Stage 1 (done):** protocol decoding in `public/polar.js` —
+`parseControlResponse`, `parseSettings`, `buildAccStartCommand`, `decodeAccFrame`,
+`accelMagnitude`, `looksLikeGravity`. Wired into `direct.html`: on strap connect it
+asks the device for its ACC settings, starts a stream at 50Hz / smallest range, logs
+the first 6 raw frames and the control response to the console as hex, and shows a
+**`Chest (decode)`** row in the readout with the live magnitude and a ✓/✗.
+
+Settings are read from the device rather than hardcoded, specifically because the
+conversion factor is mandatory.
+
+**How to verify on hardware:** connect the strap, sit still, and look at the
+`Chest (decode)` row.
+
+| Reading | Meaning |
+|---|---|
+| ~1000 mG with a ✓ | the decode is right; proceed to stage 2 |
+| a steady but wrong number (e.g. 25, or 256000) | scale error — wrong resolution or byte width |
+| thrashing wildly | structural error — wrong offsets or bit order |
+| row absent | PMD didn't start; the console says why |
+
+If it is wrong, the console holds the first six frames as hex plus the settings the
+device reported. That is enough to fix the offsets without further guessing. The
+first thing to try is flipping the delta bit order from LSB-first to MSB-first,
+which is the assumption most likely to be wrong.
+
+**Stage 2 (not built):** extract breathing. Band-pass the axis with the most
+respiratory variance (or the projection onto the principal axis) over roughly
+0.1–0.5 Hz, take the phase, gate on amplitude the way `RSA_MIN_BPM` does, and feed
+it through the existing seams (`breathAmount` in `setState`, `features.breathPhase`,
+the single `breathRow()`). Precedence should be **accelerometer → RSA → Muse PPG →
+calm-linked guess**, so a wrong guess degrades rather than breaks. Do not add a new
+breath row.
+
 ## Sources
 
 - [polarofficial/polar-ble-sdk](https://github.com/polarofficial/polar-ble-sdk) —

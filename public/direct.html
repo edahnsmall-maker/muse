@@ -1238,6 +1238,94 @@ let strapLastAt = 0;
 let breathAmount = null;   // -1 exhaled .. 0 mid .. +1 inhaled, or null
 let breathRising = null;
 
+/* --- Chest-wall motion from the strap's accelerometer (PMD) ----------------
+ * Optional and additive: if any of this fails the RSA breath path is untouched.
+ * See docs/polar-pmd.md. The decode CANNOT be trusted from code review — a wrong
+ * delta decode yields smooth plausible numbers — so accMag below is surfaced in
+ * the readout and must read ~1000 mG at rest. That is the actual test.
+ */
+let accAvailable = false;
+let accSamples = [];        // recent {x,y,z} in mG
+let accMag = null;          // mean magnitude, the gravity check
+let accVerdict = null;      // { meanMilliG, ok } from Polar.looksLikeGravity
+let accSettings = null;
+const accFrameLog = [];     // first few raw frames, hex, for diagnosis
+const ACC_LOG_FRAMES = 6;
+const ACC_KEEP = 600;       // ~12s at 50Hz
+
+function onAccData(ev) {
+  const view = ev.target.value;
+  if (accFrameLog.length < ACC_LOG_FRAMES) {
+    const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    accFrameLog.push(Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(' '));
+    if (accFrameLog.length === ACC_LOG_FRAMES) {
+      // Printed, not shown: this is for diagnosing a wrong decode, and it is not
+      // something a meditator should ever see.
+      console.log('[PMD] first ACC frames (hex):\n' + accFrameLog.join('\n'));
+      console.log('[PMD] settings:', JSON.stringify(accSettings));
+    }
+  }
+  const decoded = Polar.decodeAccFrame(view, {
+    channels: accSettings && accSettings.channels ? accSettings.channels[0] : 3,
+  });
+  if (!decoded) return;
+  accSamples.push(...decoded.samples);
+  if (accSamples.length > ACC_KEEP) accSamples.splice(0, accSamples.length - ACC_KEEP);
+  const v = Polar.looksLikeGravity(accSamples.slice(-40));
+  if (v) { accVerdict = v; accMag = v.meanMilliG; }
+}
+
+// Optional PMD stream. Every step is allowed to fail: an older firmware, a
+// refused control point, an unexpected response — none of it may disturb the
+// HR/HRV path that already works.
+async function tryStartAccelerometer(gatt) {
+  try {
+    const svc = await gatt.getPrimaryService(Polar.PMD_SERVICE);
+    const ctl = await svc.getCharacteristic(Polar.PMD_CONTROL);
+    const data = await svc.getCharacteristic(Polar.PMD_DATA);
+
+    // Ask the device what it supports rather than hardcoding. The spec is
+    // explicit that the conversion factor is mandatory for correct values, so
+    // guessing settings is not an option.
+    await ctl.startNotifications();
+    const settingsSeen = new Promise((resolve) => {
+      const onCtl = (e) => {
+        const r = Polar.parseControlResponse(e.target.value);
+        console.log('[PMD] control response:', r && r.raw);
+        if (r && r.command === Polar.PMD_CMD_GET_SETTINGS) {
+          ctl.removeEventListener('characteristicvaluechanged', onCtl);
+          resolve(r);
+        }
+      };
+      ctl.addEventListener('characteristicvaluechanged', onCtl);
+      setTimeout(() => resolve(null), 3000);
+    });
+    await ctl.writeValue(new Uint8Array([Polar.PMD_CMD_GET_SETTINGS, Polar.PMD_TYPE_ACC]));
+    const settingsResp = await settingsSeen;
+    accSettings = settingsResp ? settingsResp.settings : null;
+
+    // Prefer 50Hz and the SMALLEST range: breathing is a slow, small signal, so
+    // fine resolution matters far more than headroom or bandwidth.
+    const pick = (list, want, fallback) =>
+      (list && list.length ? (list.includes(want) ? want : list[0]) : fallback);
+    const cfg = {
+      sampleRate: pick(accSettings && accSettings.sampleRate, 50, 50),
+      resolution: pick(accSettings && accSettings.resolution, 16, 16),
+      range: accSettings && accSettings.range && accSettings.range.length
+        ? Math.min(...accSettings.range) : 2,
+      channels: pick(accSettings && accSettings.channels, 3, 3),
+    };
+    await data.startNotifications();
+    data.addEventListener('characteristicvaluechanged', onAccData);
+    await ctl.writeValue(Polar.buildAccStartCommand(cfg));
+    accAvailable = true;
+    console.log('[PMD] accelerometer stream requested with', JSON.stringify(cfg));
+  } catch (err) {
+    accAvailable = false;
+    console.log('[PMD] accelerometer unavailable:', err && err.message);
+  }
+}
+
 function onStrapData(ev) {
   const p = Polar.parseHeartRateMeasurement(ev.target.value);
   strapLastAt = Date.now();
@@ -1303,6 +1391,9 @@ async function connectStrap() {
     const ch = await svc.getCharacteristic(Polar.HR_MEASUREMENT);
     await ch.startNotifications();
     ch.addEventListener('characteristicvaluechanged', onStrapData);
+    // Additive, and awaited so its console output lands in order. Failure here is
+    // logged and ignored — HR and HRV keep working.
+    await tryStartAccelerometer(gatt);
     setStatus('heart strap linked — HRV needs about 20s of beats');
     // This message MUST expire on its own. It previously stuck forever, because
     // the only code that cleared the status sat behind an early return that
@@ -1617,6 +1708,18 @@ setInterval(() => {
     tail.push(row('HRV (RMSSD)', null, {
       text: hrvRmssd == null ? 'reading…' : `${Math.round(hrvRmssd)} ms`, tier: 'solid',
     }));
+    // The accelerometer decode's own verdict, shown while it is being trusted for
+    // the first time. Gravity is the only honest test of a delta-compressed
+    // decode: a body at rest experiences ~1000 mG, and no amount of plausible-
+    // looking output can fake that. Once this is confirmed on real hardware it
+    // should become a quiet indicator rather than a number.
+    if (accAvailable) {
+      tail.push(row('Chest (decode)', null, {
+        text: accMag == null ? 'reading…'
+          : `${Math.round(accMag)} mG ${accVerdict && accVerdict.ok ? '\u2713' : '\u2717 expect ~1000'}`,
+        tier: accVerdict && accVerdict.ok ? 'solid' : null,
+      }));
+    }
     // Say when the strap's numbers should not be trusted, rather than showing
     // them at the same confidence as clean ones.
     if (strapUnreliable()) {

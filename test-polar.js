@@ -351,4 +351,165 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
   console.log('\u2713 a held breath reads as no signal, and a reading returns when breathing resumes');
 }
 
+// ============================================================================
+// PMD accelerometer.
+//
+// A WARNING ABOUT THESE TESTS. The delta-frame tests below build their fixtures
+// with the same assumptions the decoder uses, so they prove the decoder is
+// SELF-CONSISTENT and crash-free. They do NOT prove it matches what the strap
+// actually sends. That can only be established against gravity — see
+// looksLikeGravity() and docs/polar-pmd.md. Do not read a green suite here as
+// "the accelerometer works".
+// ============================================================================
+
+// 18) Settings TLV parsing, against a realistic settings response. This part IS
+//     unambiguous: the spec's settings table gives each type's width.
+{
+  // [0xF0][cmd=1][type=ACC][err=0][more=0] then TLVs:
+  //   type0 sampleRate,  4 items: 25, 50, 100, 200
+  //   type1 resolution,  1 item: 16
+  //   type2 range,       3 items: 2, 4, 8
+  //   type4 channels,    1 item: 3
+  const bytes = new Uint8Array([
+    0xf0, 0x01, 0x02, 0x00, 0x00,
+    0x00, 0x04, 25, 0, 50, 0, 100, 0, 200, 0,
+    0x01, 0x01, 16, 0,
+    0x02, 0x03, 2, 0, 4, 0, 8, 0,
+    0x04, 0x01, 3,
+  ]);
+  const r = Polar.parseControlResponse(new DataView(bytes.buffer));
+  assert.ok(r.isResponse, 'should recognise a 0xF0 control response');
+  assert.strictEqual(r.command, Polar.PMD_CMD_GET_SETTINGS);
+  assert.strictEqual(r.measurementType, Polar.PMD_TYPE_ACC);
+  assert.strictEqual(r.errorCode, 0);
+  assert.deepStrictEqual(r.settings.sampleRate, [25, 50, 100, 200],
+    'the H10 advertises 25/50/100/200Hz — this is the documented capability');
+  assert.deepStrictEqual(r.settings.resolution, [16]);
+  assert.deepStrictEqual(r.settings.range, [2, 4, 8]);
+  assert.deepStrictEqual(r.settings.channels, [3]);
+  assert.ok(/^f0 01 02/.test(r.raw), 'raw hex must be reported so a real response can be eyeballed');
+  console.log('\u2713 PMD settings response parses into sample rates, resolution, range and channels');
+}
+
+// 19) The conversion factor is an IEEE754 float, and the spec says using it is
+//     MANDATORY or the values are wrong. So it must survive parsing exactly.
+{
+  const buf = new ArrayBuffer(4);
+  new DataView(buf).setFloat32(0, 0.00061, true);
+  const f = new Uint8Array(buf);
+  const bytes = new Uint8Array([0xf0, 0x01, 0x02, 0x00, 0x00, 0x05, 0x01, f[0], f[1], f[2], f[3]]);
+  const r = Polar.parseControlResponse(new DataView(bytes.buffer));
+  assert.ok(Math.abs(r.settings.conversionFactor[0] - 0.00061) < 1e-9,
+    `conversion factor must round-trip exactly (got ${r.settings.conversionFactor[0]})`);
+  console.log('\u2713 the conversion factor survives as a float');
+}
+
+// 20) Malformed settings must yield "found nothing", never confident nonsense.
+{
+  const junk = new Uint8Array([0xf0, 0x01, 0x02, 0x00, 0x00, 0x63, 0xff, 0xff, 0xff]);
+  const r = Polar.parseControlResponse(new DataView(junk.buffer));
+  assert.deepStrictEqual(r.settings, {}, 'an unrecognised setting type must stop parsing, not guess');
+  assert.strictEqual(Polar.parseControlResponse(null), null);
+  assert.strictEqual(Polar.parseControlResponse(new DataView(new ArrayBuffer(2))), null,
+    'a too-short response is no response');
+  console.log('\u2713 malformed settings parse to nothing rather than to nonsense');
+}
+
+// 21) The start command's exact bytes, checked against the spec's TLV shape.
+{
+  const cmd = Polar.buildAccStartCommand({ sampleRate: 50, resolution: 16, range: 2, channels: 3 });
+  assert.deepStrictEqual(Array.from(cmd), [
+    0x02, 0x02,             // start, ACC
+    0x00, 0x01, 50, 0x00,   // sample rate 50Hz  (uint16)
+    0x01, 0x01, 16, 0x00,   // resolution 16 bits (uint16)
+    0x02, 0x01, 2, 0x00,    // range +/-2G        (uint16)
+    0x04, 0x01, 3,          // 3 channels         (uint8)
+  ], 'start command must match the documented TLV layout');
+  // 200Hz needs both bytes, which is the case a one-byte encoding would break.
+  const fast = Polar.buildAccStartCommand({ sampleRate: 200 });
+  assert.strictEqual(fast[4], 200); assert.strictEqual(fast[5], 0);
+  assert.deepStrictEqual(Array.from(Polar.buildStopCommand()), [0x03, 0x02]);
+  console.log('\u2713 the ACC start/stop commands have the documented byte layout');
+}
+
+// 22) signedLE: pure arithmetic, hand-checkable, no circularity.
+{
+  assert.strictEqual(Polar.signedLE(new Uint8Array([0x10, 0x00]), 0, 2), 16);
+  assert.strictEqual(Polar.signedLE(new Uint8Array([0xf0, 0xff]), 0, 2), -16);
+  assert.strictEqual(Polar.signedLE(new Uint8Array([0xff, 0x7f]), 0, 2), 32767);
+  assert.strictEqual(Polar.signedLE(new Uint8Array([0x00, 0x80]), 0, 2), -32768);
+  assert.strictEqual(Polar.signedLE(new Uint8Array([0x80]), 0, 1), -128);
+  assert.strictEqual(Polar.signedLE(new Uint8Array([0xff, 0xff, 0xff]), 0, 3), -1);
+  console.log('\u2713 signedLE handles 8/16/24-bit two\u2019s-complement correctly');
+}
+
+// 23) Round-trip through a frame built the way the decoder expects.
+//     SELF-CONSISTENCY ONLY — see the warning above.
+{
+  // Encode 3-channel 16-bit samples with 6-bit LSB-first signed deltas.
+  const ref = [900, -120, 400];
+  const deltas = [[3, -2, 1], [-4, 5, 0], [7, 1, -3]];
+  const bits = [];
+  for (const d of deltas) for (const v of d) {
+    const u = v < 0 ? v + 64 : v;                 // 6-bit two's complement
+    for (let k = 0; k < 6; k++) bits.push((u >> k) & 1);
+  }
+  const packed = new Uint8Array(Math.ceil(bits.length / 8));
+  bits.forEach((bit, k) => { if (bit) packed[k >> 3] |= 1 << (k & 7); });
+
+  const head = [Polar.PMD_TYPE_ACC, 0, 0, 0, 0, 0, 0, 0, 0, 1]; // type, 8-byte ts, frameType=1
+  const refBytes = [];
+  for (const v of ref) { const u = v < 0 ? v + 65536 : v; refBytes.push(u & 0xff, (u >> 8) & 0xff); }
+  const frame = new Uint8Array([...head, ...refBytes, 6, deltas.length, ...packed]);
+
+  const out = Polar.decodeAccFrame(new DataView(frame.buffer));
+  assert.ok(out, 'should decode');
+  assert.strictEqual(out.frameType, 1);
+  assert.strictEqual(out.samples.length, 1 + deltas.length, 'reference sample plus one per delta');
+  assert.deepStrictEqual(out.samples[0], { x: 900, y: -120, z: 400 }, 'reference sample, signed');
+  // Deltas ACCUMULATE — each sample is the previous plus its delta, not the
+  // reference plus its delta. Getting this wrong yields a plausible-looking
+  // signal that simply never drifts.
+  assert.deepStrictEqual(out.samples[1], { x: 903, y: -122, z: 401 });
+  assert.deepStrictEqual(out.samples[2], { x: 899, y: -117, z: 401 });
+  assert.deepStrictEqual(out.samples[3], { x: 906, y: -116, z: 398 });
+  console.log('\u2713 delta frames accumulate from the reference sample (self-consistency only)');
+}
+
+// 24) Garbage in must not produce confident output.
+{
+  assert.strictEqual(Polar.decodeAccFrame(null), null);
+  assert.strictEqual(Polar.decodeAccFrame(new DataView(new ArrayBuffer(4))), null, 'too short');
+  // Wrong measurement type must be refused rather than decoded as ACC.
+  const wrongType = new Uint8Array(20); wrongType[0] = 0; // ECG
+  assert.strictEqual(Polar.decodeAccFrame(new DataView(wrongType.buffer)), null,
+    'an ECG frame must not be decoded as acceleration');
+  // An absurd bit width must stop the loop, not spin.
+  const bad = new Uint8Array([Polar.PMD_TYPE_ACC, 0,0,0,0,0,0,0,0, 1, 1,0, 2,0, 3,0, 200, 250, 9,9,9,9]);
+  const r = Polar.decodeAccFrame(new DataView(bad.buffer));
+  assert.ok(r === null || r.samples.length <= 2, 'an implausible bit width must halt decoding');
+  console.log('\u2713 malformed ACC frames are refused rather than decoded into nonsense');
+}
+
+// 25) THE CHECK THAT ACTUALLY MATTERS. A correct decode of a body at rest reads
+//     ~1000 mG, because that is gravity. This is the one assertion here that a
+//     wrong decode cannot satisfy by accident, and it is why the runtime shows
+//     the live magnitude rather than trusting this suite.
+{
+  const atRest = [{ x: 20, y: -60, z: 998 }, { x: 25, y: -55, z: 1002 }, { x: 18, y: -62, z: 995 }, { x: 22, y: -58, z: 1000 }];
+  const g = Polar.looksLikeGravity(atRest);
+  assert.ok(g.ok, `a body at rest must read as gravity (got ${g.meanMilliG.toFixed(0)} mG)`);
+  assert.ok(Math.abs(g.meanMilliG - 1000) < 60, 'and close to 1000 mG');
+  assert.ok(Math.abs(Polar.accelMagnitude({ x: 0, y: 0, z: 1000 }) - 1000) < 1e-9);
+
+  // These are what a botched decode looks like: right shape, wrong scale.
+  assert.strictEqual(Polar.looksLikeGravity(atRest.map((s) => ({ x: s.x / 40, y: s.y / 40, z: s.z / 40 }))).ok,
+    false, 'values 40x too small must be rejected — a wrong resolution assumption looks exactly like this');
+  assert.strictEqual(Polar.looksLikeGravity(atRest.map((s) => ({ x: s.x * 256, y: s.y * 256, z: s.z * 256 }))).ok,
+    false, 'values 256x too large must be rejected — a byte-order or width error looks like this');
+  assert.strictEqual(Polar.looksLikeGravity([]), null, 'no samples is no verdict, not a pass');
+  assert.strictEqual(Polar.looksLikeGravity(null), null);
+  console.log('\u2713 looksLikeGravity accepts a body at rest and rejects mis-scaled decodes');
+}
+
 console.log('\nAll Polar tests passed.');

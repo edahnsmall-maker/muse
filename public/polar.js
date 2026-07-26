@@ -355,8 +355,241 @@
     return { amount: sig[i], rising: sig[i] > prev };
   }
 
+  /* === PMD: chest-wall motion from the strap's accelerometer =================
+   *
+   * Protocol transcribed from Polar's official spec into docs/polar-pmd.md. Read
+   * that before changing anything here.
+   *
+   * WHY BOTHER, when RSA already gives a breath signal: RSA measures the
+   * respiratory MODULATION OF HEART TIMING, so it lags by about a fifth of a
+   * cycle, shrinks as heart rate rises, and cannot represent a held breath at all
+   * (no modulation means no signal, however expanded the chest is). The strap sits
+   * on the ribcage. Its accelerometer measures the chest wall moving, which is
+   * breathing itself — no lag, works at any heart rate, and a hold reads as a hold.
+   *
+   * THE DANGEROUS PART: a wrong decode of a delta-compressed stream does not
+   * throw. It yields smooth, plausible, wrong numbers, and a unit test written
+   * from the same wrong assumption passes. So the real check is gravity —
+   * accelMagnitude() below must read ~1000 mG at rest. Nothing in this file
+   * proves itself.
+   */
+  const PMD_SERVICE = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
+  const PMD_CONTROL = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
+  const PMD_DATA = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8';
+
+  const PMD_TYPE_ACC = 2;
+  const PMD_CMD_GET_SETTINGS = 1;
+  const PMD_CMD_START = 2;
+  const PMD_CMD_STOP = 3;
+  const PMD_RESPONSE = 0xf0;
+
+  // Setting id -> width in bytes, from the spec's settings table. Type 5
+  // (conversion factor) is an IEEE754 float, handled separately.
+  const PMD_SETTING_SIZE = { 0: 2, 1: 2, 2: 2, 4: 1, 5: 4 };
+  const PMD_SETTING_NAME = {
+    0: 'sampleRate', 1: 'resolution', 2: 'range', 4: 'channels', 5: 'conversionFactor',
+  };
+
+  // Every payload here is little-endian.
+  function u16le(b, i) { return b[i] | (b[i + 1] << 8); }
+
+  /*
+   * Control-point response. Layout is [0xF0, command, measurementType, errorCode,
+   * moreFlag, ...payload].
+   *
+   * UNVERIFIED: the exact width of the error code and the presence of the "more"
+   * byte are not spelled out in the part of the spec that was transcribable. This
+   * parser therefore reports `raw` hex alongside its interpretation, so a real
+   * response can be checked by eye rather than trusted.
+   */
+  function parseControlResponse(view) {
+    if (!view || view.byteLength < 4) return null;
+    const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    const raw = Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(' ');
+    return {
+      raw,
+      isResponse: b[0] === PMD_RESPONSE,
+      command: b[1],
+      measurementType: b[2],
+      errorCode: b[3],
+      more: b.length > 4 ? b[4] : 0,
+      settings: parseSettings(b, 5),
+    };
+  }
+
+  /*
+   * Settings TLV list: [type][itemCount][value...] repeated. Used both in the
+   * settings response (where several values are offered per type) and to build a
+   * start request (where exactly one is chosen).
+   *
+   * Stops rather than throwing on anything it does not recognise — a
+   * mis-positioned start offset should degrade to "found nothing", not to
+   * confident nonsense.
+   */
+  function parseSettings(bytes, offset = 0) {
+    const out = {};
+    let i = offset;
+    while (i + 1 < bytes.length) {
+      const type = bytes[i];
+      const size = PMD_SETTING_SIZE[type];
+      if (size == null) break;                  // unknown type: stop, don't guess
+      const count = bytes[i + 1];
+      if (count === 0 || count > 16) break;     // implausible: stop
+      i += 2;
+      const vals = [];
+      for (let k = 0; k < count; k++) {
+        if (i + size > bytes.length) return out;
+        if (type === 5) {
+          const dv = new DataView(bytes.buffer, bytes.byteOffset + i, 4);
+          vals.push(dv.getFloat32(0, true));
+        } else if (size === 1) {
+          vals.push(bytes[i]);
+        } else {
+          vals.push(u16le(bytes, i));
+        }
+        i += size;
+      }
+      out[PMD_SETTING_NAME[type] || type] = vals;
+    }
+    return out;
+  }
+
+  /*
+   * Bytes to write to the control point to start an ACC stream.
+   *
+   * Defaults chosen for BREATHING, not for motion capture: 50Hz is far more than
+   * enough for a signal that oscillates every few seconds, and the SMALLEST range
+   * (2G) gives the finest resolution for the tens-of-milli-g excursions the chest
+   * wall actually produces. A wider range would throw that precision away.
+   */
+  function buildAccStartCommand({ sampleRate = 50, resolution = 16, range = 2, channels = 3 } = {}) {
+    return new Uint8Array([
+      PMD_CMD_START, PMD_TYPE_ACC,
+      0, 1, sampleRate & 0xff, (sampleRate >> 8) & 0xff,
+      1, 1, resolution & 0xff, (resolution >> 8) & 0xff,
+      2, 1, range & 0xff, (range >> 8) & 0xff,
+      4, 1, channels & 0xff,
+    ]);
+  }
+
+  function buildStopCommand(type = PMD_TYPE_ACC) {
+    return new Uint8Array([PMD_CMD_STOP, type]);
+  }
+
+  // Signed little-endian integer of `size` bytes.
+  function signedLE(bytes, i, size) {
+    let v = 0;
+    for (let s = 0; s < size; s++) v |= bytes[i + s] << (8 * s);
+    const signBit = 1 << (size * 8 - 1);
+    return (v & signBit) ? v - (1 << (size * 8)) : v;
+  }
+
+  /*
+   * Decode one PMD ACC data frame into samples of {x, y, z} in mG.
+   *
+   * Frame layout (docs/polar-pmd.md):
+   *   [0]       measurement type
+   *   [1..8]    timestamp
+   *   [9]       frame type  (ACC: 0 = 8-bit, 1 = 16-bit, 2 = 24-bit, all signed mG)
+   *   [10..]    one or more delta blocks:
+   *               reference sample   channels x bytesPerSample, signed LE
+   *               deltaBitWidth      1 byte
+   *               sampleCount        1 byte
+   *               packed deltas      sampleCount x channels values of deltaBitWidth bits
+   *
+   * The spec gives the delta-width index as (channels * ceil(resolution/8)) + 1
+   * relative to the frame-type byte, which lands exactly one past the reference
+   * sample — internally consistent, and the reading used here.
+   *
+   * UNVERIFIED: bit order within the packed deltas. LSB-first is assumed, which is
+   * what every implementation consulted uses, but if the decode is wrong this is
+   * the first thing to flip. Check with accelMagnitude(), not with a test.
+   */
+  function decodeAccFrame(view, { channels = 3 } = {}) {
+    if (!view || view.byteLength < 12) return null;
+    const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    if (b[0] !== PMD_TYPE_ACC) return null;
+    const frameType = b[9];
+    const bytesPer = frameType === 0 ? 1 : frameType === 1 ? 2 : frameType === 2 ? 3 : 0;
+    if (!bytesPer) return null;
+
+    const samples = [];
+    let i = 10;
+    let guard = 0;
+    while (i + channels * bytesPer + 2 <= b.length && guard++ < 64) {
+      // Reference ("seed") sample.
+      const cur = [];
+      for (let ch = 0; ch < channels; ch++) cur.push(signedLE(b, i + ch * bytesPer, bytesPer));
+      i += channels * bytesPer;
+      samples.push(cur.slice());
+
+      const bitWidth = b[i++];
+      const count = b[i++];
+      if (bitWidth === 0 || bitWidth > 32) break;   // nonsense: stop rather than churn
+      if (count === 0) continue;
+
+      const totalBits = bitWidth * count * channels;
+      const needBytes = Math.ceil(totalBits / 8);
+      if (i + needBytes > b.length) break;
+
+      let bitPos = 0;
+      for (let n = 0; n < count; n++) {
+        for (let ch = 0; ch < channels; ch++) {
+          let v = 0;
+          for (let bit = 0; bit < bitWidth; bit++) {
+            const abs = bitPos + bit;
+            const byte = b[i + (abs >> 3)];
+            v |= ((byte >> (abs & 7)) & 1) << bit;
+          }
+          bitPos += bitWidth;
+          // Sign-extend the delta from bitWidth bits.
+          const signBit = 1 << (bitWidth - 1);
+          const delta = (v & signBit) ? v - (1 << bitWidth) : v;
+          cur[ch] += delta;
+        }
+        samples.push(cur.slice());
+      }
+      i += needBytes;
+    }
+    if (!samples.length) return null;
+    return {
+      frameType,
+      samples: samples.map((s) => ({ x: s[0], y: s[1] || 0, z: s[2] || 0 })),
+    };
+  }
+
+  /*
+   * THE VERIFICATION. At rest the total acceleration a body experiences is
+   * gravity, so this must sit steadily near 1000 mG. If it reads 30, or 400000,
+   * or thrashes, the decode above is wrong — regardless of how smooth the numbers
+   * look. This is the one check that cannot be faked by a test, because gravity is
+   * not something this code controls.
+   */
+  function accelMagnitude(sample) {
+    if (!sample) return null;
+    const { x = 0, y = 0, z = 0 } = sample;
+    return Math.sqrt(x * x + y * y + z * z);
+  }
+
+  // Is a decode plausibly correct? Generous bounds — the point is to catch
+  // "obviously not accelerations", not to grade sensor quality.
+  function looksLikeGravity(samples, { tolerance = 0.45 } = {}) {
+    if (!Array.isArray(samples) || samples.length < 4) return null;
+    const mags = samples.map(accelMagnitude).filter((m) => m != null);
+    if (!mags.length) return null;
+    const mean = mags.reduce((a, b) => a + b, 0) / mags.length;
+    return {
+      meanMilliG: mean,
+      ok: mean > 1000 * (1 - tolerance) && mean < 1000 * (1 + tolerance),
+    };
+  }
+
   return {
     HR_SERVICE, HR_MEASUREMENT, BATTERY_SERVICE, BATTERY_LEVEL,
+    PMD_SERVICE, PMD_CONTROL, PMD_DATA, PMD_TYPE_ACC,
+    PMD_CMD_GET_SETTINGS, PMD_CMD_START, PMD_CMD_STOP, PMD_RESPONSE,
+    parseControlResponse, parseSettings, buildAccStartCommand, buildStopCommand,
+    decodeAccFrame, signedLE, accelMagnitude, looksLikeGravity,
     resampleHr, breathSignal, breathPhaseNow,
     RR_UNIT_MS, RR_MIN_MS, RR_MAX_MS, RR_MAX_STEP_FRACTION, RSA_MIN_BPM,
     parseHeartRateMeasurement,
