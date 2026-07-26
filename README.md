@@ -262,11 +262,22 @@ The six modes, in cycle order:
 | Mode | What it is | What drives it |
 |---|---|---|
 | **Eclipse** | A black void on a warm light ground, ringed by a solar corona. Stillness *is* the void: it grows as you settle. Thinking flares at its edge. | Void radius = the selected composite (12%→74% of max radius). Corona churn, speed and brightness = the Thinking score. Its own hot palette (magenta/orange/gold/rose), on light — saturated colour added onto near-black just goes pale grey, which was the real reason earlier versions looked colourless. |
-| **Iris** | Your whole session laid down as a rose window — a persistent record that accumulates rather than scrolling away. | Angular position = time; radial position and hue = per-channel activity. Nothing is erased, so at the end you're looking at the shape of the entire sit. |
+| **Iris** | Your whole session laid down as a rose window — a persistent record that accumulates rather than scrolling away. | Twelve petals, each sensor owning its own quadrant at its real anatomical angle. A live crown scallops with current activity; every 6s that crown is *fossilised* onto a record layer and the radius steps outward, like a growth ring. Nothing is erased, so at the end you're looking at the shape of the entire sit — which minutes were whole and which were broken stay visible. |
 | **Flow** | Chronological watercolour. "Now" sits just right of centre, history trailing left, one coloured ribbon per electrode. | Ribbon height = that electrode's alpha share; spikes = bright bursts. **Age-graded sharpness**: the newest zone is genuinely crisp (`blur: 0`), the middle softens, the oldest dissolves into a blurred wash — paint blurring as memory fades. |
 | **Bloom** | No lines at all. Soft colour gradients emerge, expand, and fade — but only when something significant actually happens. | A per-channel spike (bloom in that channel's colour), or a calm-zone transition: settling (warm) / stirring (cool). |
 | **Field** | One soft wavy band of colour per sensor — the "reference image" look, with real per-channel hue. | Band brightness/thickness = that electrode's alpha share; blur and width grow with calm ("dissolving"). |
 | **Breath** | Austere. One slow gradient breathing in and out. Nothing per-channel, nothing to read or chase. | Your *measured* breathing rate, or one of the guided patterns below. This is the "mirror mode" of the roadmap's Zen framing. |
+
+Iris was initially reported as "boring and small," and both halves turned out to be
+bugs rather than taste. **Small:** it took 200 rings × 5s ≈ **17 minutes** to reach the
+rim, starting at 13% of the radius — so for the entire window in which someone decides
+whether it's worth watching, it was a small blob. Now 84 rings × 6s ≈ 8.4 minutes,
+starting at 34%. **Boring:** the petal amplitude was scaled by the *current* ring
+radius, so early on the scalloping was sub-pixel and four soft quadrant gradients
+collapsed into a fuzzy ball. Tracery is now sized from the disc (constant), there's real
+angular repetition (12 lobes), and the petal edges are **stroked sharp directly onto the
+destination** while only the coloured body goes through the blur — a rose window is
+stone lines as much as glass, and blurring everything was what erased the structure.
 
 **Sensor positions are anatomical, not decorative.** In Eclipse and Iris the screen is
 a plan view of your head from above, nose toward the top, so the left forehead sensor
@@ -476,7 +487,9 @@ node test-visual-smoke.js
                     # runs every visual mode for 60 frames against a stubbed
                     # canvas with adversarial state; fails on any thrown error,
                     # NaN/Infinity/negative geometry reaching a draw call, or
-                    # more than 2.2 blurred draw ops per frame
+                    # more than 2.2 blurred draw ops per frame. Plus a long
+                    # Iris run (~20 simulated seconds), because its every-6s
+                    # deposit path never fired in a 1-second test at all
 node test-metrics.js # the evidence registry: every metric has a tier, source
                      # and caveat; missing inputs return null (never 0);
                      # out-of-range inputs are clamped, not passed through;

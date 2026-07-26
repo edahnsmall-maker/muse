@@ -173,50 +173,94 @@ function createZenVisual(canvas) {
   //
   // Cheap by construction: the record layer is written on deposit ticks only
   // (not per frame) and composited back with a single drawImage.
-  const IRIS_DEPOSIT_SEC = 5;
-  const IRIS_MAX_RINGS = 200;   // ~17 minutes at 5s, then it stops growing
+  const IRIS_DEPOSIT_SEC = 6;
+  // Reaching the rim used to take 200 × 5s ≈ 17 minutes, which meant the disc
+  // was a small blob for the entire window in which someone decides whether it
+  // is worth looking at. 84 × 6s ≈ 8.4 minutes, and each ring is a band you can
+  // actually see rather than a sub-pixel sliver.
+  const IRIS_MAX_RINGS = 84;
+  const IRIS_PETALS = 6;        // per half-turn => 12 lobes around the disc
   let irisRing = 0;
   let irisLastDeposit = 0;
 
   function irisRadii() {
-    const rMax = Math.min(BW, BH) * 0.46;
-    const r0 = rMax * 0.13;
+    const rMax = Math.min(BW, BH) * 0.60;
+    // Starts at a third of the way out, not at 13%: the aperture is meant to be
+    // an oculus, not the whole picture. Minute one should already have presence.
+    const r0 = rMax * 0.34;
     const step = (rMax - r0) / IRIS_MAX_RINGS;
     return { rMax, r0, step, rNow: Math.min(rMax, r0 + irisRing * step) };
   }
 
-  // Builds one scalloped annulus into lctx (unblurred). Used for BOTH the live
-  // crown and the permanent deposit, so the two can never drift apart.
-  function irisCrown(rInner, tSec, alphaScale) {
+  // Builds one scalloped annulus. The soft body goes into lctx (unblurred, then
+  // blitted once through a blur); the crisp tracery is stroked straight onto
+  // `sharpCtx` so it stays sharp — a rose window is stone lines as much as
+  // coloured glass, and blurring everything is what made this read as a fuzzy
+  // ball. Used for BOTH the live crown and the permanent deposit, so the two
+  // can never drift apart.
+  function irisCrown(rInner, tSec, alphaScale, sharpCtx, softCtx = lctx) {
     const cx = BW / 2, cy = BH / 2;
-    const N = 96;
+    const N = 240;                    // enough segments to keep 12 lobes smooth
+    const rMax = irisRadii().rMax;
     for (let i = 0; i < 4; i++) {
       const col = VizCore.CHANNEL_COLORS[i];
       const lvl = clamp01(smooth.levels[i]);
-      // A settled sensor makes a smooth, generous petal; a busy one makes a
-      // thin, agitated, scalloped one. Amplitude scales with (1 - calm), so
-      // the whole crown goes glassy when you settle.
-      const amp = rInner * (0.05 + 0.16 * (1 - lvl)) * (0.35 + 0.9 * (1 - smooth.calm));
-      const thick = rInner * (0.05 + 0.13 * lvl);
-      lctx.beginPath();
+      const ang = VizCore.CHANNEL_ANGLES[i];
+      // Tracery is sized from the DISC, not from the current ring. Scaling it
+      // by rInner meant the scallops were sub-pixel for the first several
+      // minutes, so there was no structure to see at all — the real reason this
+      // looked like a smear rather than a mandala.
+      const amp = rMax * (0.020 + 0.060 * (1 - lvl)) * (0.45 + 0.80 * (1 - smooth.calm));
+      const thick = rMax * (0.018 + 0.045 * lvl);
+      const outer = [];
       for (let s = 0; s <= N; s++) {
         const a = (s / N) * Math.PI * 2;
         const w = VizCore.lobeWeight(a, i, 0.8);
+        // Angular repetition — the thing that turns four soft quadrant blobs
+        // into petals. Phase is tied to the sensor's own angle, so every
+        // quadrant's petals line up into coherent radial symmetry.
+        const petal = 0.32 + 0.68 * Math.pow(Math.abs(Math.cos((a - ang) * IRIS_PETALS)), 0.7);
         const scallop = VizCore.wobble(tSec * 0.5 + a * 4.0, i + 1);
-        const r = Math.max(1, rInner + (thick + amp * scallop) * w);
-        lctx.lineTo(cx + Math.sin(a) * r, cy - Math.cos(a) * r);
+        const r = Math.max(1, rInner + (thick + amp * scallop) * w * petal);
+        outer.push([cx + Math.sin(a) * r, cy - Math.cos(a) * r]);
       }
-      for (let s = N; s >= 0; s--) {
-        const a = (s / N) * Math.PI * 2;
-        lctx.lineTo(cx + Math.sin(a) * rInner, cy - Math.cos(a) * rInner);
+
+      // Soft coloured body.
+      if (softCtx) {
+        softCtx.beginPath();
+        outer.forEach(([x, y]) => softCtx.lineTo(x, y));
+        for (let s = N; s >= 0; s--) {
+          const a = (s / N) * Math.PI * 2;
+          softCtx.lineTo(cx + Math.sin(a) * rInner, cy - Math.cos(a) * rInner);
+        }
+        softCtx.closePath();
+        const g = softCtx.createRadialGradient(cx, cy, Math.max(1, rInner * 0.90), cx, cy, Math.max(2, rInner + thick + amp));
+        g.addColorStop(0, rgba(col, 0));
+        g.addColorStop(0.45, rgba(col, 0.46 * alphaScale * (0.45 + 0.75 * lvl)));
+        g.addColorStop(1, rgba(col, 0));
+        softCtx.fillStyle = g;
+        softCtx.fill();
       }
-      lctx.closePath();
-      const g = lctx.createRadialGradient(cx, cy, Math.max(1, rInner * 0.82), cx, cy, Math.max(2, rInner * 1.30));
-      g.addColorStop(0, rgba(col, 0));
-      g.addColorStop(0.45, rgba(col, 0.42 * alphaScale * (0.45 + 0.75 * lvl)));
-      g.addColorStop(1, rgba(col, 0));
-      lctx.fillStyle = g;
-      lctx.fill();
+
+      // Crisp tracery: the petal edge, in that sensor's own hue.
+      if (sharpCtx) {
+        sharpCtx.beginPath();
+        outer.forEach(([x, y]) => sharpCtx.lineTo(x, y));
+        sharpCtx.strokeStyle = rgba(col, 0.34 * alphaScale * (0.35 + 0.65 * lvl));
+        sharpCtx.lineWidth = Math.max(0.6, rMax * 0.004);
+        sharpCtx.stroke();
+      }
+    }
+
+    // One faint concentric course per ring. On the record layer these stack up
+    // into visible growth rings, so the disc reads as a dated record of the sit
+    // rather than an undifferentiated wash.
+    if (sharpCtx) {
+      sharpCtx.beginPath();
+      sharpCtx.arc(cx, cy, Math.max(1, rInner), 0, Math.PI * 2);
+      sharpCtx.strokeStyle = `rgba(226,232,255,${0.10 * alphaScale})`;
+      sharpCtx.lineWidth = Math.max(0.5, rMax * 0.0022);
+      sharpCtx.stroke();
     }
   }
 
@@ -230,8 +274,9 @@ function createZenVisual(canvas) {
       irisLastDeposit = sessionSec;
       lctx.clearRect(0, 0, BW, BH);
       lctx.globalCompositeOperation = 'source-over';
-      irisCrown(rNow, tSec, 1.0);
       rctx.globalCompositeOperation = 'lighter';
+      // Tracery goes onto the record sharp; only the soft body is blurred in.
+      irisCrown(rNow, tSec, 1.0, rctx);
       rctx.filter = 'blur(3px)';
       rctx.drawImage(lay, 0, 0);
       rctx.filter = 'none';
@@ -240,9 +285,18 @@ function createZenVisual(canvas) {
     }
 
     const bg = bctx.createLinearGradient(0, 0, 0, BH);
-    bg.addColorStop(0, smooth.calm > 0.55 ? '#0d0a1c' : '#070a18');
-    bg.addColorStop(1, '#03040c');
+    bg.addColorStop(0, smooth.calm > 0.55 ? '#120e24' : '#0a0d1e');
+    bg.addColorStop(1, '#04050e');
     bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    // A halo behind the disc, so the window sits in light rather than floating
+    // in pure void — on near-black everything reads as a small dim smudge.
+    const halo = bctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, rad.rMax * 1.45));
+    halo.addColorStop(0, `rgba(96,86,168,${0.13 + 0.12 * smooth.calm})`);
+    halo.addColorStop(0.6, `rgba(60,54,120,${0.06 + 0.06 * smooth.calm})`);
+    halo.addColorStop(1, 'rgba(0,0,0,0)');
+    bctx.fillStyle = halo;
     bctx.fillRect(0, 0, BW, BH);
 
     // The record: a whole session's structure in one composited call.
@@ -251,13 +305,15 @@ function createZenVisual(canvas) {
     bctx.drawImage(rec, 0, 0);
     bctx.globalAlpha = 1;
 
-    // The live crown: drawn unblurred, blitted once with blur.
+    // The live crown: soft body drawn unblurred then blitted once with blur,
+    // tracery stroked straight onto the destination so it stays sharp.
     lctx.clearRect(0, 0, BW, BH);
     lctx.globalCompositeOperation = 'source-over';
-    irisCrown(rNow, tSec, 1.0);
+    irisCrown(rNow, tSec, 1.0, null);
     bctx.filter = `blur(${Math.max(2, Math.round(BW / 110))}px)`;
     bctx.drawImage(lay, 0, 0);
     bctx.filter = 'none';
+    irisCrown(rNow, tSec, 0.85, bctx, null);
 
     // Breath tide: a soft ring sweeping between aperture and rim — the
     // metronome of the piece, and the one thing that never stops.

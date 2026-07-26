@@ -35,7 +35,7 @@ function makeCtx() {
     if (typeof o === 'number' && !Number.isFinite(o)) badNumbers.push(`addColorStop offset ${o}`);
     if (typeof c === 'string' && /NaN|Infinity|undefined/.test(c)) badNumbers.push(`addColorStop color "${c}"`);
   } };
-  const ctx = { canvas: null, lineCap: 'butt', imageSmoothingQuality: 'low', imageSmoothingEnabled: true };
+  const ctx = { canvas: null, lineCap: 'butt', imageSmoothingQuality: 'low', imageSmoothingEnabled: true, __ops: [] };
 
   // Validate PROPERTY assignments too, not just method arguments. Canvas
   // state like lineWidth/globalAlpha/fillStyle is set by assignment, so a
@@ -69,6 +69,7 @@ function makeCtx() {
   }
   const record = (name, requirePositive = []) => (...args) => {
     calls.push(name);
+    ctx.__ops.push(name);
     const DRAW_OPS = ['fill', 'stroke', 'fillRect', 'drawImage'];
     if (DRAW_OPS.includes(name) && ctx.filter && ctx.filter !== 'none') blurredDraws++;
     checkNums(name, args);
@@ -109,11 +110,17 @@ function makeCtx() {
   return ctx;
 }
 
+// Every canvas the code under test creates, in creation order — so a test can
+// assert about a specific internal layer (the Iris record layer, say) rather
+// than only about the aggregate.
+const createdCanvases = [];
+
 function makeCanvas(w = 1280, h = 720) {
   const c = { width: w, height: h };
   const ctx = makeCtx();
   ctx.canvas = c;
   c.getContext = () => ctx;
+  createdCanvases.push(c);
   return c;
 }
 
@@ -177,6 +184,37 @@ for (let m = 0; m < modeCount; m++) {
 
 assert.deepStrictEqual(badNumbers, [], `no NaN/Infinity/negative geometry may reach a draw call:\n  ${badNumbers.join('\n  ')}`);
 console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
+
+// ---- Iris's deposit path needs a LONG session to fire at all --------------
+// The 60-frame loop above covers ~1 second, so Iris's every-6-seconds deposit
+// never ran and its record-layer code was entirely untested — a real hole,
+// since that path writes to a different canvas than the one being composited.
+{
+  const canvasesBefore = createdCanvases.length;
+  const v = sandbox.createZenVisual(makeCanvas());
+  // Creation order is [target, compose buffer, scratch layer, Iris record].
+  const layers = createdCanvases.slice(canvasesBefore);
+  assert.strictEqual(layers.length, 4, 'expected the target canvas plus three offscreen layers');
+  const recordCtx = layers[3].getContext();
+
+  while (v.currentMode().key !== 'iris') v.cycleMode();
+  const depositsWanted = 3;
+  // ~20 simulated seconds at 60fps — enough for 3 deposits at 6s apiece.
+  for (let i = 0; i < 1260; i++) {
+    v.setState(adversarial[i % adversarial.length]);
+    nowMs += 16;
+    const cb = rafCb; rafCb = null;
+    cb(nowMs);
+  }
+  const blits = recordCtx.__ops.filter((o) => o === 'drawImage').length;
+  const strokes = recordCtx.__ops.filter((o) => o === 'stroke').length;
+  assert.ok(blits >= depositsWanted,
+    `Iris should have deposited onto the record layer at least ${depositsWanted} times in 20s, saw ${blits}`);
+  assert.ok(strokes >= depositsWanted,
+    `each deposit should stroke permanent tracery onto the record layer, saw ${strokes} strokes`);
+  assert.deepStrictEqual(badNumbers, [], `deposit path produced bad numbers:\n  ${badNumbers.join('\n  ')}`);
+  console.log(`✓ Iris deposits onto its record layer over a long session (${blits} deposits, ${strokes} tracery strokes)`);
+}
 
 // ---- back-compat: the Mind Monitor page only calls setCalm ---------------
 {
