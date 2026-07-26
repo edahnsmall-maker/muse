@@ -350,20 +350,20 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const out = {};
       const reset = () => {
         accAvailable = true; accStartError = null; accFrames = 0; accDecoded = 0;
-        accFirstHead = null; accMag = null; accVerdict = null;
+        accFirstHead = null; accMag = null; accVerdict = null; accVariant = null;
       };
       const label = () => {
         // Mirror the branch order used in the readout.
-        if (accStartError) return `start err ${accStartError}`;
+        if (accStartError && !accVariant) return 'refused — see msg';
         if (accFrames === 0) return 'no frames';
         if (accDecoded === 0) return accFirstHead ? `${accFrames}f t${accFirstHead[0]}/${accFirstHead[1]}` : `${accFrames}f no decode`;
         if (accMag == null) return 'decoding…';
         return `${Math.round(accMag)}mG`;
       };
       reset(); out.silent = label();
-      reset(); accStartError = 3; out.refused = label();
+      reset(); accStartError = 5; accVariant = null; out.refused = label();
       reset(); accFrames = 12; accFirstHead = [2, 1]; out.undecodable = label();
-      reset(); accFrames = 12; accDecoded = 12;
+      reset(); accVariant = 'count8'; accFrames = 12; accDecoded = 12;
       accSamples = [{ x: 0, y: 0, z: 1000 }, { x: 0, y: 0, z: 1000 }, { x: 0, y: 0, z: 1000 }, { x: 0, y: 0, z: 1000 }];
       accVerdict = Polar.looksLikeGravity(accSamples); accMag = accVerdict.meanMilliG;
       out.working = label();
@@ -371,7 +371,8 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       return out;
     });
     assert.strictEqual(states.silent, 'no frames', 'accepted but silent must say so');
-    assert.strictEqual(states.refused, 'start err 3', 'a refused START must surface its error code');
+    assert.strictEqual(states.refused, 'refused — see msg',
+      'a start refused by every variant must point at the detailed message');
     assert.strictEqual(states.undecodable, '12f t2/1',
       'undecodable frames must report the count and the measurement/frame type bytes');
     assert.strictEqual(states.working, '1000mG', 'a working decode reports the magnitude');

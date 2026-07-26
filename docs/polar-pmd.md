@@ -199,13 +199,30 @@ device reported. That is enough to fix the offsets without further guessing. The
 first thing to try is flipping the delta bit order from LSB-first to MSB-first,
 which is the assumption most likely to be wrong.
 
-### If START is refused
+### START refusal: the device is asked which shape it wants
 
-The most likely culprit is the **setting count field** in the start request. This
-implementation writes one byte (`01`) for "one value follows"; the settings *response*
-table describes counts differently, and the spec section that would settle it was not
-transcribable. If `start err N` appears, try a `uint16` count (`01 00`) instead — that
-is a two-character change in `buildAccStartCommand`.
+A real H10 refused the first attempt with **error code 5**, and the spec's error-code
+table is not in the transcribable part of the PDF — so rather than guess what 5 means
+and then guess a fix, the app now tries each plausible request encoding in turn and
+lets the device accept one. It answers every attempt with a code, so the search
+terminates.
+
+`Polar.ACC_START_VARIANTS`, tried in this order:
+
+| Variant | Difference |
+|---|---|
+| `count8` | item-count field as one byte (`01`) |
+| `count16` | item-count field as uint16 (`01 00`) |
+| `count8 no-range` | omit the range setting |
+| `count8 rate+res` | sample rate and resolution only |
+| `count16 no-range` | both of the above |
+
+The result is reported in the status line: either *"accepted `<variant>` — make it the
+default"* (promote it in `buildAccStartCommand` and delete the ladder) or *"refused
+every request shape"* followed by each variant and its error code. **That list is the
+thing to act on** — if every shape returns 5, the problem is a parameter *value*
+rather than the encoding, and the next thing to vary is sample rate (try 25 or 200)
+and resolution.
 
 **Stage 2 (not built):** extract breathing. Band-pass the axis with the most
 respiratory variance (or the projection onto the principal axis) over roughly

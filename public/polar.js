@@ -462,15 +462,44 @@
    * (2G) gives the finest resolution for the tens-of-milli-g excursions the chest
    * wall actually produces. A wider range would throw that precision away.
    */
-  function buildAccStartCommand({ sampleRate = 50, resolution = 16, range = 2, channels = 3 } = {}) {
-    return new Uint8Array([
-      PMD_CMD_START, PMD_TYPE_ACC,
-      0, 1, sampleRate & 0xff, (sampleRate >> 8) & 0xff,
-      1, 1, resolution & 0xff, (resolution >> 8) & 0xff,
-      2, 1, range & 0xff, (range >> 8) & 0xff,
-      4, 1, channels & 0xff,
-    ]);
+  function buildAccStartCommand({
+    sampleRate = 50, resolution = 16, range = 2, channels = 3,
+    countBytes = 1, includeRange = true, includeChannels = true,
+  } = {}) {
+    const out = [PMD_CMD_START, PMD_TYPE_ACC];
+    const put = (type, value, size) => {
+      out.push(type);
+      // The item-count field's width is the one thing the spec text did not pin
+      // down, and it is the likeliest cause of a rejected start. Parameterised so
+      // the device can be asked which it wants rather than guessed at.
+      if (countBytes === 2) out.push(1, 0); else out.push(1);
+      for (let i = 0; i < size; i++) out.push((value >> (8 * i)) & 0xff);
+    };
+    put(0, sampleRate, 2);
+    put(1, resolution, 2);
+    if (includeRange) put(2, range, 2);
+    if (includeChannels) put(4, channels, 1);
+    return new Uint8Array(out);
   }
+
+  /*
+   * Candidate start-request shapes, tried in order until the device accepts one.
+   *
+   * This exists because the H10 refused the first attempt with error code 5 and
+   * the spec's error table was not in the transcribable part of the PDF — so
+   * rather than guess what 5 means and guess again, ask the device. It answers
+   * every attempt with an accept or a code, which makes this a search with a
+   * definite end rather than a fishing expedition.
+   *
+   * Ordered by how likely each is to be the real format.
+   */
+  const ACC_START_VARIANTS = [
+    { label: 'count8', opts: {} },
+    { label: 'count16', opts: { countBytes: 2 } },
+    { label: 'count8 no-range', opts: { includeRange: false } },
+    { label: 'count8 rate+res', opts: { includeRange: false, includeChannels: false } },
+    { label: 'count16 no-range', opts: { countBytes: 2, includeRange: false } },
+  ];
 
   function buildStopCommand(type = PMD_TYPE_ACC) {
     return new Uint8Array([PMD_CMD_STOP, type]);
@@ -589,6 +618,7 @@
     PMD_SERVICE, PMD_CONTROL, PMD_DATA, PMD_TYPE_ACC,
     PMD_CMD_GET_SETTINGS, PMD_CMD_START, PMD_CMD_STOP, PMD_RESPONSE,
     parseControlResponse, parseSettings, buildAccStartCommand, buildStopCommand,
+    ACC_START_VARIANTS,
     decodeAccFrame, signedLE, accelMagnitude, looksLikeGravity,
     resampleHr, breathSignal, breathPhaseNow,
     RR_UNIT_MS, RR_MIN_MS, RR_MAX_MS, RR_MAX_STEP_FRACTION, RSA_MIN_BPM,

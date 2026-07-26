@@ -1266,6 +1266,9 @@ let accFrames = 0;        // notifications received
 let accDecoded = 0;       // notifications that produced samples
 let accStartError = null; // error code the device returned for the START command
 let accFirstHead = null;  // [measurementType, frameType] of the first frame
+let accVariant = null;    // which start-request shape the device accepted
+let accTried = [];        // ['count8:5', 'count16:0'] — the search, for reporting
+let pendingStartResolve = null;
 const accFrameLog = [];     // first few raw frames, hex, for diagnosis
 const ACC_LOG_FRAMES = 6;
 const ACC_KEEP = 600;       // ~12s at 50Hz
@@ -1326,6 +1329,7 @@ async function tryStartAccelerometer(gatt) {
       if (r.command === Polar.PMD_CMD_START) {
         accStartError = r.errorCode || null;
         if (r.errorCode) console.log('[PMD] START rejected, error code', r.errorCode);
+        if (pendingStartResolve) { const f = pendingStartResolve; pendingStartResolve = null; f(r); }
       }
     });
     await ctl.writeValue(new Uint8Array([Polar.PMD_CMD_GET_SETTINGS, Polar.PMD_TYPE_ACC]));
@@ -1345,9 +1349,43 @@ async function tryStartAccelerometer(gatt) {
     };
     await data.startNotifications();
     data.addEventListener('characteristicvaluechanged', onAccData);
-    await ctl.writeValue(Polar.buildAccStartCommand(cfg));
+
+    /* Ask the device which request shape it wants, rather than guessing.
+     *
+     * The first attempt was refused with error code 5, and the spec's error table
+     * was not in the transcribable part of the PDF — so instead of guessing what 5
+     * means and then guessing a fix, try each plausible encoding and let the strap
+     * accept one. It answers every attempt, so this terminates. Which variant won
+     * is reported, and should be promoted to the default once known.
+     */
+    accTried = [];
+    for (const variant of Polar.ACC_START_VARIANTS) {
+      const answer = new Promise((resolve) => {
+        pendingStartResolve = resolve;
+        setTimeout(() => { pendingStartResolve = null; resolve(null); }, 1500);
+      });
+      await ctl.writeValue(Polar.buildAccStartCommand(Object.assign({}, cfg, variant.opts)));
+      const r = await answer;
+      const code = r ? r.errorCode : 'timeout';
+      accTried.push(`${variant.label}:${code}`);
+      console.log(`[PMD] start "${variant.label}" -> ${code}`);
+      if (r && !r.errorCode) { accVariant = variant.label; accStartError = null; break; }
+      accStartError = code;
+      // A refused start leaves nothing running, but stop anyway so a partially
+      // accepted stream can't linger and confuse the next attempt.
+      try { await ctl.writeValue(Polar.buildStopCommand()); } catch (e) { /* expected */ }
+    }
     accAvailable = true;
-    console.log('[PMD] accelerometer stream requested with', JSON.stringify(cfg));
+    console.log('[PMD] variants tried:', accTried.join(', '), '| accepted:', accVariant || 'none');
+    // A long diagnostic belongs in the wide status bubble, not a 128px table cell.
+    // Locked long enough to read or screenshot.
+    if (!accVariant) {
+      setStatus(`chest sensor refused every request shape — ${escapeHtml(accTried.join(' · '))}`);
+      statusLockUntil = Date.now() + 30000;
+    } else if (accVariant !== Polar.ACC_START_VARIANTS[0].label) {
+      setStatus(`chest sensor accepted "${escapeHtml(accVariant)}" — make it the default`);
+      statusLockUntil = Date.now() + 20000;
+    }
   } catch (err) {
     accAvailable = false;
     // Trim to something that fits a narrow panel while still naming the cause.
@@ -1760,7 +1798,9 @@ setInterval(() => {
       // Each branch names a DIFFERENT failure, because the fix for each is
       // different. "reading…" for all of them told me nothing.
       let t;
-      if (accStartError) t = `start err ${accStartError}`;         // device refused
+      // Report the whole search, not just the last failure: which shapes were
+      // refused and with what code is the information needed to fix it.
+      if (accStartError && !accVariant) t = 'refused — see msg';
       else if (accFrames === 0) t = 'no frames';                   // accepted, silent
       else if (accDecoded === 0) {                                 // arriving, undecodable
         t = accFirstHead ? `${accFrames}f t${accFirstHead[0]}/${accFirstHead[1]}` : `${accFrames}f no decode`;
