@@ -1387,6 +1387,237 @@ function createZenVisual(canvas) {
     bctx.globalCompositeOperation = 'source-over';
   }
 
+  // ---- Prism: refractive glass veils -------------------------------------
+  function renderPrism(tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * calm;
+    const breath = 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / Math.max(1, period));
+
+    const bg = bctx.createLinearGradient(0, 0, BW, BH);
+    bg.addColorStop(0, '#02040b');
+    bg.addColorStop(0.55, '#06081a');
+    bg.addColorStop(1, '#05030c');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'lighter';
+    lctx.lineCap = 'round';
+
+    const min = Math.min(BW, BH);
+    const cx = BW * (0.50 + 0.025 * Math.sin(tSec * 0.035));
+    const cy = BH * (0.50 + 0.015 * (breath - 0.5));
+    const colors = [
+      [92, 219, 255],
+      [153, 122, 255],
+      [117, 239, 194],
+      [255, 132, 178],
+      [255, 207, 135],
+    ];
+    const sheets = 18;
+    for (let i = 0; i < sheets; i++) {
+      const u = i / Math.max(1, sheets - 1);
+      const side = u - 0.5;
+      const band = i % 4;
+      const level = clamp01(smooth.levels[band]);
+      const spike = clamp01(state.bands[band].spike);
+      const warm = clamp01(thinking * 0.85 + spike * 0.5);
+      const col = mixColor(colors[i % colors.length], [255, 118, 104], warm);
+      const drift = Math.sin(tSec * (0.035 + i * 0.002) + i * 0.7);
+      const spread = min * (0.12 + 0.34 * Math.abs(side));
+      const x0 = cx + side * BW * (0.72 - 0.18 * calm);
+      const y0 = -min * 0.12;
+      const x1 = cx + side * BW * (0.18 + 0.18 * calm) + drift * min * 0.10 * (0.35 + thinking);
+      const y1 = cy - min * (0.10 + 0.08 * level);
+      const x2 = cx - side * BW * (0.12 + 0.13 * (1 - calm)) + Math.sin(tSec * 0.05 + i) * min * 0.05;
+      const y2 = cy + min * (0.07 + 0.22 * breath);
+      const x3 = cx - side * BW * (0.78 - 0.16 * focus);
+      const y3 = BH + min * 0.12;
+
+      lctx.strokeStyle = rgba(col, 0.018 + 0.055 * (0.35 + level) + 0.050 * spike);
+      lctx.lineWidth = Math.max(1, spread * (0.13 + 0.13 * (1 - calm) + 0.06 * focus));
+      lctx.beginPath();
+      lctx.moveTo(x0, y0);
+      lctx.bezierCurveTo(x1, y1, x2, y2, x3, y3);
+      lctx.stroke();
+    }
+    lctx.globalCompositeOperation = 'source-over';
+
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(3, Math.round(min / 42))}px)`;
+    bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
+
+    const beamCol = mixColor([94, 222, 255], [255, 219, 169], focus);
+    const beam = bctx.createLinearGradient(cx - min * 0.45, 0, cx + min * 0.45, 0);
+    beam.addColorStop(0, rgba(beamCol, 0));
+    beam.addColorStop(0.48, rgba(beamCol, 0.08 + 0.12 * focus));
+    beam.addColorStop(0.52, rgba([255, 255, 255], 0.05 + 0.08 * focus));
+    beam.addColorStop(1, rgba(beamCol, 0));
+    bctx.fillStyle = beam;
+    bctx.fillRect(cx - min * 0.45, 0, min * 0.9, BH);
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Lattice: sacred geometry that steadies with focus -----------------
+  function renderLattice(tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const cx = BW / 2, cy = BH * 0.51;
+    const min = Math.min(BW, BH);
+
+    const bg = bctx.createRadialGradient(cx, cy, 0, cx, cy, min * 0.72);
+    bg.addColorStop(0, '#070a19');
+    bg.addColorStop(0.58, '#030510');
+    bg.addColorStop(1, '#010207');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'lighter';
+    lctx.lineCap = 'round';
+    lctx.lineJoin = 'round';
+
+    const drawPoly = (c, sides, r, rot, col, alpha, width, wobble) => {
+      c.beginPath();
+      for (let i = 0; i <= sides; i++) {
+        const a = rot + (i / sides) * Math.PI * 2;
+        const ch = i % 4;
+        const local = 1 + wobble * (
+          0.45 * Math.sin(a * 3 + tSec * (0.11 + 0.22 * thinking))
+          + 0.30 * (clamp01(smooth.levels[ch]) - 0.5)
+          + 0.30 * clamp01(state.bands[ch].spike)
+        );
+        const rr = Math.max(1, r * local);
+        const x = cx + Math.sin(a) * rr;
+        const y = cy - Math.cos(a) * rr;
+        if (i === 0) c.moveTo(x, y); else c.lineTo(x, y);
+      }
+      c.strokeStyle = rgba(col, alpha);
+      c.lineWidth = Math.max(0.5, width);
+      c.stroke();
+    };
+
+    const cool = [103, 224, 255];
+    const mint = [115, 237, 190];
+    const warm = [255, 122, 132];
+    const gold = [255, 222, 156];
+    const rot = tSec * (0.006 + 0.018 * (1 - calm));
+    const rings = 7;
+    for (let i = 0; i < rings; i++) {
+      const u = (i + 1) / rings;
+      const sides = i % 2 === 0 ? 6 : 12;
+      const r = min * (0.055 + u * 0.37);
+      const channel = i % 4;
+      const level = clamp01(smooth.levels[channel]);
+      const spike = clamp01(state.bands[channel].spike);
+      const col = mixColor(mixColor(cool, mint, level), warm, clamp01(thinking * 0.72 + spike * 0.45));
+      const wobble = (0.006 + 0.052 * thinking + 0.030 * spike) * (1 - 0.65 * focus);
+      drawPoly(lctx, sides, r, rot * (i % 2 ? -1 : 1) + i * Math.PI / 12,
+        col, 0.045 + 0.045 * u + 0.06 * spike, min * (0.0011 + 0.0018 * focus), wobble);
+    }
+
+    for (let i = 0; i < 12; i++) {
+      const a = rot * 0.5 + (i / 12) * Math.PI * 2;
+      const r0 = min * (0.07 + 0.025 * focus);
+      const r1 = min * (0.39 + 0.05 * calm);
+      lctx.beginPath();
+      lctx.moveTo(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0);
+      lctx.lineTo(cx + Math.sin(a) * r1, cy - Math.cos(a) * r1);
+      lctx.strokeStyle = rgba(mixColor(cool, gold, focus), 0.025 + 0.055 * focus);
+      lctx.lineWidth = Math.max(0.5, min * 0.0014);
+      lctx.stroke();
+    }
+
+    lctx.globalCompositeOperation = 'source-over';
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(2, Math.round(min / 92))}px)`;
+    bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
+    drawPoly(bctx, 6, min * (0.08 + 0.020 * focus), -rot, mixColor(gold, mint, calm),
+      0.12 + 0.14 * focus, min * 0.0018, 0.004 * thinking);
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
+  // ---- Horizon: a cinematic focus line -----------------------------------
+  function renderHorizon(tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+    const period = smooth.breathPeriod > 0.5 ? smooth.breathPeriod : 6 + 5 * calm;
+    const breath = 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / Math.max(1, period));
+
+    const bg = bctx.createLinearGradient(0, 0, 0, BH);
+    bg.addColorStop(0, '#030512');
+    bg.addColorStop(0.58, '#050714');
+    bg.addColorStop(1, '#010207');
+    bctx.fillStyle = bg;
+    bctx.fillRect(0, 0, BW, BH);
+
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'lighter';
+    lctx.lineCap = 'round';
+
+    const min = Math.min(BW, BH);
+    const baseY = BH * (0.52 + 0.020 * (breath - 0.5));
+    const width = BW * 0.86;
+    const left = (BW - width) / 2;
+    const active = clamp01(thinking + 0.35 * (1 - calm));
+    const colors = [
+      [95, 216, 255],
+      [160, 124, 255],
+      [255, 127, 178],
+      [255, 212, 151],
+      [121, 236, 195],
+    ];
+
+    for (let layer = 0; layer < 5; layer++) {
+      const offset = (layer - 2) * min * 0.025;
+      const col = mixColor(colors[layer], [255, 116, 96], smoothstep(0.35, 0.9, thinking));
+      const amp = min * (0.010 + 0.090 * active) * (1 - 0.14 * layer);
+      const speed = 0.045 + 0.035 * thinking + layer * 0.004;
+      const points = 84;
+      lctx.beginPath();
+      for (let i = 0; i <= points; i++) {
+        const x = left + (i / points) * width;
+        const px = i / points - 0.5;
+        const peakA = Math.exp(-Math.pow((px - 0.18 * Math.sin(tSec * 0.025)) / 0.16, 2));
+        const peakB = Math.exp(-Math.pow((px + 0.28) / 0.22, 2));
+        const fine = Math.sin(px * Math.PI * 16 + tSec * (0.70 + thinking * 1.4) + layer);
+        const broad = Math.sin(px * Math.PI * 2.4 + tSec * speed + layer * 0.6);
+        const y = baseY + offset
+          + amp * (0.65 * broad + thinking * 0.75 * (peakA - 0.55 * peakB) + 0.030 * active * fine);
+        if (i === 0) lctx.moveTo(x, y); else lctx.lineTo(x, y);
+      }
+      lctx.strokeStyle = rgba(col, 0.050 + 0.080 * focus + 0.040 * active);
+      lctx.lineWidth = Math.max(1, min * (0.006 + 0.008 * (1 - calm) + 0.004 * focus));
+      lctx.stroke();
+    }
+
+    lctx.globalCompositeOperation = 'source-over';
+    bctx.globalCompositeOperation = 'lighter';
+    bctx.filter = `blur(${Math.max(2, Math.round(min / 58))}px)`;
+    bctx.drawImage(lay, 0, 0);
+    bctx.filter = 'none';
+
+    const line = bctx.createLinearGradient(left, 0, left + width, 0);
+    line.addColorStop(0, 'rgba(80,210,255,0)');
+    line.addColorStop(0.42, `rgba(112,224,255,${0.08 + 0.13 * focus})`);
+    line.addColorStop(0.50, `rgba(255,236,193,${0.12 + 0.20 * focus})`);
+    line.addColorStop(0.58, `rgba(112,224,255,${0.08 + 0.13 * focus})`);
+    line.addColorStop(1, 'rgba(80,210,255,0)');
+    bctx.strokeStyle = line;
+    bctx.lineWidth = Math.max(1, min * (0.002 + 0.003 * focus));
+    bctx.beginPath();
+    bctx.moveTo(left, baseY);
+    bctx.lineTo(left + width, baseY);
+    bctx.stroke();
+    bctx.globalCompositeOperation = 'source-over';
+  }
+
   let last = performance.now();
   const start = last;
   function frame(now) {
@@ -1425,7 +1656,10 @@ function createZenVisual(canvas) {
       else if (mode === 'iris') renderIrisSediment(tSec);
       else if (mode === 'bloom') renderBloom(now);
       else if (mode === 'field') renderField(tSec);
-      else renderBreath(dtSec);
+      else if (mode === 'breath') renderBreath(dtSec);
+      else if (mode === 'prism') renderPrism(tSec);
+      else if (mode === 'lattice') renderLattice(tSec);
+      else renderHorizon(tSec);
 
       ctx.imageSmoothingEnabled = true;
       ctx.imageSmoothingQuality = 'high';

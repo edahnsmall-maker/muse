@@ -75,6 +75,9 @@
     { key: 'bloom',  label: 'Bloom',  blurb: 'gradients that appear on real events' },
     { key: 'field',  label: 'Field',  blurb: 'one soft band of colour per sensor' },
     { key: 'breath', label: 'Breath', blurb: 'just slow breathing — nothing to read' },
+    { key: 'prism',  label: 'Prism',  blurb: 'glass-light veils cool with calm and warm with thinking' },
+    { key: 'lattice', label: 'Lattice', blurb: 'sacred geometry steadies as focus returns' },
+    { key: 'horizon', label: 'Horizon', blurb: 'a cinematic focus line that smooths as the mind settles' },
   ];
 
   function nextMode(index) { return (index + 1) % MODES.length; }
