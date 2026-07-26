@@ -1133,10 +1133,20 @@ setInterval(() => {
   // In composite view the visual is tuned to the SELECTED composite, not to
   // the raw sensor-derived calm score — that was the point of the toggle.
   const driver = viewMode === 'composites' ? Metrics.compute(primaryMetric, features) : null;
+  // Pulse draws one ring per composite, so it needs them by key rather than
+  // just the single selected driver. Nulls are passed through untouched —
+  // setState merges, so a metric with no inputs holds instead of reading zero.
+  const pulseMetrics = {};
+  for (const m of VizCore.PULSE_METRICS) {
+    const v = Metrics.compute(m.key, features);
+    if (v != null) pulseMetrics[m.key] = v;
+  }
+
   visual.setState({
     calm: driver == null ? result.calm : driver,
     noise: result.artifactRate,
     activity: result.activity,
+    metrics: pulseMetrics,
     bands: bandState.map((s) => ({ level: s.level, spike: s.spike })),
   });
 

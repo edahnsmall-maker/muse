@@ -34,6 +34,7 @@ function createZenVisual(canvas) {
 
   let state = {
     calm: 0.5, noise: 0, breathPeriod: 0, activity: 0.5,
+    metrics: {},   // composite scores by key, for Pulse
     bands: [0, 1, 2, 3].map(() => ({ level: 0.5, spike: 0 })),
   };
   let smooth = {
@@ -61,6 +62,11 @@ function createZenVisual(canvas) {
   // mush. Drawing from data is deterministic and cannot fail to move.
   const FLOW_MAX = 240; // ~60s of history at ~4 samples/sec
   const history = [];
+
+  // Modes that bypass the shared small buffer and draw at full canvas
+  // resolution. Both depend on crisp thin strokes, which a ~4x upscale
+  // destroys; neither uses a blur filter, so they don't need the small buffer.
+  const DIRECT_MODES = new Set(['flow', 'pulse']);
 
   let sessionSec = 0;   // monotonic, for placing blooms along a slow sweep
   let breathPhase = 0;  // integrated radians — see renderBreath
@@ -356,98 +362,219 @@ function createZenVisual(canvas) {
     bctx.globalCompositeOperation = 'source-over';
   }
 
-  // ---- Flow: chronological watercolour ribbons --------------------------
+  // ---- Flow: a live trace that dissolves as it ages ----------------------
   // "Now" sits slightly right of centre rather than hard against the right
-  // edge: new paint appears where the eye already is, history trails off to
-  // the left, and the newest stroke's soft wash blooms into the space to its
-  // right instead of being clipped by the frame.
+  // edge: new paint appears where the eye already is, and history trails left.
+  //
+  // THIS MODE RENDERS AT FULL CANVAS RESOLUTION, not into the shared small
+  // buffer. That is the whole reason it can look sharp. Every other mode draws
+  // into a <=560px buffer that is then upscaled ~4x, which is fine for soft
+  // washes and fatal for a thin line — a 1px stroke arrives on screen as a 4px
+  // smear no matter what filter is or isn't applied.
+  //
+  // Softening is done by STACKING STROKES of increasing width and decreasing
+  // alpha, with both varying continuously per age group. The previous version
+  // blitted the layer through three clipped x-zones at different blur radii,
+  // which produced exactly what it sounds like: hard vertical seams where the
+  // zones met, and a live edge that was still soft because it had been drawn
+  // fat. There is no `filter` here at all, so it also costs zero blur passes.
   const FLOW_NOW_X = 0.56;
+  const FLOW_GROUPS = 26;   // age bands; enough that the ramp reads as smooth
 
-  function renderFlow() {
-    paintBase(bctx);
+  function renderFlow(c, W, H) {
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#070a18');
+    bg.addColorStop(1, '#03050d');
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
     if (history.length < 2) return;
 
-    lctx.clearRect(0, 0, BW, BH);
-    lctx.globalCompositeOperation = 'lighter';
-    // Unblurred here; blur is applied per age-zone on the blit below.
-    lctx.lineCap = 'round';
-    lctx.lineJoin = 'round';
+    const nowX = W * FLOW_NOW_X;
+    const n = history.length;
+    const xOf = (i) => nowX - ((n - 1 - i) / (FLOW_MAX - 1)) * nowX;
+    const yOf = (i, ch) => H * (0.09 + 0.82 * (1 - clamp01(history[i].levels[ch])));
 
-    const nowX = BW * FLOW_NOW_X;
-    const xOf = (i) => nowX - ((history.length - 1 - i) / (FLOW_MAX - 1)) * nowX;
+    c.lineCap = 'round';
+    c.lineJoin = 'round';
+    c.globalCompositeOperation = 'lighter';
+
+    // A genuinely thin line. The old wash pass was 11.5% of screen height per
+    // channel, four channels deep, composited additively — which is why it
+    // blew out to white.
+    const baseW = Math.max(1, H * 0.0018);
 
     for (let ch = 0; ch < 4; ch++) {
       const col = VizCore.CHANNEL_COLORS[ch];
-      // Two passes per channel: a wide faint wash (the watercolour bleed) and
-      // a narrower brighter core. 8 strokes/frame total, not per-segment.
-      for (const pass of [{ w: 0.115, a: 0.13 }, { w: 0.030, a: 0.48 }]) {
-        lctx.beginPath();
-        for (let i = 0; i < history.length; i++) {
-          const x = xOf(i);
-          const y = BH * (1 - history[i].levels[ch]);
-          if (i === 0) lctx.moveTo(x, y); else lctx.lineTo(x, y);
+      for (let gi = 0; gi < FLOW_GROUPS; gi++) {
+        const i0 = Math.round((gi * (n - 1)) / FLOW_GROUPS);
+        const i1 = Math.round(((gi + 1) * (n - 1)) / FLOW_GROUPS);
+        if (i1 <= i0) continue;
+        // Groups share an endpoint, so there are no gaps; and because width and
+        // alpha change only slightly from one group to the next, the joins read
+        // as a continuous gradient rather than as boundaries.
+        const mid = (i0 + i1) / 2 / (n - 1);   // 0 = oldest, 1 = live head
+        const age = 1 - mid;
+        const vis = Math.pow(1 - age, 0.85);   // dissolves out to the left
+
+        // Halo widens and dims with age — this IS the blur, done in geometry.
+        // Core stays narrow and bright at the head and gives out as it ages.
+        const passes = [
+          { w: baseW * (1 + 20 * age * age), a: 0.055 * vis + 0.012 },
+          { w: baseW * (1 + 6 * age), a: 0.10 * vis },
+          { w: baseW * (1 + 0.8 * age), a: 0.62 * vis * (1 - 0.7 * age) },
+        ];
+        for (const p of passes) {
+          if (p.a <= 0.004) continue;
+          c.beginPath();
+          for (let i = i0; i <= i1; i++) {
+            const x = xOf(i), y = yOf(i, ch);
+            if (i === i0) c.moveTo(x, y); else c.lineTo(x, y);
+          }
+          c.strokeStyle = rgba(col, p.a);
+          c.lineWidth = Math.max(0.5, p.w);
+          c.stroke();
         }
-        lctx.strokeStyle = rgba(col, pass.a);
-        lctx.lineWidth = Math.max(1, BH * pass.w);
-        lctx.stroke();
       }
+
+      // The live head: a small bright point, so it reads as being written now.
+      const hy = yOf(n - 1, ch);
+      const hr = Math.max(1.5, baseW * 2.6);
+      const hg = c.createRadialGradient(nowX, hy, 0, nowX, hy, hr * 3);
+      hg.addColorStop(0, rgba(mixColor(col, [255, 255, 255], 0.55), 0.95));
+      hg.addColorStop(0.35, rgba(col, 0.35));
+      hg.addColorStop(1, rgba(col, 0));
+      c.fillStyle = hg;
+      c.beginPath(); c.arc(nowX, hy, hr * 3, 0, Math.PI * 2); c.fill();
     }
 
-    // Spikes: small bright marks left in the record where they happened.
-    for (let i = 0; i < history.length; i++) {
+    // Spikes: small marks left where they happened, fading with the trace
+    // rather than staying at full brightness forever.
+    for (let i = 0; i < n; i++) {
       const h = history[i];
+      const vis = Math.pow(i / Math.max(1, n - 1), 1.2);
+      if (vis < 0.05) continue;
       for (let ch = 0; ch < 4; ch++) {
-        if (h.spikes[ch] > 0.5) {
-          const x = xOf(i), y = BH * (1 - h.levels[ch]);
-          const r = Math.max(2, BH * 0.045);
-          const g = lctx.createRadialGradient(x, y, 0, x, y, r);
-          g.addColorStop(0, `rgba(255,255,255,${0.55 * h.spikes[ch]})`);
-          g.addColorStop(1, 'rgba(255,255,255,0)');
-          lctx.fillStyle = g;
-          lctx.fillRect(x - r, y - r, r * 2, r * 2);
-        }
+        const sp = clamp01(h.spikes[ch]);
+        if (sp < 0.5) continue;
+        const x = xOf(i), y = yOf(i, ch);
+        const r = Math.max(2, H * 0.012) * (1 + 1.6 * (1 - vis));
+        const g = c.createRadialGradient(x, y, 0, x, y, r);
+        g.addColorStop(0, `rgba(255,255,255,${0.34 * sp * vis})`);
+        g.addColorStop(1, 'rgba(255,255,255,0)');
+        c.fillStyle = g;
+        c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
       }
     }
-    // Age fade: erase progressively toward the left so older paint dissolves.
-    lctx.globalCompositeOperation = 'destination-out';
-    const fade = lctx.createLinearGradient(0, 0, nowX, 0);
-    fade.addColorStop(0, 'rgba(0,0,0,0.95)');
-    fade.addColorStop(0.55, 'rgba(0,0,0,0)');
-    lctx.fillStyle = fade;
-    lctx.fillRect(0, 0, nowX, BH);
-    lctx.globalCompositeOperation = 'source-over';
+    c.globalCompositeOperation = 'source-over';
+  }
 
-    // Sharp where it is being made, dissolving as it ages. A single blur pass
-    // cannot vary across the image, so the layer is blitted in three x-zones
-    // with increasing blur: the newest zone is composited with no filter at
-    // all, so the live edge stays genuinely crisp. Zones overlap slightly and
-    // the older ones are drawn at reduced alpha, which hides the seams.
-    // Cost: two blur passes per frame (the newest zone needs none).
-    const zones = [
-      { from: 0.00, to: 0.42, blur: Math.max(3, Math.round(BW / 42)), alpha: 0.85 },
-      { from: 0.38, to: 0.78, blur: Math.max(1, Math.round(BW / 150)), alpha: 0.95 },
-      { from: 0.74, to: 1.00, blur: 0, alpha: 1 },
-    ];
-    bctx.globalCompositeOperation = 'lighter';
-    for (const z of zones) {
-      const x0 = z.from * nowX;
-      const x1 = z.to * nowX;
-      // The newest zone extends to the full buffer width so the live stroke's
-      // wash can bloom right of `nowX` rather than being cut off.
-      const w = (z.to >= 1 ? BW : x1) - x0;
-      if (w <= 0) continue;
-      bctx.save();
-      bctx.beginPath();
-      bctx.rect(x0, 0, w, BH);
-      bctx.clip();
-      bctx.globalAlpha = z.alpha;
-      bctx.filter = z.blur > 0 ? `blur(${z.blur}px)` : 'none';
-      bctx.drawImage(lay, 0, 0);
-      bctx.filter = 'none';
-      bctx.globalAlpha = 1;
-      bctx.restore();
-    }
-    bctx.globalCompositeOperation = 'source-over';
+  // ---- Pulse: a clock hand sweeping a ring per metric --------------------
+  // One revolution every PULSE_REV_SEC, resetting at twelve o'clock. Where the
+  // hand is now, each metric's ring bulges by how much that metric is doing;
+  // the bulge stays and fades as the hand moves on, so you see the shape of the
+  // last few seconds laid out around the dial — growing, holding, or subsiding.
+  //
+  // Also full-resolution: the bulge outlines want a crisp edge, same reason as
+  // Flow. A black disc holds the centre so it reads as a corona.
+  const PULSE_REV_SEC = 5;
+  const PULSE_BINS = 144;
+  const pulseRings = VizCore.PULSE_METRICS.map(() => new VizCore.SweepRing({
+    bins: PULSE_BINS, revSec: PULSE_REV_SEC,
+  }));
+  const pulseDevs = VizCore.PULSE_METRICS.map(() => new VizCore.DeviationTracker());
+
+  function renderPulse(c, W, H, tSec) {
+    const cx = W / 2, cy = H / 2;
+    const maxR = Math.min(W, H) * 0.44;
+
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#0a1024');
+    bg.addColorStop(1, '#050813');
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+
+    // Feed each ring. Metrics the page hasn't supplied simply don't move.
+    VizCore.PULSE_METRICS.forEach((m, mi) => {
+      const raw = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
+      pulseRings[mi].write(tSec, pulseDevs[mi].update(raw));
+    });
+
+    const handBin = pulseRings[0].cursor;
+    const handAng = (handBin / PULSE_BINS) * Math.PI * 2;
+
+    // Each metric owns a band of radius, so four rings can bulge at once
+    // without becoming an unreadable pile.
+    const inner = maxR * 0.34;
+    const bandH = (maxR - inner) / VizCore.PULSE_METRICS.length;
+
+    c.globalCompositeOperation = 'lighter';
+    VizCore.PULSE_METRICS.forEach((m, mi) => {
+      const ring = pulseRings[mi];
+      const r0 = inner + bandH * mi + bandH * 0.10;
+      const bulge = bandH * 1.55;
+      const pts = [];
+      let peak = 0;
+      for (let b = 0; b <= PULSE_BINS; b++) {
+        const bin = b % PULSE_BINS;
+        const v = ring.faded(bin);
+        if (v > peak) peak = v;
+        const a = (bin / PULSE_BINS) * Math.PI * 2;
+        const r = Math.max(1, r0 + bulge * v);
+        pts.push([cx + Math.sin(a) * r, cy - Math.cos(a) * r]);
+      }
+
+      // Soft body between the base circle and the bulged outline.
+      c.beginPath();
+      pts.forEach(([x, y]) => c.lineTo(x, y));
+      for (let b = PULSE_BINS; b >= 0; b--) {
+        const a = ((b % PULSE_BINS) / PULSE_BINS) * Math.PI * 2;
+        c.lineTo(cx + Math.sin(a) * r0, cy - Math.cos(a) * r0);
+      }
+      c.closePath();
+      const g = c.createRadialGradient(cx, cy, Math.max(1, r0), cx, cy, Math.max(2, r0 + bulge));
+      g.addColorStop(0, rgba(m.color, 0.30));
+      g.addColorStop(1, rgba(m.color, 0.03));
+      c.fillStyle = g;
+      c.fill();
+
+      // Crisp outline — the thing that makes the bulge legible as a shape.
+      c.beginPath();
+      pts.forEach(([x, y]) => c.lineTo(x, y));
+      c.strokeStyle = rgba(m.color, 0.30 + 0.45 * clamp01(peak));
+      c.lineWidth = Math.max(1, Math.min(W, H) * 0.0022);
+      c.lineJoin = 'round';
+      c.stroke();
+    });
+
+    // The hand: a bright leading edge, so it's obvious where "now" is and which
+    // way time runs. Brightest at the rim, fading inward.
+    const hx = cx + Math.sin(handAng) * maxR * 1.02;
+    const hy = cy - Math.cos(handAng) * maxR * 1.02;
+    const ix = cx + Math.sin(handAng) * inner * 0.9;
+    const iy = cy - Math.cos(handAng) * inner * 0.9;
+    const hg = c.createLinearGradient(ix, iy, hx, hy);
+    hg.addColorStop(0, 'rgba(226,236,255,0)');
+    hg.addColorStop(1, 'rgba(232,240,255,0.42)');
+    c.strokeStyle = hg;
+    c.lineWidth = Math.max(1, Math.min(W, H) * 0.0035);
+    c.beginPath(); c.moveTo(ix, iy); c.lineTo(hx, hy); c.stroke();
+    c.globalCompositeOperation = 'source-over';
+
+    // The void at the centre — still, and unaffected by any of it.
+    const vg = c.createRadialGradient(cx, cy, 0, cx, cy, Math.max(2, inner));
+    vg.addColorStop(0, '#02030a');
+    vg.addColorStop(0.72, '#03040c');
+    vg.addColorStop(1, 'rgba(6,8,20,0)');
+    c.fillStyle = vg;
+    c.beginPath(); c.arc(cx, cy, Math.max(2, inner), 0, Math.PI * 2); c.fill();
+
+    // Twelve o'clock tick, so the reset point is visible rather than implied.
+    c.strokeStyle = 'rgba(210,220,255,0.18)';
+    c.lineWidth = Math.max(1, Math.min(W, H) * 0.0018);
+    c.beginPath();
+    c.moveTo(cx, cy - maxR * 1.03);
+    c.lineTo(cx, cy - maxR * 1.10);
+    c.stroke();
   }
 
   // ---- Bloom: slow gradients that emerge on real events -----------------
@@ -591,17 +718,27 @@ function createZenVisual(canvas) {
     }
 
     const mode = VizCore.MODES[modeIndex].key;
-    if (mode === 'eclipse') renderEclipse((now - start) / 1000);
-    else if (mode === 'iris') renderIris((now - start) / 1000);
-    else if (mode === 'flow') renderFlow();
-    else if (mode === 'bloom') renderBloom(now);
-    else if (mode === 'field') renderField((now - start) / 1000);
-    else renderBreath(dtSec);
+    const tSec = (now - start) / 1000;
 
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    ctx.drawImage(buf, 0, 0, BW, BH, 0, 0, canvas.width, canvas.height);
+    if (DIRECT_MODES.has(mode)) {
+      // Straight to the output canvas at full resolution — see renderFlow for
+      // why. These modes depend on sharp thin lines, which cannot survive the
+      // upscale from the shared small buffer.
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (mode === 'flow') renderFlow(ctx, canvas.width, canvas.height);
+      else renderPulse(ctx, canvas.width, canvas.height, tSec);
+    } else {
+      if (mode === 'eclipse') renderEclipse(tSec);
+      else if (mode === 'iris') renderIris(tSec);
+      else if (mode === 'bloom') renderBloom(now);
+      else if (mode === 'field') renderField(tSec);
+      else renderBreath(dtSec);
+
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(buf, 0, 0, BW, BH, 0, 0, canvas.width, canvas.height);
+    }
 
     if (smooth.noise > 0.02) {
       // Eclipse renders on a light ground, so a pale veil would be invisible
@@ -650,6 +787,11 @@ function createZenVisual(canvas) {
         noise: next.noise != null ? next.noise : state.noise,
         breathPeriod: next.breathPeriod != null ? next.breathPeriod : state.breathPeriod,
         activity: next.activity != null ? next.activity : state.activity,
+        // Composite scores by key, for Pulse. Merged rather than replaced, so a
+        // metric that momentarily has no inputs holds its last value instead of
+        // snapping its ring to zero — a fabricated zero is a lie about the
+        // signal, the same rule metrics.js follows.
+        metrics: Object.assign({}, state.metrics, next.metrics || {}),
         bands,
       };
       history.push({

@@ -1,7 +1,7 @@
 # Muse Zen Spike
 
 A working prototype: wear your **Muse S (Gen 2)**, and a full-screen visual
-**responds to your own physiology in real time** — six visual modes, live graphs of
+**responds to your own physiology in real time** — seven visual modes, live graphs of
 every sensor and composite score, in-the-moment cues, markers you can drop mid-sit,
 and a downloadable session report. This is Phase 0/1 — proving the biofeedback loop
 end to end before building the real app.
@@ -239,7 +239,7 @@ watching precisely because they explain sudden jumps in everything else.
 **What would actually make these valid** isn't more code — it's labelled data. That's
 what the marker system below exists to collect.
 
-## The visuals — six modes, click a pill at the top or press `V` to cycle
+## The visuals — seven modes, click a pill at the top or press `V` to cycle
 
 **Why there was "still no color", definitively:** every WebGL version computed a
 *single* highlight colour and added that same colour for all four bands. The image
@@ -257,16 +257,42 @@ float-precision bugs that only showed up on real hardware. Canvas 2D uses explic
 rgba colours, real blur, and eliminates that entire bug class. It also made the
 renderer testable — see "Testing the untestable" below.
 
-The six modes, in cycle order:
+The seven modes, in cycle order:
 
 | Mode | What it is | What drives it |
 |---|---|---|
 | **Eclipse** | A black void on a warm light ground, ringed by a solar corona. Stillness *is* the void: it grows as you settle. Thinking flares at its edge. | Void radius = the selected composite (12%→74% of max radius). Corona churn, speed and brightness = the Thinking score. Its own hot palette (magenta/orange/gold/rose), on light — saturated colour added onto near-black just goes pale grey, which was the real reason earlier versions looked colourless. |
 | **Iris** | Your whole session laid down as a rose window — a persistent record that accumulates rather than scrolling away. | Twelve petals, each sensor owning its own quadrant at its real anatomical angle. A live crown scallops with current activity; every 6s that crown is *fossilised* onto a record layer and the radius steps outward, like a growth ring. Nothing is erased, so at the end you're looking at the shape of the entire sit — which minutes were whole and which were broken stay visible. |
-| **Flow** | Chronological watercolour. "Now" sits just right of centre, history trailing left, one coloured ribbon per electrode. | Ribbon height = that electrode's alpha share; spikes = bright bursts. **Age-graded sharpness**: the newest zone is genuinely crisp (`blur: 0`), the middle softens, the oldest dissolves into a blurred wash — paint blurring as memory fades. |
+| **Pulse** | A clock hand sweeps a dial once every 5 seconds, resetting at twelve. Each composite metric owns a ring; wherever the hand is now, that ring **bulges** by how much the metric is doing, and the bulge stays and fades as the hand travels on. | So a rising metric reads as a spiral of growth — small at three o'clock, bigger at six, biggest at nine — and a subsiding one reads as the reverse, the whole last revolution legible at a glance. Bulge is mostly *change* against each metric's own slow baseline (flaring is what the eye reads), with a little absolute level mixed back in so sustained calm doesn't look like nothing happening. Black void at the centre, colours matching the graph legend. |
+| **Flow** | A live trace, thin and sharp where it's being written, dissolving as it ages. "Now" sits just right of centre, history trailing left, one line per electrode. | Line height = that electrode's alpha share; a bright point marks the live head; spikes leave marks that fade with the trace. |
 | **Bloom** | No lines at all. Soft colour gradients emerge, expand, and fade — but only when something significant actually happens. | A per-channel spike (bloom in that channel's colour), or a calm-zone transition: settling (warm) / stirring (cool). |
 | **Field** | One soft wavy band of colour per sensor — the "reference image" look, with real per-channel hue. | Band brightness/thickness = that electrode's alpha share; blur and width grow with calm ("dissolving"). |
 | **Breath** | Austere. One slow gradient breathing in and out. Nothing per-channel, nothing to read or chase. | Your *measured* breathing rate, or one of the guided patterns below. This is the "mirror mode" of the roadmap's Zen framing. |
+
+### Two modes render at full resolution, and that's load-bearing
+
+Every mode draws into a shared buffer capped at 560px wide, which is then upscaled to
+the window — cheap, and ideal for soft washes, because a blur pass over a small buffer
+costs almost nothing. It is also **fatal to a thin sharp line**: at a ~4× upscale, a 1px
+stroke arrives on screen as a 4px smear regardless of what filter is or isn't applied.
+
+**Flow** and **Pulse** therefore bypass the buffer and draw straight to the canvas at
+full resolution (`DIRECT_MODES` in `visual.js`). Neither uses a blur filter, so neither
+needs the small buffer in the first place.
+
+Flow's first version was reported as messy: fuzzy at the live edge, too thick, too
+bright, and with "sharp dividers on the blur effect." All four were the same root
+cause. It blitted the layer through **three clipped x-zones** at different blur radii to
+fake age-graded sharpness — which produces exactly the hard vertical seams described,
+overlapping alpha couldn't hide them, and the "crisp" zone was still soft because it was
+being drawn 11.5% of screen height thick and then magnified. Four channels composited
+additively on top of that is what blew it out to white.
+
+It now draws at full resolution with **softening done in geometry, not with a filter**:
+each age band is stroked three times — a wide faint halo, a mid, and a narrow bright
+core — with width and alpha varying continuously band to band. Adjacent bands differ only
+slightly, so the ramp reads as a gradient instead of a boundary. Blur passes went from 2
+per frame to **zero**.
 
 Iris was initially reported as "boring and small," and both halves turned out to be
 bugs rather than taste. **Small:** it took 200 rings × 5s ≈ **17 minutes** to reach the
@@ -339,8 +365,8 @@ It also enforces a **performance invariant**: `ctx.filter` blurs every draw oper
 versions issued 4 (Eclipse), ~12 (Field) and ~12 (Flow) per frame. The fix in each case
 is to draw unblurred into a scratch layer and blit it **once** with the filter applied;
 the test now fails any mode averaging more than 2.2 blurred draws per frame, so this
-can't quietly regress. Current: Eclipse 1.00, Iris 1.00, Flow 2.00, Bloom 0.00, Field
-1.00, Breath 0.00.
+can't quietly regress. Current: Eclipse 1.00, Iris 1.00, Pulse 0.00, Flow 0.00,
+Bloom 0.00, Field 1.00, Breath 0.00.
 
 Knobs, in `public/visual.js` / `public/viz-core.js`:
 - `CHANNEL_COLORS` / `CORONA_COLORS` — the per-electrode hues (channel palette, and
@@ -482,7 +508,11 @@ node test-chart.js  # data-viz panel: ring-buffer capping, coordinate scaling,
                      # right-aligned partial-series layout
 node test-viz.js    # visual logic: distinct per-channel hues, mode cycling,
                      # event hysteresis, bloom lifecycle, bounded wobble,
-                     # breath patterns (holds actually hold), expand() range
+                     # breath patterns (holds actually hold), expand() range,
+                     # and Pulse's clock ring — wrap-around at twelve, filling
+                     # every bin the hand crossed (not just the one it landed
+                     # on), bulges fading over exactly one revolution, and
+                     # deviation flaring on change in EITHER direction
 node test-visual-smoke.js
                     # runs every visual mode for 60 frames against a stubbed
                     # canvas with adversarial state; fails on any thrown error,
@@ -550,8 +580,11 @@ constant signal becomes its own baseline, so both read the same. Rewritten as a
   (the mode pills at the top, or press `V`). **Bloom** is *meant* to be mostly still —
   it only shows something when a genuinely significant event occurs, which can be a
   while apart. **Breath** is deliberately austere and has no per-channel response at
-  all. **Eclipse**, **Flow** and **Field** react continuously, and **Iris** accumulates
-  slowly by design.
+  all. **Eclipse**, **Pulse**, **Flow** and **Field** react continuously, and **Iris**
+  accumulates slowly by design.
+- **Pulse's rings sit almost flat** → the bulge is mostly *change* against each metric's
+  own slow baseline, so a genuinely steady mind produces a genuinely quiet dial. Rings
+  for metrics the page can't compute (anything reading "—") never move at all.
 - **Eclipse's void barely moves, or swings wildly** → that's the `expand()` band, and
   it's a fitted guess. See the `expand` knob above; widening or narrowing 0.35–0.75 is
   a one-line change.

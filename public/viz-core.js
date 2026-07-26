@@ -68,7 +68,8 @@
   const MODES = [
     { key: 'eclipse', label: 'Eclipse', blurb: 'stillness grows as a void; thinking flares at its edge' },
     { key: 'iris',    label: 'Iris',    blurb: 'your session laid down as a rose window' },
-    { key: 'flow',   label: 'Flow',   blurb: 'your data, painted as it happens' },
+    { key: 'pulse',  label: 'Pulse',  blurb: 'a clock hand sweeps; each metric bulges where it flared' },
+    { key: 'flow',   label: 'Flow',   blurb: 'a live trace, dissolving as it ages' },
     { key: 'bloom',  label: 'Bloom',  blurb: 'gradients that appear on real events' },
     { key: 'field',  label: 'Field',  blurb: 'one soft band of colour per sensor' },
     { key: 'breath', label: 'Breath', blurb: 'just slow breathing — nothing to read' },
@@ -207,9 +208,101 @@
          + 0.15 * Math.sin(t * 0.87 + seed * 5.3);
   }
 
+  // ---- Pulse: a clock-sweep ring per metric ------------------------------
+  // The hand goes round once every few seconds and resets to twelve. Wherever
+  // it is now, the ring bulges by however much that metric is doing; the bulge
+  // then STAYS and fades as the hand travels on. So a rising metric reads as a
+  // spiral of growth — small at three o'clock, bigger at six, biggest at nine —
+  // and a subsiding one reads as the reverse, all within one revolution.
+  //
+  // Pure ring-buffer logic, kept here so the wrap-around and the fade (the two
+  // things certain to be subtly wrong on a first attempt) are unit-testable.
+  class SweepRing {
+    constructor({ bins = 120, revSec = 5 } = {}) {
+      this.bins = Math.max(8, bins);
+      this.revSec = revSec > 0 ? revSec : 5;
+      this.values = new Array(this.bins).fill(0);
+      this.cursor = 0;
+      this.started = false;
+    }
+
+    binAt(tSec) {
+      const t = Number.isFinite(tSec) ? tSec : 0;
+      let frac = (t % this.revSec) / this.revSec;
+      if (frac < 0) frac += 1;
+      return Math.min(this.bins - 1, Math.floor(frac * this.bins));
+    }
+
+    // Writes `value` into EVERY bin the hand has crossed since the last call,
+    // not just the one it landed on. A dropped frame or a slow device would
+    // otherwise leave unwritten gaps still holding values from the previous
+    // revolution — visible as a ragged notch in the ring.
+    write(tSec, value) {
+      const target = this.binAt(tSec);
+      const v = Math.max(0, Math.min(1, value == null || Number.isNaN(value) ? 0 : value));
+      if (!this.started) {
+        this.values[target] = v;
+        this.cursor = target;
+        this.started = true;
+        return target;
+      }
+      let i = this.cursor, guard = 0;
+      while (i !== target && guard++ <= this.bins) {
+        i = (i + 1) % this.bins;
+        this.values[i] = v;
+      }
+      this.cursor = target;
+      return target;
+    }
+
+    // 0 = the hand is here right now; approaching 1 = a full revolution ago,
+    // i.e. about to be overwritten.
+    age(bin) {
+      return ((this.cursor - bin + this.bins) % this.bins) / this.bins;
+    }
+
+    // The bulge to actually draw: what was recorded, faded by how long ago the
+    // hand passed. The oldest bin always lands near 0, so the trail dies out on
+    // its own rather than leaving a hard step where the ring buffer wraps.
+    faded(bin, curve = 1.15) {
+      return this.values[bin] * Math.pow(1 - this.age(bin), curve);
+    }
+  }
+
+  // "Activity" for Pulse means CHANGE against the metric's own slow baseline,
+  // which is what the eye reads as flaring. A little of the absolute level is
+  // mixed back in so a steadily-high metric still has presence rather than
+  // vanishing — a ring showing nothing during sustained calm would be
+  // reporting the opposite of the truth.
+  class DeviationTracker {
+    constructor({ rate = 0.02, gain = 3.2, levelMix = 0.30 } = {}) {
+      this.rate = rate; this.gain = gain; this.levelMix = levelMix;
+      this.baseline = null;
+    }
+    update(v) {
+      if (v == null || Number.isNaN(v)) return 0;
+      const lvl = Math.max(0, Math.min(1, v));
+      if (this.baseline === null) { this.baseline = lvl; return this.levelMix * lvl; }
+      const dev = Math.min(1, Math.abs(lvl - this.baseline) * this.gain);
+      this.baseline += this.rate * (lvl - this.baseline);
+      return Math.min(1, this.levelMix * lvl + (1 - this.levelMix) * dev);
+    }
+  }
+
+  // Which metrics Pulse draws, and in what colour. Deliberately the same hues
+  // as the data panel's composite legend, so a ring and its line on the graph
+  // are recognisably the same thing.
+  const PULSE_METRICS = [
+    { key: 'calm', label: 'Calm', color: [242, 200, 121] },
+    { key: 'thinking', label: 'Thinking', color: [255, 125, 171] },
+    { key: 'focus', label: 'Focus', color: [125, 211, 252] },
+    { key: 'drowsy', label: 'Drowsy', color: [155, 140, 255] },
+  ];
+
   return {
     CHANNEL_COLORS, CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
     MODES, nextMode, EventDetector, BloomField, wobble, expand,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
+    SweepRing, DeviationTracker, PULSE_METRICS,
   };
 });

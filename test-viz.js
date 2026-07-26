@@ -190,4 +190,112 @@ const VizCore = require('./public/viz-core.js');
   console.log('✓ expand() turns a realistic score swing into a large visual swing');
 }
 
+// ---- Pulse: the clock-sweep ring ------------------------------------------
+{
+  // 12 bins over a 12-second revolution => one bin per second, which makes the
+  // clock positions checkable by hand.
+  const ring = new VizCore.SweepRing({ bins: 12, revSec: 12 });
+  assert.strictEqual(ring.binAt(0), 0, 'twelve o\'clock is bin 0');
+  assert.strictEqual(ring.binAt(3), 3, 'three o\'clock is a quarter of the way round');
+  assert.strictEqual(ring.binAt(12), 0, 'a full revolution resets to twelve');
+  assert.strictEqual(ring.binAt(13.5), 1, 'the second revolution keeps going round');
+  assert.strictEqual(ring.binAt(-1), 11, 'negative time must not produce a negative bin');
+  console.log('✓ SweepRing maps time onto clock positions and wraps at twelve');
+}
+
+{
+  // A gap in frames must not leave stale values from the previous revolution
+  // sitting in the bins the hand skipped over.
+  const ring = new VizCore.SweepRing({ bins: 12, revSec: 12 });
+  ring.write(0, 0.1);
+  ring.write(5, 0.9);            // jumps five bins in one call
+  for (let b = 1; b <= 5; b++) {
+    assert.strictEqual(ring.values[b], 0.9, `bin ${b} should have been filled in on the way past`);
+  }
+  console.log('✓ SweepRing fills every bin the hand crossed, not just the one it landed on');
+}
+
+{
+  // The described behaviour: a bulge laid down at three o'clock is still there,
+  // smaller, when the hand reaches nine — and gone by the time it comes back.
+  const ring = new VizCore.SweepRing({ bins: 12, revSec: 12 });
+  ring.write(3, 1);
+  const atThree = ring.faded(3);
+  ring.write(6, 0);
+  const atSix = ring.faded(3);
+  ring.write(9, 0);
+  const atNine = ring.faded(3);
+  assert.ok(atThree > 0.9, `fresh bulge should be near full (got ${atThree.toFixed(2)})`);
+  assert.ok(atSix < atThree && atSix > 0.4, `should have faded but still be visible (got ${atSix.toFixed(2)})`);
+  assert.ok(atNine < atSix && atNine > 0.05, `should be nearly gone (got ${atNine.toFixed(2)})`);
+  // Nearly all the way round again: the bulge has faded to a few percent and is
+  // about to be overwritten, so the trail dies out rather than meeting itself.
+  ring.write(14.5, 0);
+  const almostRound = ring.faded(3);
+  assert.ok(almostRound < 0.08, `a revolution later the bulge should be a few percent (got ${almostRound.toFixed(3)})`);
+  ring.write(15.1, 0);           // the hand now reaches bin 3 and overwrites it
+  assert.strictEqual(ring.values[3], 0, 'passing over a bin replaces its value outright');
+  console.log('✓ SweepRing bulges persist and fade over one revolution, then vanish');
+}
+
+{
+  const ring = new VizCore.SweepRing({ bins: 12, revSec: 12 });
+  ring.write(0, null);
+  ring.write(1, NaN);
+  ring.write(2, 5);
+  ring.write(3, -4);
+  ring.values.forEach((v, b) => {
+    assert.ok(Number.isFinite(v) && v >= 0 && v <= 1, `bin ${b} must stay a clean 0..1 (got ${v})`);
+  });
+  console.log('✓ SweepRing clamps nulls, NaN and out-of-range input to a usable 0..1');
+}
+
+{
+  // Deviation, not level, is what should flare. A metric parked at a constant
+  // value settles toward its own baseline and stops shouting; a metric that
+  // MOVES flares regardless of which direction it moved.
+  const dev = new VizCore.DeviationTracker();
+  let steady = 0;
+  for (let i = 0; i < 400; i++) steady = dev.update(0.6);
+  const jumpUp = dev.update(0.95);
+  const dev2 = new VizCore.DeviationTracker();
+  for (let i = 0; i < 400; i++) dev2.update(0.6);
+  const jumpDown = dev2.update(0.2);
+  assert.ok(jumpUp > steady + 0.2, `a jump up should flare well above steady (${steady.toFixed(2)} -> ${jumpUp.toFixed(2)})`);
+  assert.ok(jumpDown > steady + 0.2, `a jump DOWN should flare too (${steady.toFixed(2)} -> ${jumpDown.toFixed(2)})`);
+  // ...but a steadily-high metric must still register something, or the ring
+  // would claim nothing is happening during sustained calm.
+  const high = new VizCore.DeviationTracker();
+  let settledHigh = 0;
+  for (let i = 0; i < 400; i++) settledHigh = high.update(0.95);
+  const low = new VizCore.DeviationTracker();
+  let settledLow = 0;
+  for (let i = 0; i < 400; i++) settledLow = low.update(0.05);
+  assert.ok(settledHigh > settledLow, 'a sustained high metric should still have more presence than a sustained low one');
+  assert.ok(settledHigh <= 1 && settledLow >= 0, 'output stays in range');
+  console.log('✓ DeviationTracker flares on change in either direction, keeps some level presence');
+}
+
+{
+  const dev = new VizCore.DeviationTracker();
+  assert.strictEqual(dev.update(null), 0, 'no data must read as no activity, not NaN');
+  assert.strictEqual(dev.update(NaN), 0, 'NaN must read as no activity');
+  const v = dev.update(4);
+  assert.ok(v >= 0 && v <= 1, `out-of-range input must clamp (got ${v})`);
+  console.log('✓ DeviationTracker handles missing and out-of-range input');
+}
+
+{
+  const keys = VizCore.PULSE_METRICS.map((m) => m.key);
+  assert.strictEqual(new Set(keys).size, keys.length, 'no duplicate metrics on the dial');
+  VizCore.PULSE_METRICS.forEach((m) => {
+    assert.ok(m.label && Array.isArray(m.color) && m.color.length === 3,
+      `${m.key} needs a label and an [r,g,b] colour`);
+    m.color.forEach((c) => assert.ok(c >= 0 && c <= 255, `${m.key} colour channel out of range`));
+  });
+  const hues = new Set(VizCore.PULSE_METRICS.map((m) => m.color.join(',')));
+  assert.strictEqual(hues.size, VizCore.PULSE_METRICS.length, 'each metric needs its own distinct colour');
+  console.log('✓ PULSE_METRICS are distinct, labelled, and have valid colours');
+}
+
 console.log('\nAll viz-core tests passed.');
