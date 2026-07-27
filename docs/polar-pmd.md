@@ -151,7 +151,8 @@ the numbers look.
 ## Implementation status
 
 **Stage 1 (done):** protocol decoding in `public/polar.js` —
-`parseControlResponse`, `parseSettings`, `buildAccStartCommand`, `decodeAccFrame`,
+`parseControlResponse`, `parseSettings`, `buildAccStartCommand`,
+`accStartSettingIds`, `parseFeatures`, `decodeAccFrame`,
 `accelMagnitude`, `looksLikeGravity`. Wired into `direct.html`: on strap connect it
 asks the device for its ACC settings, starts a stream at 50Hz / smallest range, logs
 the first 6 raw frames and the control response to the console as hex, and shows a
@@ -169,7 +170,7 @@ conversion factor is mandatory.
 | a steady but wrong number (e.g. 25, or 256000) | scale error — wrong resolution or byte width |
 | thrashing wildly | structural error — wrong offsets or bit order |
 | `no frames` | START accepted but the device is sending nothing |
-| `refused N` | the device REFUSED every START shape, and N is the code from the last one. Hover the row for the whole ladder; the status bubble holds it too, for ten minutes |
+| `refused N` | the device REFUSED every attempt, and N is the last code. Hover the row for the whole list, and press **copy strap log** — that is the thing to send |
 | `12f t2/1` | frames are arriving but none decode. The two numbers are `data[0]` (measurement type — must be 2 for ACC) and `data[9]` (frame type — 0/1/2 for 8/16/24-bit). If the first is not 2, the frame offsets are wrong; if the second is unexpected, the sample width is |
 | `decoding…` | decoded but not yet enough samples for a gravity verdict |
 | `not permitted — reconnect` | the PMD service was not declared in `requestDevice`'s `optionalServices` — see below |
@@ -199,47 +200,94 @@ device reported. That is enough to fix the offsets without further guessing. The
 first thing to try is flipping the delta bit order from LSB-first to MSB-first,
 which is the assumption most likely to be wrong.
 
-### START refusal: the device is asked which shape it wants
+### START refusal: solved — send only the settings the device advertises
 
-A real H10 refused the first attempt with **error code 5**, and the spec's error-code
-table is not in the transcribable part of the PDF — so rather than guess what 5 means
-and then guess a fix, the app now tries each plausible request encoding in turn and
-lets the device accept one. It answers every attempt with a code, so the search
-terminates.
+A real H10 refused with **error code 5**, and kept refusing across five different
+request encodings. Identical codes across five encodings was the clue: the encoding
+was not what it objected to.
 
-`Polar.ACC_START_VARIANTS`, tried in this order:
+The answer was in its own settings response, which we were already reading and not
+listening to:
 
-| Variant | Difference |
+```
+{"sampleRate":[25,50,100,200],"resolution":[16],"range":[2,4,8]}
+```
+
+Three settings. **No `channels`.** Every attempt had either sent setting id 4
+(channels), which this device never offers, or dropped id 2 (range), which it
+requires. Not one of the five sent exactly the three it named — so "invalid
+parameter" was literal and correct, and the ladder could never have found it,
+because the ladder only varied the *encoding* of a set that was always wrong.
+
+So the rule, and it generalises past this one device:
+
+> **Send exactly the setting ids the device advertised, in ascending order, and no
+> others.** `Polar.accStartSettingIds(settings)` derives them from the response;
+> `buildAccStartCommand({include})` emits them. Never hardcode the set.
+
+The corrected request for an H10 is 14 bytes:
+
+```
+02 02              start, ACC
+00 01 32 00        id 0  sample rate  50 Hz     (uint16)
+01 01 10 00        id 1  resolution   16 bits   (uint16)
+02 01 02 00        id 2  range        ±2 G      (uint16)
+```
+
+The conversion factor (id 5) is reported *by* the device and never sent *to* it.
+
+**What this cost, and the cheaper path.** Four hardware round trips, each needing a
+physical reconnect and a hand-typed report, and the useful part — the settings
+response — arrived only when a screenshot happened to include it. The fix is a
+**"copy strap log"** button, hidden unless the negotiation actually fails, which
+copies the features read, both settings responses, every attempted request as hex
+with the code it got back, and the first frames. One paste replaces the
+transcription. If you are debugging PMD, press it first.
+
+### Two assumptions that were being computed and then ignored
+
+1. **The `0xF0` response marker.** `parseControlResponse` returned `isResponse` and
+   nothing checked it. Any control-point notification was read as a response, which
+   means byte 3 of something else could be reported as an error code — a number
+   that looks like the device speaking when it is us misreading. Non-responses are
+   now counted (`accNonResponses`) and never parsed.
+2. **The control point's READ value** advertises which measurement types the device
+   supports. Reading it answers "does this device do ACC at all" *before* any
+   negotiation, and if ACC is absent the search is skipped entirely rather than
+   producing a long list of meaningless refusals. `parseFeatures` decodes it, and
+   reports `raw` plus `looksValid` because its layout is inferred, not transcribed.
+
+A GET SETTINGS for ECG (type 0) is also issued as a **control condition**: if ECG
+answers cleanly and ACC does not, the fault is ACC's availability rather than our
+request format — a distinction no amount of retrying ACC can make.
+
+### Error codes
+
+From the enum in Polar's SDK source, **not** from the transcribed spec — the PDF's
+table is an image. Treat as unverified; the app always shows the raw number and only
+ever appends a parenthesised guess with a question mark.
+
+| Code | Name |
 |---|---|
-| `count8` | item-count field as one byte (`01`) |
-| `count16` | item-count field as uint16 (`01 00`) |
-| `count8 no-range` | omit the range setting |
-| `count8 rate+res` | sample rate and resolution only |
-| `count16 no-range` | both of the above |
+| 0 | success |
+| 1 | invalid op code |
+| 2 | invalid measurement type |
+| 3 | not supported |
+| 4 | invalid length |
+| **5** | **invalid parameter** — what a wrong setting *set* produces |
+| 6 | already in state — a stream a previous page load left running |
+| 7 | invalid resolution |
+| 8 | invalid sample rate |
+| 9 | invalid range |
+| 10 | invalid MTU |
+| 11 | invalid number of channels |
+| 12 | invalid state |
+| 13 | device in charger |
 
-The result is reported in the status line: either *"accepted `<variant>` — make it the
-default"* (promote it in `buildAccStartCommand` and delete the ladder) or *"refused
-every request shape"* followed by each variant and its error code **and the settings
-the device reported**. **That list is the thing to act on** — if every shape returns 5,
-the problem is a parameter *value* rather than the encoding, and the next thing to vary
-is sample rate (try 25 or 200) and resolution.
-
-That bubble is locked for **ten minutes**, and this is not fussiness: the first attempt
-at reporting it was locked for 30 seconds and then immediately overwritten by
-`connectStrap`'s cheerful "heart strap linked" message, which is set on a 4-second lock.
-The result on screen was a `Chest` row saying *"see msg"* pointing at a message that no
-longer existed. Order matters — set the connect message **before** awaiting
-`tryStartAccelerometer`, never after.
-
-### A stream the device never stopped
-
-Error 5 may not mean "bad request" at all. The H10 keeps streaming after the browser
-tab that started it goes away — the GATT link drops but the measurement stays active on
-the device — and a device asked to START a measurement that is already running has to
-refuse. Reconnecting many times during development is exactly how you get into that
-state. So the ladder now sends an unconditional STOP first and ignores the (expected,
-meaningless) error if nothing was running. If a *single* variant is accepted after that
-change, the encodings were never the problem and the ladder should be deleted.
+Code 6 is worth knowing: the H10 keeps streaming after the browser tab that started
+it goes away, and cannot START a measurement that is already active. The app sends
+an unconditional STOP before negotiating, and ignores the expected error when
+nothing was running.
 
 **Stage 2 (not built):** extract breathing. Band-pass the axis with the most
 respiratory variance (or the projection onto the principal axis) over roughly

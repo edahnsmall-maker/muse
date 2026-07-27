@@ -378,6 +378,50 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       + Object.values(states).join(' / '));
   }
 
+  // 12) The strap log button is a debugging affordance, so it must be absent from a
+  //     healthy session and present the moment there is something worth sending.
+  //     It exists because each round of protocol guesswork otherwise costs a
+  //     physical reconnect plus a summary typed by hand, which loses the bytes.
+  {
+    const seen = await page.evaluate(async () => {
+      const btn = document.getElementById('copyStrapLog');
+      const out = {};
+      strapDevice = { gatt: { connected: true } };
+      accStartError = null; accVariant = 'ids 0+1+2'; accNonResponses = 0;
+      accFrames = 10; accDecoded = 10; accMag = 1000;
+      accVerdict = { meanMilliG: 1000, ok: true };
+      renderDevices(); out.healthy = btn.hidden;
+
+      accStartError = 5; accVariant = null;
+      renderDevices(); out.refused = btn.hidden;
+
+      // And it must produce the settings response and the attempted bytes, since
+      // those are the two things that actually explain a refusal.
+      pmdLog.accSettingsRaw = 'f0 01 02 00 00';
+      pmdLog.attempts = [{ tag: '50hz/r2/b16/ids 0+1+2', sent: '02 02 00 01 32 00', code: 5 }];
+      let copied = null;
+      navigator.clipboard.writeText = (t) => { copied = t; return Promise.resolve(); };
+      btn.click();
+      await new Promise((r) => setTimeout(r, 50));
+      out.copied = copied;
+
+      strapDevice = null; accStartError = null; accFrames = 0; accDecoded = 0;
+      accMag = null; accVerdict = null; accVariant = null; pmdLog.attempts = [];
+      return out;
+    });
+    assert.strictEqual(seen.healthy, true,
+      'a working accelerometer must not put a debug button in front of a meditator');
+    assert.strictEqual(seen.refused, false, 'a refused start must offer the log');
+    assert.ok(seen.copied, 'clicking must actually copy something');
+    const log = JSON.parse(seen.copied);
+    assert.strictEqual(log.accSettingsRaw, 'f0 01 02 00 00',
+      'the log must carry the raw settings response');
+    assert.strictEqual(log.attempts[0].sent, '02 02 00 01 32 00',
+      'the log must carry the exact bytes that were refused');
+    assert.strictEqual(log.lastError, 5, 'and the code the device answered with');
+    console.log('✓ the strap log is hidden when healthy, offered on refusal, and carries the bytes');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

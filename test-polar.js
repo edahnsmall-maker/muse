@@ -416,20 +416,88 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
 }
 
 // 21) The start command's exact bytes, checked against the spec's TLV shape.
+//
+// This test used to assert that `channels` was always sent, which is the exact
+// wrong assumption a real H10 refused five times over. The device's own settings
+// response named sampleRate, resolution and range and nothing else, so the default
+// is those three \u2014 the test now pins the corrected behaviour.
 {
-  const cmd = Polar.buildAccStartCommand({ sampleRate: 50, resolution: 16, range: 2, channels: 3 });
+  const cmd = Polar.buildAccStartCommand({ sampleRate: 50, resolution: 16, range: 2 });
   assert.deepStrictEqual(Array.from(cmd), [
     0x02, 0x02,             // start, ACC
     0x00, 0x01, 50, 0x00,   // sample rate 50Hz  (uint16)
     0x01, 0x01, 16, 0x00,   // resolution 16 bits (uint16)
     0x02, 0x01, 2, 0x00,    // range +/-2G        (uint16)
-    0x04, 0x01, 3,          // 3 channels         (uint8)
-  ], 'start command must match the documented TLV layout');
+  ], 'by default the start command must send exactly the settings the H10 advertises');
+  assert.ok(!Array.from(cmd).includes(0x04) || Array.from(cmd).indexOf(0x04) < 2,
+    'setting id 4 (channels) must not be sent by default: the H10 does not advertise it');
+  // Still reachable for a device that DOES advertise channels.
+  const withCh = Polar.buildAccStartCommand({ include: [0, 1, 2, 4], channels: 3 });
+  assert.deepStrictEqual(Array.from(withCh).slice(-3), [0x04, 0x01, 3],
+    'a device that advertises channels must still be able to receive it');
   // 200Hz needs both bytes, which is the case a one-byte encoding would break.
   const fast = Polar.buildAccStartCommand({ sampleRate: 200 });
   assert.strictEqual(fast[4], 200); assert.strictEqual(fast[5], 0);
   assert.deepStrictEqual(Array.from(Polar.buildStopCommand()), [0x03, 0x02]);
   console.log('\u2713 the ACC start/stop commands have the documented byte layout');
+}
+
+// 21b) The setting ids sent must come from the device's response, not from a guess.
+//      Driven by the ACTUAL bytes a real H10 returned, which is the only reason
+//      this is more than another assumption checked against itself.
+{
+  const real = { sampleRate: [25, 50, 100, 200], resolution: [16], range: [2, 4, 8] };
+  assert.deepStrictEqual(Polar.accStartSettingIds(real), [0, 1, 2],
+    'the real H10 advertises rate, resolution and range \u2014 send those three');
+  assert.deepStrictEqual(Polar.accStartSettingIds(Object.assign({ channels: [3] }, real)),
+    [0, 1, 2, 4], 'a device that advertises channels must get channels');
+  assert.deepStrictEqual(Polar.accStartSettingIds(null), [0, 1, 2],
+    'with no settings response, fall back to what the H10 documents');
+  assert.deepStrictEqual(Polar.accStartSettingIds({}), [0, 1, 2],
+    'an empty settings object must not produce an empty start command');
+
+  // The refused request and the corrected one must actually differ, or the fix is
+  // cosmetic. This is the whole content of the bug, in one assertion.
+  const wrong = Polar.buildAccStartCommand({ include: [0, 1, 2, 4] });
+  const right = Polar.buildAccStartCommand({ include: Polar.accStartSettingIds(real) });
+  assert.notDeepStrictEqual(Array.from(wrong), Array.from(right),
+    'the corrected start request must differ from the one the device refused');
+  assert.strictEqual(right.length, wrong.length - 3,
+    'the correction is precisely the removal of the 3-byte channels setting');
+
+  // Candidate values must all be ones the device named \u2014 sweeping unsupported
+  // values wastes the search and muddies which axis is at fault.
+  const cands = Polar.accParamCandidates(real);
+  assert.ok(cands.length > 1, 'a device offering several rates and ranges gives several candidates');
+  for (const c of cands) {
+    assert.ok(real.sampleRate.includes(c.sampleRate), `rate ${c.sampleRate} was not advertised`);
+    assert.ok(real.range.includes(c.range), `range ${c.range} was not advertised`);
+    assert.ok(real.resolution.includes(c.resolution), `resolution ${c.resolution} was not advertised`);
+  }
+  assert.deepStrictEqual(cands[0], { sampleRate: 50, resolution: 16, range: 2 },
+    'the first candidate must be 50Hz at the finest range: breathing is slow and small');
+  console.log('\u2713 start requests carry the settings the device advertised, and no others');
+}
+
+// 21c) A control-point notification without the 0xF0 marker must not be read as a
+//      response. Doing so reports byte 3 of something else as an error code, which
+//      invents a number and attributes it to the device.
+{
+  const notResponse = new DataView(new Uint8Array([0x02, 0x02, 0x00, 0x05]).buffer);
+  const r = Polar.parseControlResponse(notResponse);
+  assert.strictEqual(r.isResponse, false,
+    'a payload not starting with 0xF0 must be flagged as not a response');
+  const real = new DataView(new Uint8Array([0xf0, 0x02, 0x02, 0x05, 0x00]).buffer);
+  const r2 = Polar.parseControlResponse(real);
+  assert.strictEqual(r2.isResponse, true);
+  assert.strictEqual(r2.command, Polar.PMD_CMD_START);
+  assert.strictEqual(r2.errorCode, 5);
+  // The error name is a guess from the SDK, so it must never appear alone.
+  assert.match(Polar.describeError(5), /^5 \(/,
+    'an error description must lead with the number the device actually sent');
+  assert.strictEqual(Polar.describeError(99), '99',
+    'an unknown code must be reported as the bare number, not invented');
+  console.log('\u2713 only 0xF0-marked payloads count as control responses');
 }
 
 // 22) signedLE: pure arithmetic, hand-checkable, no circularity.

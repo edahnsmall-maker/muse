@@ -300,6 +300,9 @@
     <div id="devices">
       <button id="connect">Connect headband</button>
       <button id="connectStrap" class="secondary">+ heart strap</button>
+      <!-- Hidden until the strap's accelerometer negotiation actually fails.
+           It is a debugging affordance, not part of sitting down to meditate. -->
+      <button id="copyStrapLog" class="secondary" hidden>copy strap log</button>
     </div>
   </div>
   <div id="timerPicker"></div>
@@ -342,6 +345,7 @@ const readoutEl = document.getElementById('readout');
 const timerPickerEl = document.getElementById('timerPicker');
 const connectBtn = document.getElementById('connect');
 const strapBtn = document.getElementById('connectStrap');
+const copyLogBtn = document.getElementById('copyStrapLog');
 
 // When a transient message is showing (e.g. the visual-mode name), the
 // 250ms status loop must not immediately overwrite it.
@@ -468,6 +472,20 @@ function renderDevices() {
   strapBtn.classList.toggle('linked', strap);
   strapBtn.classList.toggle('warn', strap && strapUnreliable());
   strapBtn.disabled = strap || strapConnecting;
+
+  // Only offered when there is actually something wrong to report.
+  if (copyLogBtn.isConnected) copyLogBtn.hidden = !pmdLogWorthSending();
+}
+
+// The log is worth sending when the accelerometer negotiation produced a failure
+// a human can't be expected to transcribe: a refusal, frames that won't decode, or
+// control-point traffic we could not interpret.
+function pmdLogWorthSending() {
+  if (!strapConnected()) return false;
+  if (accStartError && !accVariant) return true;
+  if (accNonResponses > 0) return true;
+  if (accFrames > 0 && accDecoded === 0) return true;
+  return accVariant != null && accMag != null && !(accVerdict && accVerdict.ok);
 }
 
 // ---- Session log + summary -------------------------------------------------
@@ -1267,11 +1285,32 @@ let accDecoded = 0;       // notifications that produced samples
 let accStartError = null; // error code the device returned for the START command
 let accFirstHead = null;  // [measurementType, frameType] of the first frame
 let accVariant = null;    // which start-request shape the device accepted
-let accTried = [];        // ['count8:5', 'count16:0'] — the search, for reporting
+let accTried = [];        // ['50hz/r2/b16/count8:5', …] — the search, for reporting
+let accFeatures = null;   // the control point's advertised measurement types
+let accSettingsError = null;
+// Notifications on the control point that did NOT carry the 0xF0 response marker.
+// Counted rather than parsed, because reading byte 3 of a non-response and calling
+// it an error code invents a number and attributes it to the device.
+let accNonResponses = 0;
 let pendingStartResolve = null;
 const accFrameLog = [];     // first few raw frames, hex, for diagnosis
 const ACC_LOG_FRAMES = 6;
 const ACC_KEEP = 600;       // ~12s at 50Hz
+
+/*
+ * Everything the strap said, in one copyable object.
+ *
+ * This exists because each round of protocol guesswork costs a physical reconnect
+ * and a report typed out by hand, and the part that matters keeps getting lost in
+ * the retelling — "refused 5" instead of the twenty bytes that explain why. One
+ * button, one paste, no transcription.
+ */
+const pmdLog = {
+  featuresRaw: null, features: null,
+  accSettings: null, accSettingsRaw: null,
+  ecgSettings: null, ecgSettingsRaw: null,
+  attempts: [], responses: [], frames: accFrameLog,
+};
 
 // The one-line verdict shown in the Chest row. A named function rather than an
 // inline chain so test-ui.js can call the REAL branch order — a test that mirrors
@@ -1327,6 +1366,21 @@ async function tryStartAccelerometer(gatt) {
     const ctl = await svc.getCharacteristic(Polar.PMD_CONTROL);
     const data = await svc.getCharacteristic(Polar.PMD_DATA);
 
+    // 1) READ the control point before negotiating anything. Its value advertises
+    //    which measurement types the device offers, which answers "does this H10
+    //    do ACC at all" without a START — and if the answer is no, no request
+    //    shape and no parameter value will ever work, so the search must not run.
+    try {
+      const fv = await ctl.readValue();
+      accFeatures = Polar.parseFeatures(fv);
+      pmdLog.featuresRaw = accFeatures && accFeatures.raw;
+      pmdLog.features = accFeatures && accFeatures.types;
+      console.log('[PMD] features:', accFeatures && accFeatures.raw, accFeatures && accFeatures.types);
+    } catch (e) {
+      pmdLog.featuresRaw = `read failed: ${(e && e.message) || 'unknown'}`;
+      console.log('[PMD] feature read failed:', e && e.message);
+    }
+
     // Ask the device what it supports rather than hardcoding. The spec is
     // explicit that the conversion factor is mandatory for correct values, so
     // guessing settings is not an option.
@@ -1335,87 +1389,150 @@ async function tryStartAccelerometer(gatt) {
     // answers on the control point with an error code. Watch every response, not
     // just the settings one, or a rejected START looks identical to silence.
     let settingsResolve = null;
-    const settingsSeen = new Promise((resolve) => {
-      settingsResolve = resolve;
-      setTimeout(() => resolve(null), 3000);
-    });
+    let settingsWanted = Polar.PMD_TYPE_ACC;
     ctl.addEventListener('characteristicvaluechanged', (e) => {
       const r = Polar.parseControlResponse(e.target.value);
       console.log('[PMD] control response:', r && r.raw);
       if (!r) return;
-      if (r.command === Polar.PMD_CMD_GET_SETTINGS && settingsResolve) settingsResolve(r);
+      pmdLog.responses.push(r.raw);
+      // The 0xF0 marker was being computed and then ignored. Without this check a
+      // notification that is NOT a control response gets read as one, and its
+      // byte 3 gets reported as an error code — a number that looks like the
+      // device speaking when it is us misreading. Count them instead.
+      if (!r.isResponse) { accNonResponses++; return; }
+      if (r.command === Polar.PMD_CMD_GET_SETTINGS && r.measurementType === settingsWanted
+          && settingsResolve) { const f = settingsResolve; settingsResolve = null; f(r); }
       if (r.command === Polar.PMD_CMD_START) {
         accStartError = r.errorCode || null;
         if (r.errorCode) console.log('[PMD] START rejected, error code', r.errorCode);
         if (pendingStartResolve) { const f = pendingStartResolve; pendingStartResolve = null; f(r); }
       }
     });
-    await ctl.writeValue(new Uint8Array([Polar.PMD_CMD_GET_SETTINGS, Polar.PMD_TYPE_ACC]));
-    const settingsResp = await settingsSeen;
-    accSettings = settingsResp ? settingsResp.settings : null;
 
-    // Prefer 50Hz and the SMALLEST range: breathing is a slow, small signal, so
-    // fine resolution matters far more than headroom or bandwidth.
-    const pick = (list, want, fallback) =>
-      (list && list.length ? (list.includes(want) ? want : list[0]) : fallback);
-    const cfg = {
-      sampleRate: pick(accSettings && accSettings.sampleRate, 50, 50),
-      resolution: pick(accSettings && accSettings.resolution, 16, 16),
-      range: accSettings && accSettings.range && accSettings.range.length
-        ? Math.min(...accSettings.range) : 2,
-      channels: pick(accSettings && accSettings.channels, 3, 3),
+    // 2) Ask for ACC's settings, and for ECG's as a CONTROL. If ECG answers
+    //    cleanly and ACC does not, the fault is ACC's availability rather than
+    //    our request format — a distinction no amount of retrying ACC can make.
+    const askSettings = async (type) => {
+      settingsWanted = type;
+      const seen = new Promise((resolve) => {
+        settingsResolve = resolve;
+        setTimeout(() => { if (settingsResolve === resolve) settingsResolve = null; resolve(null); }, 2500);
+      });
+      await ctl.writeValue(Polar.buildGetSettingsCommand(type));
+      return seen;
     };
+    const accResp = await askSettings(Polar.PMD_TYPE_ACC);
+    accSettings = accResp ? accResp.settings : null;
+    accSettingsError = accResp ? (accResp.errorCode || null) : 'timeout';
+    pmdLog.accSettings = accSettings;
+    pmdLog.accSettingsRaw = accResp ? accResp.raw : 'timeout';
+    const ecgResp = await askSettings(0);
+    pmdLog.ecgSettings = ecgResp ? ecgResp.settings : null;
+    pmdLog.ecgSettingsRaw = ecgResp ? ecgResp.raw : 'timeout';
+
+    // If the device advertises its types and ACC is absent, stop. Sweeping
+    // parameters against a measurement the device does not have would produce a
+    // long list of refusals that says nothing.
+    if (accFeatures && accFeatures.looksValid && !accFeatures.types.includes('ACC')) {
+      accAvailable = false;
+      accError = 'no ACC on device';
+      setStatus('this strap does not advertise an accelerometer over PMD — '
+        + `it offers ${escapeHtml(accFeatures.types.join(', ') || 'nothing')}. Breath stays on RSA.`);
+      statusLockUntil = Date.now() + 600000;
+      console.log('[PMD] device does not advertise ACC; not attempting a start');
+      return;
+    }
+
     await data.startNotifications();
     data.addEventListener('characteristicvaluechanged', onAccData);
 
-    /* Ask the device which request shape it wants, rather than guessing.
-     *
-     * The first attempt was refused with error code 5, and the spec's error table
-     * was not in the transcribable part of the PDF — so instead of guessing what 5
-     * means and then guessing a fix, try each plausible encoding and let the strap
-     * accept one. It answers every attempt, so this terminates. Which variant won
-     * is reported, and should be promoted to the default once known.
-     */
     // Stop any stream a previous page load left running. The device keeps
-    // streaming after a browser tab goes away, and refuses to START a measurement
-    // that is already active — which would look exactly like a bad request. Errors
-    // here are expected and meaningless (nothing was running).
+    // streaming after a browser tab goes away, and a measurement that is already
+    // active cannot be started again. Errors here are expected and meaningless.
     try {
       await ctl.writeValue(Polar.buildStopCommand());
       await new Promise((r) => setTimeout(r, 250));
-      console.log('[PMD] sent a pre-emptive STOP in case a stream was still running');
     } catch (e) { /* nothing was running */ }
 
+    /* 3) Send exactly the settings the device advertised.
+     *
+     * A real H10 answered GET SETTINGS with
+     *   {sampleRate:[25,50,100,200], resolution:[16], range:[2,4,8]}
+     * — three settings, no `channels`. Every earlier attempt had either included
+     * `channels`, which the device never offered, or dropped `range`, which it
+     * requires; none sent exactly those three. That is what the repeated refusal
+     * was saying, and it took the settings response to hear it.
+     *
+     * So `include` comes from the response now, not from a guess. The shape ladder
+     * stays as a fallback in case a different device advertises a different set,
+     * and the value sweep behind it stays for the case where a *value* is refused.
+     * The device answers every attempt, so this terminates either way.
+     */
+    const include = Polar.accStartSettingIds(accSettings);
+    const params = Polar.accParamCandidates(accSettings);
+    const channels = accSettings && accSettings.channels && accSettings.channels.length
+      ? accSettings.channels[0] : 3;
+
+    /* Two BOUNDED phases, not a cross product. Every combination of 5 shapes and
+     * 12 value sets would be 60 writes and the better part of a minute with a
+     * meditator sitting there waiting.
+     *
+     * Phase A: the device's own preferred values, against each request shape.
+     * Phase B: only if all of A is refused, sweep values using the advertised
+     *          shape — because at that point the shape is not the variable.
+     */
+    const plan = [];
+    const best = params[0] || { sampleRate: 50, resolution: 16, range: 2 };
+    for (const v of Polar.ACC_START_VARIANTS) {
+      // The first variant means "exactly what this device advertised".
+      const opts = v === Polar.ACC_START_VARIANTS[0] ? { include } : v.opts;
+      const label = v === Polar.ACC_START_VARIANTS[0] ? `ids ${include.join('+')}` : v.label;
+      plan.push({ pset: best, opts, label });
+    }
+    for (const pset of params.slice(1)) plan.push({ pset, opts: { include }, label: 'advertised' });
+
     accTried = [];
-    for (const variant of Polar.ACC_START_VARIANTS) {
+    for (const step of plan) {
+      const cfg = Object.assign({ channels }, step.pset, step.opts);
       const answer = new Promise((resolve) => {
         pendingStartResolve = resolve;
-        setTimeout(() => { pendingStartResolve = null; resolve(null); }, 1500);
+        setTimeout(() => { pendingStartResolve = null; resolve(null); }, 900);
       });
-      await ctl.writeValue(Polar.buildAccStartCommand(Object.assign({}, cfg, variant.opts)));
+      const bytes = Polar.buildAccStartCommand(cfg);
+      await ctl.writeValue(bytes);
       const r = await answer;
       const code = r ? r.errorCode : 'timeout';
-      accTried.push(`${variant.label}:${code}`);
-      console.log(`[PMD] start "${variant.label}" -> ${code}`);
-      if (r && !r.errorCode) { accVariant = variant.label; accStartError = null; break; }
+      const tag = `${step.pset.sampleRate}hz/r${step.pset.range}/b${step.pset.resolution}/${step.label}`;
+      accTried.push(`${tag}:${code}`);
+      pmdLog.attempts.push({
+        tag,
+        sent: Array.from(bytes).map((x) => x.toString(16).padStart(2, '0')).join(' '),
+        code, raw: r ? r.raw : null,
+      });
+      console.log(`[PMD] start ${tag} -> ${code}`);
+      if (r && !r.errorCode) { accVariant = tag; accStartError = null; break; }
       accStartError = code;
-      // A refused start leaves nothing running, but stop anyway so a partially
-      // accepted stream can't linger and confuse the next attempt.
       try { await ctl.writeValue(Polar.buildStopCommand()); } catch (e) { /* expected */ }
     }
     accAvailable = true;
     accError = null;                 // clear a stale failure from an earlier attempt
-    console.log('[PMD] variants tried:', accTried.join(', '), '| accepted:', accVariant || 'none');
+    console.log('[PMD] tried:', accTried.join(', '), '| accepted:', accVariant || 'none');
     // A long diagnostic belongs in the wide status bubble, not a 128px table cell.
-    // Locked long enough to read or screenshot.
     if (!accVariant) {
+      // The codes are what matter, and identical codes across the whole sweep is
+      // itself the finding — so lead with the distinct set rather than 20 lines.
+      const codes = Array.from(new Set(accTried.map((t) => t.split(':').pop())));
+      setStatus(`chest sensor refused all ${accTried.length} attempts — code`
+        + `${codes.length > 1 ? 's' : ''} ${escapeHtml(codes.map((c) => Polar.describeError(c)).join(', '))}`
+        + ` | features: ${escapeHtml((accFeatures && accFeatures.raw) || 'unread')}`
+        + ` | ACC settings: ${escapeHtml(pmdLog.accSettingsRaw || 'none')}`
+        + ` | ECG settings: ${escapeHtml(pmdLog.ecgSettingsRaw || 'none')}`
+        + ' — press "copy strap log" and send it');
       // Ten minutes: this is the one string needed to fix the protocol, and a
       // bubble that vanishes in 30 seconds is a bubble that gets missed.
-      setStatus(`chest sensor refused every request shape — ${escapeHtml(accTried.join(' · '))}`
-        + (accSettings ? ` | settings: ${escapeHtml(JSON.stringify(accSettings))}` : ' | no settings response'));
       statusLockUntil = Date.now() + 600000;
-    } else if (accVariant !== Polar.ACC_START_VARIANTS[0].label) {
-      setStatus(`chest sensor accepted "${escapeHtml(accVariant)}" — make it the default`);
+    } else {
+      setStatus(`chest sensor accepted ${escapeHtml(accVariant)} — make it the default`);
       statusLockUntil = Date.now() + 20000;
     }
   } catch (err) {
@@ -1627,6 +1744,27 @@ connectBtn.addEventListener('click', connect);
 // retried after a failure, and it must be a separate user gesture because
 // Web Bluetooth requires one per requestDevice() call.
 strapBtn.addEventListener('click', connectStrap);
+
+// Copy the whole PMD conversation, so a protocol problem costs one paste rather
+// than a hand-typed summary that loses the bytes that mattered.
+copyLogBtn.addEventListener('click', async () => {
+  const text = JSON.stringify(Object.assign({}, pmdLog, {
+    accepted: accVariant, lastError: accStartError, nonResponses: accNonResponses,
+    frameCount: accFrames, decodedCount: accDecoded, firstHead: accFirstHead,
+    magnitudeMilliG: accMag, gravityOk: accVerdict ? accVerdict.ok : null,
+    tried: accTried,
+  }), null, 1);
+  try {
+    await navigator.clipboard.writeText(text);
+    copyLogBtn.textContent = 'copied';
+  } catch (e) {
+    // The clipboard can be refused without a secure context or a fresh gesture.
+    // Falling back to the console beats silently doing nothing.
+    console.log('[PMD] strap log:\n' + text);
+    copyLogBtn.textContent = 'in console';
+  }
+  setTimeout(() => { copyLogBtn.textContent = 'copy strap log'; }, 3000);
+});
 
 setInterval(updateBreathing, 2000);
 

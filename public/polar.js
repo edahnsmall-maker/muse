@@ -464,22 +464,53 @@
    */
   function buildAccStartCommand({
     sampleRate = 50, resolution = 16, range = 2, channels = 3,
-    countBytes = 1, includeRange = true, includeChannels = true,
+    countBytes = 1,
+    /*
+     * WHICH settings to send, by id, in order. This is the whole ballgame.
+     *
+     * A real H10 refused five different encodings with the same code, and its
+     * settings response said why: it advertises exactly
+     *   {sampleRate:[25,50,100,200], resolution:[16], range:[2,4,8]}
+     * and nothing else. Every attempt had either sent `channels` (id 4) — which
+     * the device never offered — or omitted `range`, which it requires. So the
+     * default is now the three ids it named, and callers should pass the ids the
+     * device actually advertised rather than a fixed set. Sending a setting the
+     * device did not offer is what "invalid parameter" meant.
+     */
+    include = [0, 1, 2],
   } = {}) {
+    const values = { 0: sampleRate, 1: resolution, 2: range, 4: channels };
     const out = [PMD_CMD_START, PMD_TYPE_ACC];
-    const put = (type, value, size) => {
-      out.push(type);
-      // The item-count field's width is the one thing the spec text did not pin
-      // down, and it is the likeliest cause of a rejected start. Parameterised so
-      // the device can be asked which it wants rather than guessed at.
+    for (const id of include) {
+      const size = PMD_SETTING_SIZE[id];
+      if (size == null) continue;                 // unknown id: never invent bytes
+      out.push(id);
+      // The item-count field's width was not pinned down by the spec text, so it
+      // stays parameterised — but it is NOT the cause of the refusals above.
       if (countBytes === 2) out.push(1, 0); else out.push(1);
+      const value = values[id] || 0;
       for (let i = 0; i < size; i++) out.push((value >> (8 * i)) & 0xff);
-    };
-    put(0, sampleRate, 2);
-    put(1, resolution, 2);
-    if (includeRange) put(2, range, 2);
-    if (includeChannels) put(4, channels, 1);
+    }
     return new Uint8Array(out);
+  }
+
+  /*
+   * The setting ids to send, taken from what the device advertised.
+   *
+   * Ids 0/1/2 (rate, resolution, range) in ascending order, keeping only those
+   * the device named, because an unadvertised setting is refused and a missing
+   * required one is too. The conversion factor (5) is reported BY the device and
+   * never sent to it. If no settings response arrived, fall back to the three
+   * the H10 documents.
+   */
+  function accStartSettingIds(settings) {
+    if (!settings) return [0, 1, 2];
+    const ids = [];
+    for (const [id, name] of [[0, 'sampleRate'], [1, 'resolution'], [2, 'range'], [4, 'channels']]) {
+      const v = settings[name];
+      if (v && v.length) ids.push(id);
+    }
+    return ids.length ? ids : [0, 1, 2];
   }
 
   /*
@@ -494,15 +525,126 @@
    * Ordered by how likely each is to be the real format.
    */
   const ACC_START_VARIANTS = [
-    { label: 'count8', opts: {} },
-    { label: 'count16', opts: { countBytes: 2 } },
-    { label: 'count8 no-range', opts: { includeRange: false } },
-    { label: 'count8 rate+res', opts: { includeRange: false, includeChannels: false } },
-    { label: 'count16 no-range', opts: { countBytes: 2, includeRange: false } },
+    { label: 'advertised', opts: {} },                            // rate+res+range
+    { label: 'advertised+ch', opts: { include: [0, 1, 2, 4] } },   // the old default
+    { label: 'advertised count16', opts: { countBytes: 2 } },
+    { label: 'rate+res', opts: { include: [0, 1] } },
+    { label: 'rate+res+ch', opts: { include: [0, 1, 4] } },
   ];
+
+  /*
+   * Candidate PARAMETER VALUES, for when every request shape above is refused
+   * with the same code. Identical codes across five different encodings say the
+   * encoding is not what the device objects to — so the next axis to vary is the
+   * values themselves.
+   *
+   * Ordered so the cheapest hypotheses come first: the H10's documented sample
+   * rates at the finest range, then wider ranges, then the coarse rate. `channels`
+   * stays at 3 throughout because a 3-axis accelerometer has no other answer.
+   */
+  const ACC_PARAM_VARIANTS = [
+    { sampleRate: 50, resolution: 16, range: 2 },
+    { sampleRate: 25, resolution: 16, range: 2 },
+    { sampleRate: 200, resolution: 16, range: 2 },
+    { sampleRate: 100, resolution: 16, range: 2 },
+    { sampleRate: 50, resolution: 16, range: 4 },
+    { sampleRate: 50, resolution: 16, range: 8 },
+    { sampleRate: 25, resolution: 16, range: 8 },
+    { sampleRate: 200, resolution: 16, range: 8 },
+    { sampleRate: 52, resolution: 16, range: 2 },   // Verity-style rate, in case
+    { sampleRate: 50, resolution: 8, range: 2 },    // in case resolution is bytes
+  ];
+
+  /*
+   * Every combination the device itself advertised, as (rate × range) at the
+   * advertised resolution. Preferred over the list above whenever a settings
+   * response actually arrived: values the device named cannot be "unsupported",
+   * which narrows the cause to the encoding or to something else entirely.
+   *
+   * Ordered to put the lowest range first (finest resolution for a small signal)
+   * and 50Hz first among rates, matching what breathing actually needs.
+   */
+  function accParamCandidates(settings) {
+    const list = (v, fallback) => (v && v.length ? v.slice() : fallback);
+    if (!settings) return ACC_PARAM_VARIANTS.slice();
+    const rates = list(settings.sampleRate, [50]).sort((a, b) => Math.abs(a - 50) - Math.abs(b - 50));
+    const ranges = list(settings.range, [2]).sort((a, b) => a - b);
+    const resolutions = list(settings.resolution, [16]);
+    const out = [];
+    for (const range of ranges) {
+      for (const sampleRate of rates) {
+        for (const resolution of resolutions) out.push({ sampleRate, resolution, range });
+      }
+    }
+    return out.length ? out : ACC_PARAM_VARIANTS.slice();
+  }
+
+  /*
+   * The control point's READ value: which measurement types this device offers.
+   *
+   * Worth doing before any negotiation, because it answers "does this device
+   * support ACC at all" without a START — and if the answer is no, no request
+   * shape or parameter value will ever work and the search should not run.
+   *
+   * UNVERIFIED LAYOUT. Read as [0x0F, featureBitmask, ...]: bit N set means
+   * measurement type N is available. `raw` is returned alongside so a real
+   * response can be read by eye instead of trusted, and `looksValid` says whether
+   * the leading marker was what we expected. Treat `types` as an inference.
+   */
+  const PMD_FEATURE_READ = 0x0f;
+  const PMD_TYPE_NAME = {
+    0: 'ECG', 1: 'PPG', 2: 'ACC', 3: 'PPI', 5: 'GYRO', 6: 'MAG',
+    9: 'SDK_MODE', 10: 'LOCATION', 11: 'PRESSURE', 12: 'TEMPERATURE',
+  };
+  function parseFeatures(view) {
+    if (!view || view.byteLength < 2) return null;
+    const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+    const raw = Array.from(b).map((x) => x.toString(16).padStart(2, '0')).join(' ');
+    const mask = b[1];
+    const types = [];
+    for (let bit = 0; bit < 8; bit++) {
+      if (mask & (1 << bit)) types.push(PMD_TYPE_NAME[bit] || `type${bit}`);
+    }
+    return { raw, looksValid: b[0] === PMD_FEATURE_READ, mask, types };
+  }
+
+  /*
+   * Control-point response codes.
+   *
+   * NOT from the transcribed spec — the PDF's error table is in an image. This is
+   * the enum from Polar's own SDK source, written down because "5" alone is
+   * unactionable, but it is UNVERIFIED and callers must keep showing the number.
+   * If a name here contradicts what the device actually does, believe the device.
+   */
+  const PMD_ERROR_NAMES = {
+    0: 'success',
+    1: 'invalid op code',
+    2: 'invalid measurement type',
+    3: 'not supported',
+    4: 'invalid length',
+    5: 'invalid parameter',
+    6: 'already in state',
+    7: 'invalid resolution',
+    8: 'invalid sample rate',
+    9: 'invalid range',
+    10: 'invalid MTU',
+    11: 'invalid number of channels',
+    12: 'invalid state',
+    13: 'device in charger',
+  };
+  // Always parenthesised and always alongside the number, so a wrong guess here
+  // can never be mistaken for the device's own words.
+  function describeError(code) {
+    const n = PMD_ERROR_NAMES[code];
+    return n ? `${code} (${n}?)` : String(code);
+  }
 
   function buildStopCommand(type = PMD_TYPE_ACC) {
     return new Uint8Array([PMD_CMD_STOP, type]);
+  }
+
+  function buildGetSettingsCommand(type = PMD_TYPE_ACC) {
+    return new Uint8Array([PMD_CMD_GET_SETTINGS, type]);
   }
 
   // Signed little-endian integer of `size` bytes.
@@ -618,7 +760,9 @@
     PMD_SERVICE, PMD_CONTROL, PMD_DATA, PMD_TYPE_ACC,
     PMD_CMD_GET_SETTINGS, PMD_CMD_START, PMD_CMD_STOP, PMD_RESPONSE,
     parseControlResponse, parseSettings, buildAccStartCommand, buildStopCommand,
-    ACC_START_VARIANTS,
+    buildGetSettingsCommand, parseFeatures, describeError, accStartSettingIds,
+    PMD_FEATURE_READ, PMD_TYPE_NAME, PMD_ERROR_NAMES,
+    ACC_START_VARIANTS, ACC_PARAM_VARIANTS, accParamCandidates,
     decodeAccFrame, signedLE, accelMagnitude, looksLikeGravity,
     resampleHr, breathSignal, breathPhaseNow,
     RR_UNIT_MS, RR_MIN_MS, RR_MAX_MS, RR_MAX_STEP_FRACTION, RSA_MIN_BPM,
