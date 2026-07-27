@@ -640,6 +640,69 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ a held voice note stores real audio (${out.seconds.toFixed(1)}s), releases the mic, and ignores fumbles`);
   }
 
+  // 15) THE WHOLE ROUND TRIP: record -> store -> panel -> download. The pieces are
+  //     tested separately; this is the one that fails if they do not meet.
+  {
+    const out = await page.evaluate(async () => {
+      const db = await Recorder.open({ name: 'zenbio-dl-' + Math.floor(performance.now()) });
+      recDb = db;
+      const started = Date.now() - 60000;
+      const sess = await Recorder.startSession(db, { startedAt: started });
+      for (let ch = 0; ch < 4; ch++) sess.pushEeg(ch, [ch + 0.5, ch + 1.5, ch + 2.5]);
+      sess.pushRow({ t: 0, calm: 0.13 });
+      sess.pushRow({ t: 1, calm: 0.9 });
+      await sess.addNote({ kind: 'mark', markKind: 'settling', text: 'dropped in', tSec: 30 });
+      await sess.addNote({ kind: 'voice', audio: new Blob([new Uint8Array([7, 7, 7])],
+        { type: 'audio/webm' }), mimeType: 'audio/webm', seconds: 3.2, tSec: 40 });
+      await sess.end();
+
+      // Open the real panel and read what it offers.
+      await openSessions();
+      const row = document.querySelector(`.sesRow[data-id="${sess.id}"]`);
+      const panel = {
+        visible: document.getElementById('summary').classList.contains('show'),
+        title: document.getElementById('summaryTitle').textContent,
+        rowText: row ? row.querySelector('.sesWhen').textContent : null,
+        hasDownload: !!(row && row.querySelector('[data-act="dl"]')),
+      };
+
+      // Intercept the download rather than actually saving a file.
+      let captured = null;
+      const realCreate = URL.createObjectURL;
+      URL.createObjectURL = (blob) => { captured = blob; return 'blob:stub'; };
+      const realClick = HTMLAnchorElement.prototype.click;
+      let filename = null;
+      HTMLAnchorElement.prototype.click = function () { filename = this.download; };
+      await downloadSession(db, sess.id);
+      URL.createObjectURL = realCreate;
+      HTMLAnchorElement.prototype.click = realClick;
+
+      const bytes = captured ? Array.from(new Uint8Array(await captured.arrayBuffer())) : null;
+      document.getElementById('summary').classList.remove('show');
+      await Recorder.deleteSession(db, sess.id);
+      db.close();
+      recDb = null;
+      return { panel, filename, size: bytes ? bytes.length : 0,
+        head: bytes ? bytes.slice(0, 4) : null, type: captured && captured.type };
+    });
+
+    assert.ok(out.panel.visible, 'the saved-sessions panel must open');
+    assert.strictEqual(out.panel.title, 'Saved sessions');
+    assert.ok(out.panel.hasDownload, 'each session must offer a download');
+    assert.match(out.panel.rowText, /\dm \ds/, `a row must show its duration (got "${out.panel.rowText}")`);
+    // The filename carries the date, which is what was asked for: a folder of these
+    // should be sortable and identifiable without opening any of them.
+    assert.match(out.filename, /^meditation-\d{4}-\d{2}-\d{2}-\d{4}\.zip$/,
+      `the download must be named with its date (got "${out.filename}")`);
+    assert.strictEqual(out.type, 'application/zip');
+    // PK\x03\x04 — a real local file header, so the browser produced an archive and
+    // not an empty or truncated blob.
+    assert.deepStrictEqual(out.head, [0x50, 0x4b, 0x03, 0x04],
+      'the blob must actually begin with a zip local file header');
+    assert.ok(out.size > 400, `the archive should contain real files (got ${out.size} bytes)`);
+    console.log(`✓ record -> store -> panel -> download works end to end (${out.filename}, ${out.size} bytes)`);
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

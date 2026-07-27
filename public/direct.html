@@ -94,6 +94,18 @@
   .rLabel em { font-style: normal; opacity: .45; font-size: 9px; letter-spacing: .04em; }
   #voiceNote.rec { background: rgba(255,90,90,.22); border-color: rgba(255,120,120,.6);
     color: #ffd9d9; }
+  #recDot { font: 11px/1.5 ui-monospace, monospace; color: rgba(255,150,150,.85);
+    align-self: center; letter-spacing: .03em; white-space: nowrap; }
+  #recDot.warn { color: #ffd27a; }
+  #recDot b { color: rgba(255,90,90,.95); }
+  /* Saved-session rows inside the summary overlay. */
+  .sesRow { display: flex; align-items: center; gap: 10px; padding: 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,.07); font-size: 13px; }
+  .sesRow .sesWhen { flex: 1; min-width: 0; }
+  .sesRow .sesMeta { opacity: .55; font-size: 11px; }
+  .sesRow button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
+    background: rgba(255,255,255,.09); color: inherit; border: 1px solid rgba(255,255,255,.16); }
+  .sesRow button.danger { opacity: .5; }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
@@ -313,6 +325,9 @@
       <!-- Hidden until the strap's accelerometer negotiation actually fails.
            It is a debugging affordance, not part of sitting down to meditate. -->
       <button id="copyStrapLog" class="secondary" hidden>copy strap log</button>
+      <!-- Recording is AUTOMATIC. This exists so that is visible rather than
+           merely true — at 5am nobody should be wondering whether it is on. -->
+      <span id="recDot" hidden></span>
     </div>
   </div>
   <div id="timerPicker"></div>
@@ -335,6 +350,7 @@
       <span class="pill" id="responseToggle">response: sensitive</span>
       <span class="pill" id="cueToggle">cues: on</span>
       <span class="pill" id="summaryLink">Session summary</span>
+      <span class="pill" id="sessionsLink">Saved sessions</span>
       <span class="pill" id="btnFull">Fullscreen<kbd>F</kbd></span>
     </div>
     <div id="hint"></div>
@@ -350,6 +366,7 @@
 <script src="markers.js"></script>
 <script src="polar.js"></script>
 <script src="record.js"></script>
+<script src="export.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -1958,6 +1975,143 @@ voiceBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); startVoice
 voiceBtn.addEventListener('pointerup', stopVoiceNote);
 voiceBtn.addEventListener('pointercancel', stopVoiceNote);
 voiceBtn.addEventListener('pointerleave', stopVoiceNote);
+
+/* --- Recording indicator + saved sessions ---------------------------------
+ *
+ * THE UX DECISION, stated once because it is the answer to "what do I have to
+ * remember": recording is AUTOMATIC and always on. There is no record button, no
+ * timer to set, and training mode has nothing to do with it — training mode is
+ * about markers and cues. You sit, you get up, the sit is saved. The only manual
+ * step is downloading, and that can happen days later.
+ *
+ * The indicator exists because "it saves automatically" is worth nothing if you
+ * cannot tell whether it is working. It shows elapsed time and megabytes, and it
+ * turns amber if a write failed or the browser is running out of room — the two
+ * ways a multi-day retreat could quietly stop recording.
+ */
+const recDotEl = document.getElementById('recDot');
+let recQuota = null;
+// Checked rarely: it is a real async call, and free space does not change fast.
+setInterval(async () => { recQuota = await Recorder.quota(); }, 60000);
+Recorder.quota().then((q) => { recQuota = q; });
+
+function renderRecDot() {
+  if (!recDotEl.isConnected) return;
+  if (recError) {
+    recDotEl.hidden = false;
+    recDotEl.className = 'warn';
+    recDotEl.textContent = `not recording — ${recError}`;
+    return;
+  }
+  if (!recSession) { recDotEl.hidden = true; return; }
+  const secs = Math.max(0, (Date.now() - recSession.meta.startedAt) / 1000);
+  const mb = recSession.bytes / 1e6;
+  const tight = recQuota && recQuota.fraction != null && recQuota.fraction > 0.9;
+  recDotEl.hidden = false;
+  recDotEl.className = (recSession.error || tight) ? 'warn' : '';
+  if (recSession.error) recDotEl.textContent = `write failed — ${recSession.error}`;
+  else if (tight) recDotEl.textContent = `storage nearly full — ${mb.toFixed(1)}MB saved`;
+  else {
+    recDotEl.innerHTML = `<b>\u25cf</b> rec ${Math.floor(secs / 60)}:`
+      + `${String(Math.floor(secs % 60)).padStart(2, '0')} \u00b7 ${mb.toFixed(1)}MB`;
+  }
+}
+setInterval(renderRecDot, 1000);
+
+// --- Saved sessions panel ---------------------------------------------------
+async function openSessions() {
+  summaryTitleEl.textContent = 'Saved sessions';
+  summaryEl.classList.add('show');
+  summaryBodyEl.innerHTML = '<p style="opacity:.6">reading\u2026</p>';
+  let db, list;
+  try {
+    db = recDb || await Recorder.open();
+    recDb = db;
+    list = await Recorder.listSessions(db);
+  } catch (err) {
+    summaryBodyEl.innerHTML = `<p>Could not open storage: ${escapeHtml((err && err.message) || 'unknown')}</p>`;
+    return;
+  }
+  if (!list.length) {
+    summaryBodyEl.innerHTML = '<p style="opacity:.7">Nothing saved yet. Connect the headband and'
+      + ' a session starts recording on its own \u2014 there is no record button.</p>';
+    return;
+  }
+  const q = recQuota;
+  const rows = list.map((m) => {
+    const d = new Date(m.startedAt);
+    const mins = Math.floor((m.durationSec || 0) / 60);
+    const secs = Math.round((m.durationSec || 0) % 60);
+    const live = recSession && recSession.id === m.id;
+    return `<div class="sesRow" data-id="${escapeHtml(m.id)}">`
+      + `<span class="sesWhen">${escapeHtml(d.toLocaleString())}`
+      + `<br><span class="sesMeta">${mins}m ${secs}s \u00b7 ${((m.bytes || 0) / 1e6).toFixed(1)}MB`
+      + `${live ? ' \u00b7 recording now' : (m.ended ? '' : ' \u00b7 interrupted')}</span></span>`
+      + `<button data-act="dl">Download .zip</button>`
+      + `<button data-act="rm" class="danger">Delete</button></div>`;
+  }).join('');
+  summaryBodyEl.innerHTML = rows
+    + `<p class="sesMeta" style="margin-top:14px">Each .zip holds the raw EEG, the`
+    + ` per-second scores as CSV, your voice notes as audio, and a markdown summary`
+    + ` with timestamps.${q && q.quotaBytes ? ` Using ${(q.usageBytes / 1e6).toFixed(0)}MB`
+      + ` of about ${(q.quotaBytes / 1e6).toFixed(0)}MB available.` : ''}</p>`;
+
+  summaryBodyEl.querySelectorAll('.sesRow button').forEach((btn) => {
+    btn.addEventListener('click', async () => {
+      const id = btn.closest('.sesRow').dataset.id;
+      if (btn.dataset.act === 'rm') {
+        // No confirm dialog for a live session — just refuse. Deleting the sit you
+        // are currently in is never what anyone meant.
+        if (recSession && recSession.id === id) {
+          setStatus('that session is still recording'); statusLockUntil = Date.now() + 2500; return;
+        }
+        await Recorder.deleteSession(db, id);
+        openSessions();
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = 'building\u2026';
+      try {
+        await downloadSession(db, id);
+        btn.textContent = 'Download .zip';
+      } catch (err) {
+        btn.textContent = 'failed';
+        setStatus(`export failed: ${escapeHtml((err && err.message) || 'unknown')}`);
+        statusLockUntil = Date.now() + 6000;
+      }
+      btn.disabled = false;
+    });
+  });
+}
+
+async function downloadSession(db, id) {
+  // Flush first: the session being exported may be the one still running, and
+  // up to a few seconds sit in memory between commits.
+  if (recSession && recSession.id === id) await recSession.flush();
+  const session = await Recorder.loadSession(db, id);
+  if (!session) throw new Error('session not found');
+  // Audio has to be read out of its Blobs before the archive can be built, since
+  // zip needs bytes rather than promises.
+  const audio = {};
+  for (const n of session.notes) {
+    if (n.kind !== 'voice' || !n.audio) continue;
+    audio[n.id] = new Uint8Array(await n.audio.arrayBuffer());
+  }
+  const { files } = Exporter.buildFiles(session, audio);
+  const bytes = Exporter.zip(files, { date: new Date(session.meta.startedAt) });
+  const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = Exporter.archiveName(session.meta);
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  // Revoked on a delay: revoking immediately can cancel the download in some
+  // browsers before it has actually started reading the blob.
+  setTimeout(() => URL.revokeObjectURL(url), 30000);
+}
+
+document.getElementById('sessionsLink').addEventListener('click', openSessions);
 
 setInterval(updateBreathing, 2000);
 
