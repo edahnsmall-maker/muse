@@ -703,6 +703,88 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ record -> store -> panel -> download works end to end (${out.filename}, ${out.size} bytes)`);
   }
 
+  // 16) TEXT NOTES: write, stamp or not, review, delete.
+  {
+    const out = await page.evaluate(async () => {
+      const db = await Recorder.open({ name: 'zenbio-notes-' + Math.floor(performance.now()) });
+      recDb = db;
+      sessionStartedAt = Date.now() - 90000;          // 1:30 into a sit
+      recSession = await Recorder.startSession(db, { startedAt: sessionStartedAt });
+
+      openNotes();
+      const box = document.getElementById('noteBox');
+      const anchorBox = document.getElementById('noteAnchor');
+
+      // Anchored note.
+      anchorBox.checked = true; anchorBox.dispatchEvent(new Event('change'));
+      box.value = 'a wave of something, hard to name';
+      await saveNote();
+
+      // General note about the whole sit.
+      anchorBox.checked = false; anchorBox.dispatchEvent(new Event('change'));
+      box.value = 'quiet day overall,\nvery little thinking';
+      await saveNote();
+      // Checked here, after a REAL save: the box clears so the next note can be
+      // typed straight away.
+      const cleared = box.value;
+
+      // A whitespace-only note must not be stored — and must NOT wipe the box
+      // either, since somebody mid-thought should not lose what they typed.
+      box.value = '   ';
+      await saveNote();
+      const keptAfterEmptySave = box.value;
+
+      await new Promise((r) => setTimeout(r, 120));
+      const items = Array.from(document.querySelectorAll('.noteItem')).map((el) => ({
+        when: el.querySelector('.noteWhen').textContent,
+        text: el.querySelector('.noteText').textContent,
+      }));
+
+      // Delete the newest.
+      document.querySelector('.noteItem .noteX').click();
+      await new Promise((r) => setTimeout(r, 150));
+      const afterDelete = document.querySelectorAll('.noteItem').length;
+
+      const stored = await Recorder.listNotes(db, recSession.id);
+      const anchoredNote = stored.find((n) => n.anchored === true);
+
+      // The toggle must be remembered across a reopen — it is a preference, and
+      // re-setting it every sit is exactly the friction that stops notes happening.
+      document.getElementById('summary').classList.remove('show');
+      openNotes();
+      const rememberedUnanchored = !document.getElementById('noteAnchor').checked;
+
+      document.getElementById('summary').classList.remove('show');
+      await recSession.end();
+      await Recorder.deleteSession(db, recSession.id);
+      db.close();
+      recSession = null; recDb = null; sessionStartedAt = null;
+      return { items, cleared, keptAfterEmptySave, afterDelete, stored: stored.length,
+        anchoredOffset: anchoredNote && anchoredNote.offsetSec,
+        rememberedUnanchored };
+    });
+
+    assert.strictEqual(out.items.length, 2,
+      `two notes should be listed, and a whitespace-only note must not save (got ${out.items.length})`);
+    // Newest first: the note you just wrote is the one you might want to remove.
+    assert.match(out.items[0].text, /quiet day overall/, 'newest note must be listed first');
+    assert.strictEqual(out.items[0].when, 'whole sit',
+      'an unanchored note must say so, not show a fake timestamp');
+    assert.match(out.items[1].when, /^0[12]:\d\d$/,
+      `an anchored note must show its clock time (got "${out.items[1].when}")`);
+    assert.ok(Math.abs(out.anchoredOffset - 90) < 3,
+      `and be stamped ~90s into the sit, on the shared session clock (got ${out.anchoredOffset})`);
+    // Multi-line text must survive as typed.
+    assert.match(out.items[0].text, /very little thinking/, 'newlines in a note must be kept');
+    assert.strictEqual(out.cleared, '', 'the box must clear after saving, ready for the next note');
+    assert.strictEqual(out.keptAfterEmptySave, '   ',
+      'but a rejected empty save must not destroy what was typed');
+    assert.strictEqual(out.afterDelete, 1, 'deleting a note must remove it from the list');
+    assert.strictEqual(out.stored, 1, 'and from storage, not just the display');
+    assert.ok(out.rememberedUnanchored, 'the stamp toggle must persist between openings');
+    console.log('✓ text notes save, stamp or not, list newest-first, and delete');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

@@ -190,10 +190,22 @@
     }
     L.push('');
 
-    if (notes.length) {
+    // General notes first: they describe the whole sit, so they read as preamble
+    // rather than as something that happened at minute 23.
+    const general = notes.filter((n) => n.anchored === false);
+    const timed = notes.filter((n) => n.anchored !== false);
+    if (general.length) {
+      L.push('## About this sit');
+      L.push('');
+      for (const n of general) {
+        if (n.text) L.push(n.text.split('\n').map((line) => `> ${line}`).join('\n'));
+        L.push('');
+      }
+    }
+    if (timed.length) {
       L.push('## Notes');
       L.push('');
-      for (const n of notes) {
+      for (const n of timed) {
         const at = new Date(n.at);
         const when = `${clock(n.offsetSec)} (${at.toLocaleTimeString()})`;
         if (n.kind === 'voice') {
@@ -205,14 +217,15 @@
           // anything written here by the app would be a guess about what was said.
           L.push('- Transcript: ');
         } else {
-          L.push(`### ${when} — ${n.markKind || 'mark'}`);
+          const label = n.kind === 'text' ? 'note' : (n.markKind || 'mark');
+          L.push(`### ${n.anchored === false ? at.toLocaleTimeString() : when} — ${label}`);
           L.push('');
-          if (n.text) L.push(`> ${n.text}`);
-          else L.push('_(no note)_');
+          if (n.text) L.push(n.text.split('\n').map((line) => `> ${line}`).join('\n'));
+          else L.push('_(no text)_');
         }
         L.push('');
       }
-    } else {
+    } else if (!general.length) {
       L.push('## Notes');
       L.push('');
       L.push('_none_');
@@ -290,25 +303,48 @@
     files.push({
       name: 'notes.csv',
       bytes: utf8(toCsv(notes.map((n) => ({
-        offsetSec: (n.offsetSec || 0).toFixed(2),
-        clock: clock(n.offsetSec),
+        // Blank rather than 0 for a general note: a note about the whole sit has no
+        // moment, and writing 0 would place it at the start, which is a claim.
+        offsetSec: n.anchored === false ? '' : (n.offsetSec || 0).toFixed(2),
+        clock: n.anchored === false ? '' : clock(n.offsetSec),
+        // The cross-check. epochMs is on every metrics row too, so alignment never
+        // depends on two files agreeing about where zero is.
+        epochMs: n.at,
         absoluteTime: new Date(n.at).toISOString(),
+        anchored: n.anchored === false ? 'no' : 'yes',
         kind: n.kind,
         markKind: n.markKind || '',
         seconds: n.seconds == null ? '' : n.seconds.toFixed(1),
         audioFile: noteFiles[n.id] || '',
         text: n.text || '',
         transcript: '',
-      })), ['offsetSec', 'clock', 'absoluteTime', 'kind', 'markKind', 'seconds',
-        'audioFile', 'text', 'transcript'])),
+      })), ['offsetSec', 'clock', 'epochMs', 'absoluteTime', 'anchored', 'kind',
+        'markKind', 'seconds', 'audioFile', 'text', 'transcript'])),
     });
     for (let ch = 0; ch < 4; ch++) {
       if (eeg[ch] && eeg[ch].length) files.push({ name: `eeg-ch${ch}.f32`, bytes: f32Bytes(eeg[ch]) });
     }
+    /* Every stream gets a time column, in the SAME units as metrics.csv's `t` and
+     * notes.csv's `offsetSec` — seconds from the session clock. Without one, lining
+     * a note up against chest motion means reconstructing the sample rate by hand
+     * and hoping no samples were dropped.
+     *
+     * Accelerometer time is derived from the index and the rate, so it is nominal:
+     * a dropped BLE notification shifts everything after it. RR time is cumulative,
+     * which is exact, because each interval IS a duration.
+     */
     if (acc.length) {
-      files.push({ name: 'acc.csv', bytes: utf8('x,y,z\n' + acc.map((s) => s.join(',')).join('\n') + '\n') });
+      const hz = meta.accHz || 50;
+      const lines = ['tSec,x,y,z'];
+      for (let i = 0; i < acc.length; i++) lines.push(`${(i / hz).toFixed(3)},${acc[i].join(',')}`);
+      files.push({ name: 'acc.csv', bytes: utf8(lines.join('\n') + '\n') });
     }
-    if (rr.length) files.push({ name: 'rr.csv', bytes: utf8('rrMs\n' + rr.join('\n') + '\n') });
+    if (rr.length) {
+      const lines = ['tSec,rrMs'];
+      let t = 0;
+      for (const ms of rr) { t += ms / 1000; lines.push(`${t.toFixed(3)},${ms}`); }
+      files.push({ name: 'rr.csv', bytes: utf8(lines.join('\n') + '\n') });
+    }
 
     // A README so the archive explains itself in a year's time, when nobody
     // remembers what a .f32 file is or what sample rate it was written at.

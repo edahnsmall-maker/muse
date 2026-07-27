@@ -97,6 +97,22 @@
   #recDot { font: 11px/1.5 ui-monospace, monospace; color: rgba(255,150,150,.85);
     align-self: center; letter-spacing: .03em; white-space: nowrap; }
   #recDot.warn { color: #ffd27a; }
+  /* Note composer, inside the overlay panel. */
+  #noteBox { width: 100%; min-height: 78px; resize: vertical; font: inherit; font-size: 13px;
+    padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
+    color: inherit; border: 1px solid rgba(255,255,255,.16); }
+  .noteBar { display: flex; align-items: center; gap: 10px; margin: 8px 0 16px; }
+  .noteBar .grow { flex: 1; }
+  .noteAnchor { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .8;
+    cursor: pointer; user-select: none; }
+  .noteItem { padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.07);
+    display: flex; gap: 10px; align-items: flex-start; font-size: 13px; }
+  .noteItem .noteWhen { font: 11px/1.6 ui-monospace, monospace; opacity: .55;
+    min-width: 62px; flex: none; }
+  .noteItem .noteText { flex: 1; white-space: pre-wrap; word-break: break-word; }
+  .noteItem .noteX { flex: none; cursor: pointer; opacity: .35; padding: 0 4px;
+    background: none; border: 0; color: inherit; font: inherit; }
+  .noteItem .noteX:hover { opacity: .9; }
   #recDot b { color: rgba(255,90,90,.95); }
   /* Saved-session rows inside the summary overlay. */
   .sesRow { display: flex; align-items: center; gap: 10px; padding: 8px 0;
@@ -345,6 +361,7 @@
       <span class="pill panelToggle active" id="btnMetrics">Metrics</span>
       <span class="pill panelToggle" id="btnFeed">Live feed</span>
       <span class="pill panelToggle" id="btnVisuals">Visuals</span>
+      <span class="pill" id="notesLink">Notes<kbd>N</kbd></span>
       <span class="pill" id="voiceNote">hold to speak<kbd>V</kbd></span>
       <span class="pill" id="trainToggle">training: off<kbd>T</kbd></span>
       <span class="pill" id="responseToggle">response: sensitive</span>
@@ -454,6 +471,7 @@ addEventListener('keydown', (e) => {
   }
   if (e.key === 'm' || e.key === 'M') { e.preventDefault(); openMarkPrompt(); }
   if ((e.key === 'v' || e.key === 'V') && !e.repeat) { startVoiceNote(); return; }
+  if (e.key === 'n' || e.key === 'N') { openNotes(); return; }
   if (e.key === 't' || e.key === 'T') setTrainingMode(!trainingMode);
   if (e.key === 'Escape') closeSummary();
 });
@@ -536,6 +554,26 @@ let sessionStartedAt = null;
  * an empty session, and so a browser without IndexedDB degrades to exactly the
  * old behaviour rather than failing to start.
  */
+/*
+ * THE SESSION CLOCK. One origin, set once, used by everything that records a time.
+ *
+ * There were three origins before this, and they did not agree: `metrics.csv`
+ * counted from the first successful FFT, notes counted from the first raw sample,
+ * and voice notes used a third expression. Raw samples arrive before the first
+ * window has filled, so the CSV and the notes were offset from each other by an
+ * amount nobody had measured — which would have quietly corrupted every attempt to
+ * line a note up against what the signal was doing.
+ *
+ * Every exported row also carries ABSOLUTE epoch milliseconds, so alignment never
+ * depends on two files agreeing about an origin. If the offsets ever disagree
+ * again, the absolute times still align, and the disagreement is visible.
+ */
+function sessionClock() {
+  if (sessionStartedAt == null) sessionStartedAt = Date.now();
+  return sessionStartedAt;
+}
+function sessionTSec(at) { return ((at || Date.now()) - sessionClock()) / 1000; }
+
 let recDb = null;
 let recSession = null;
 let recStarting = false;
@@ -549,7 +587,7 @@ async function ensureRecording() {
     // Ask not to be evicted before a multi-day retreat, not after.
     await Recorder.persist();
     recSession = await Recorder.startSession(recDb, {
-      startedAt: sessionStartedAt || Date.now(),
+      startedAt: sessionClock(),
       userAgent: navigator.userAgent,
     });
   } catch (err) {
@@ -568,9 +606,12 @@ const summaryBodyEl = document.getElementById('summaryBody');
 const summaryTitleEl = document.getElementById('summaryTitle');
 
 function logSessionSample(result, channels) {
-  if (sessionStartedAt == null) sessionStartedAt = Date.now();
+  const now = Date.now();
   const row = {
-    t: (Date.now() - sessionStartedAt) / 1000,
+    t: (now - sessionClock()) / 1000,
+    // Absolute time on every row, so notes and metrics can be aligned by wall
+    // clock rather than by trusting two files to share an origin.
+    epochMs: now,
     calm: result.calm,
     noise: result.artifactRate,
     levels: channels.map((c) => (c.pct == null ? null : c.pct)),
@@ -1951,7 +1992,7 @@ async function startVoiceNote() {
         return;
       }
       await recSession.addNote({ kind: 'voice', audio: blob,
-        mimeType: blob.type, seconds: secs, tSec: (Date.now() - (sessionStartedAt || Date.now())) / 1000 });
+        mimeType: blob.type, seconds: secs, tSec: sessionTSec() });
       setStatus(`voice note saved (${secs.toFixed(0)}s)`);
       statusLockUntil = Date.now() + 1800;
     });
@@ -2110,6 +2151,107 @@ async function downloadSession(db, id) {
   // browsers before it has actually started reading the blob.
   setTimeout(() => URL.revokeObjectURL(url), 30000);
 }
+
+/* --- Notes panel: write, review, delete ------------------------------------
+ *
+ * Typed notes rather than voice, by request, for a retreat where the plan is a few
+ * reflections per sit rather than moment-by-moment capture. This removes the
+ * transcription problem entirely: text is already searchable and already aligned.
+ * Voice stays available for when talking is easier than typing.
+ *
+ * THE ANCHOR TOGGLE. A note is either about a MOMENT or about the SIT. Anchored is
+ * the default because it is the useful case for finding patterns later — it pins the
+ * note to a point in the signal. Unanchored notes are exported with a BLANK offset
+ * rather than 0, because writing 0 would place a reflection about the whole sit at
+ * its opening second, which is a claim nobody made.
+ */
+const noteAnchoredKey = 'zenbio.noteAnchored';
+let noteAnchored = localStorage.getItem(noteAnchoredKey) !== 'false';
+
+function openNotes() {
+  summaryTitleEl.textContent = 'Notes';
+  summaryEl.classList.add('show');
+  const tSec = recSession ? sessionTSec() : null;
+  summaryBodyEl.innerHTML = `<textarea id="noteBox" placeholder="What's happening? (Ctrl+Enter to save)"></textarea>`
+    + `<div class="noteBar"><label class="noteAnchor"><input type="checkbox" id="noteAnchor"`
+    + `${noteAnchored ? ' checked' : ''}> stamp it at `
+    + `<b id="noteStamp">${tSec == null ? '—' : Exporter.clock(tSec)}</b></label>`
+    + `<span class="grow"></span><button id="noteSave">Save note</button></div>`
+    + `<div id="noteList"><p style="opacity:.6">reading\u2026</p></div>`;
+
+  const box = document.getElementById('noteBox');
+  const anchorBox = document.getElementById('noteAnchor');
+  const stampEl = document.getElementById('noteStamp');
+  // The stamp is the time the note is SAVED, so it has to keep counting while the
+  // note is being typed rather than freezing at the moment the panel opened.
+  const tick = setInterval(() => {
+    if (!stampEl.isConnected) { clearInterval(tick); return; }
+    stampEl.textContent = recSession ? Exporter.clock(sessionTSec()) : '\u2014';
+  }, 1000);
+  anchorBox.addEventListener('change', () => {
+    noteAnchored = anchorBox.checked;
+    localStorage.setItem(noteAnchoredKey, String(noteAnchored));
+  });
+  box.addEventListener('keydown', (e) => {
+    // Ctrl/Cmd+Enter saves; plain Enter must keep making paragraphs.
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveNote(); }
+  });
+  document.getElementById('noteSave').addEventListener('click', saveNote);
+  box.focus();
+  renderNoteList();
+}
+
+async function saveNote() {
+  const box = document.getElementById('noteBox');
+  if (!box) return;
+  const text = box.value.trim();
+  if (!text) return;
+  await ensureRecording();
+  if (!recSession) {
+    setStatus(`not saved — recording unavailable (${escapeHtml(recError || 'no session')})`);
+    statusLockUntil = Date.now() + 6000;
+    return;
+  }
+  await recSession.addNote({ kind: 'text', text, anchored: noteAnchored, tSec: sessionTSec() });
+  box.value = '';
+  box.focus();
+  renderNoteList();
+  setStatus('note saved');
+  statusLockUntil = Date.now() + 1400;
+}
+
+async function renderNoteList() {
+  const list = document.getElementById('noteList');
+  if (!list) return;
+  if (!recSession) {
+    list.innerHTML = '<p style="opacity:.6">No session recording yet — connect the headband,'
+      + ' or write a note anyway and it will start one.</p>';
+    return;
+  }
+  const notes = await Recorder.listNotes(recDb, recSession.id);
+  if (!notes.length) { list.innerHTML = '<p style="opacity:.6">No notes in this sit yet.</p>'; return; }
+  // Newest first: the note you just wrote is the one you might want to remove.
+  list.innerHTML = notes.slice().reverse().map((n) => {
+    const when = n.anchored === false ? 'whole sit' : Exporter.clock(n.offsetSec);
+    const body = n.kind === 'voice'
+      ? `<em style="opacity:.7">voice note, ${(n.seconds || 0).toFixed(0)}s</em>`
+      : escapeHtml(n.text || '(empty)');
+    return `<div class="noteItem" data-id="${n.id}"><span class="noteWhen">${escapeHtml(when)}</span>`
+      + `<span class="noteText">${body}</span>`
+      + `<button class="noteX" title="delete this note">\u00d7</button></div>`;
+  }).join('');
+  list.querySelectorAll('.noteX').forEach((x) => {
+    x.addEventListener('click', async () => {
+      const id = Number(x.closest('.noteItem').dataset.id);
+      // No confirmation dialog: the list is right there, and re-typing a lost note
+      // is a smaller cost than a modal in the middle of a sit.
+      await Recorder.deleteNote(recDb, id);
+      renderNoteList();
+    });
+  });
+}
+
+document.getElementById('notesLink').addEventListener('click', openNotes);
 
 document.getElementById('sessionsLink').addEventListener('click', openSessions);
 

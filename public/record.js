@@ -193,8 +193,13 @@
         // against millions of samples — so it is never worth risking one to save a
         // transaction.
         const tx = db.transaction([STORE_NOTES], 'readwrite');
+        const at = Date.now();
         const rec = Object.assign({
-          sessionId: id, at: Date.now(), offsetSec: offsetSec(Date.now()),
+          sessionId: id, at,
+          // Same origin as every metrics row: meta.startedAt IS the session clock.
+          // A note may deliberately have no offset (a general note about the whole
+          // sit rather than a moment), which is why null is allowed through.
+          offsetSec: offsetSec(at),
         }, note);
         const req = tx.objectStore(STORE_NOTES).add(rec);
         const key = await promisify(req);
@@ -261,6 +266,22 @@
     return { meta, eeg, acc, rr, rows, notes: notes.sort((a, b) => a.at - b.at) };
   }
 
+  // Remove a single note. Needed because a typed note is written the moment it is
+  // saved, so changing your mind about one has to be possible afterwards.
+  async function deleteNote(db, noteId) {
+    const tx = db.transaction([STORE_NOTES], 'readwrite');
+    tx.objectStore(STORE_NOTES).delete(noteId);
+    await txDone(tx);
+  }
+
+  // The notes for one session, oldest first. Read on its own rather than via
+  // loadSession, which also pulls megabytes of EEG that a notes list has no use for.
+  async function listNotes(db, sessionId) {
+    const tx = db.transaction([STORE_NOTES], 'readonly');
+    const notes = await promisify(tx.objectStore(STORE_NOTES).index('bySession').getAll(sessionId));
+    return notes.sort((a, b) => a.at - b.at);
+  }
+
   async function deleteSession(db, sessionId) {
     const tx = db.transaction([STORE_CHUNKS, STORE_SESSIONS, STORE_NOTES], 'readwrite');
     tx.objectStore(STORE_SESSIONS).delete(sessionId);
@@ -300,6 +321,7 @@
 
   return {
     open, startSession, listSessions, loadSession, deleteSession, quota, persist,
+    deleteNote, listNotes,
     DB_NAME, DB_VERSION, FLUSH_MS,
     STORE_SESSIONS, STORE_CHUNKS, STORE_NOTES,
   };

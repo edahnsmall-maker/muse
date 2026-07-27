@@ -137,11 +137,79 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
     'the summary must report what the app claimed at the time, so it can be audited');
 
   const notesCsv = Buffer.from(files.find((f) => f.name === 'notes.csv').bytes).toString('utf8');
-  assert.match(notesCsv, /^offsetSec,clock,absoluteTime,kind,markKind,seconds,audioFile,text,transcript$/m,
+  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,seconds,audioFile,text,transcript$/m,
     'notes.csv must expose an empty transcript column for the transcription step');
   assert.match(notesCsv, /2026-07-27T13:12:30\.000Z|2026-07-27T06:12:30/,
     'and an absolute timestamp, so notes can be aligned to an external recording');
   assert.ok(notesCsv.trim().split('\n').length === 3, 'one header plus one row per note');
+
+  /* THE SKEW TEST. metrics.csv `t` and notes.csv `offsetSec` must share an origin.
+   *
+   * They did not: `t` counted from the first successful FFT and `offsetSec` from
+   * the first raw sample, which arrives earlier. Notes were therefore offset from
+   * the signal by an unmeasured amount, which would have quietly corrupted every
+   * attempt to line a note up against what the brain was doing — the entire point
+   * of taking notes. Checked here at the export boundary, where the two columns
+   * meet, using one event stamped once.
+   */
+  {
+    const t0 = new Date('2026-07-27T06:00:00').getTime();
+    const at = t0 + 123456;                       // 123.456s into the sit
+    const { files: f } = Exporter.buildFiles({
+      meta: { startedAt: t0, durationSec: 300, bytes: 1, ended: true },
+      eeg: [[], [], [], []], acc: [], rr: [],
+      rows: [{ t: (at - t0) / 1000, epochMs: at, calm: 0.5 }],
+      notes: [{ id: 9, kind: 'text', at, offsetSec: (at - t0) / 1000, text: 'now' }],
+    }, {});
+    const metricsRow = Buffer.from(f.find((x) => x.name === 'metrics.csv').bytes)
+      .toString('utf8').trim().split('\n')[1].split(',');
+    const noteRow = Buffer.from(f.find((x) => x.name === 'notes.csv').bytes)
+      .toString('utf8').trim().split('\n')[1].split(',');
+    const metricsCols = Buffer.from(f.find((x) => x.name === 'metrics.csv').bytes)
+      .toString('utf8').split('\n')[0].split(',');
+    const mT = parseFloat(metricsRow[metricsCols.indexOf('t')]);
+    const mEpoch = parseFloat(metricsRow[metricsCols.indexOf('epochMs')]);
+    const nOffset = parseFloat(noteRow[0]);
+    const nEpoch = parseFloat(noteRow[2]);
+    assert.ok(Math.abs(mT - nOffset) < 0.01,
+      `a note and a metrics row at the SAME instant must land at the same offset (${mT} vs ${nOffset})`);
+    assert.strictEqual(mEpoch, nEpoch,
+      'and carry the same absolute epoch, so alignment never depends on a shared origin');
+    assert.strictEqual(mEpoch, at, 'absolute time must be the real wall clock, not a derived guess');
+  }
+
+  // A general note (one about the whole sit rather than a moment) must NOT be
+  // placed at 0. Writing 0 would put it at the start of the sit, which is a claim.
+  {
+    const { files: f } = Exporter.buildFiles({
+      meta: { startedAt: Date.now(), durationSec: 60, bytes: 1, ended: true },
+      eeg: [[], [], [], []], acc: [], rr: [], rows: [],
+      notes: [{ id: 1, kind: 'text', at: Date.now(), offsetSec: 12, anchored: false, text: 'quiet day' }],
+    }, {});
+    const csv = Buffer.from(f.find((x) => x.name === 'notes.csv').bytes).toString('utf8');
+    const row = csv.trim().split('\n')[1].split(',');
+    assert.strictEqual(row[0], '', 'a general note must have a BLANK offset, not 0');
+    assert.strictEqual(row[4], 'no', 'and be marked as not anchored to a moment');
+    const md = Buffer.from(f.find((x) => x.name === 'session.md').bytes).toString('utf8');
+    assert.match(md, /## About this sit[\s\S]*quiet day/,
+      'a general note reads as preamble, not as something that happened at minute 0');
+  }
+
+  // Time columns on the other streams, in the same units as everything else.
+  {
+    const { files: f } = Exporter.buildFiles({
+      meta: { startedAt: Date.now(), durationSec: 10, bytes: 1, ended: true, accHz: 50 },
+      eeg: [[], [], [], []],
+      acc: [[1000, 0, 0], [1001, 0, 0], [1002, 0, 0]],
+      rr: [800, 900], rows: [], notes: [],
+    }, {});
+    const accCsv = Buffer.from(f.find((x) => x.name === 'acc.csv').bytes).toString('utf8');
+    assert.strictEqual(accCsv, 'tSec,x,y,z\n0.000,1000,0,0\n0.020,1001,0,0\n0.040,1002,0,0\n',
+      'accelerometer rows must carry a time in seconds at the declared rate');
+    const rrCsv = Buffer.from(f.find((x) => x.name === 'rr.csv').bytes).toString('utf8');
+    assert.strictEqual(rrCsv, 'tSec,rrMs\n0.800,800\n1.700,900\n',
+      'RR time is cumulative, because each interval IS a duration');
+  }
 
   // Raw EEG must be binary, not text: 40 minutes at 256Hz is 2.4M samples, past
   // Excel's row limit and a 60MB text file.
