@@ -1,0 +1,306 @@
+/*
+ * Durable session recording.
+ *
+ * WHY THIS EXISTS. Until this file, nothing was saved. `sessionLog` was an
+ * in-memory array, raw EEG was a 2-second rolling buffer, and a page reload — or
+ * a phone locking its screen — destroyed the entire sit. That is fine for an
+ * afternoon of development and unacceptable for a retreat, where the interesting
+ * moment happens once and is not repeatable.
+ *
+ * TWO DESIGN COMMITMENTS, both learned the hard way elsewhere in this project:
+ *
+ * 1. SAVE THE RAW SIGNAL, not just the derived scores. Every composite in
+ *    metrics.js is going to change — that is what the validation work is for — and
+ *    a session stored as "calm: 0.62" is worthless the moment the calm formula
+ *    moves. Raw EEG at 256Hz is about 10MB for a 40-minute sit, which is nothing,
+ *    and everything else can be recomputed from it forever.
+ *
+ * 2. FLUSH AS YOU GO. Anything held in memory until the end of the session is
+ *    lost by whatever ends the session unexpectedly, which on a phone is the
+ *    common case rather than the exception. Chunks are committed every few
+ *    seconds, so a crash costs seconds rather than the sit.
+ *
+ * Storage is IndexedDB, not localStorage: localStorage caps out around 5MB, is
+ * synchronous (so writing to it stutters the render loop), and cannot hold a
+ * typed array or a Blob without base64-inflating it by a third. IndexedDB
+ * structured-clones Float32Array and Blob natively, at their real size.
+ */
+(function (root, factory) {
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
+  else root.Recorder = factory();
+})(typeof window !== 'undefined' ? window : globalThis, function () {
+
+  const DB_NAME = 'zenbio';
+  const DB_VERSION = 1;
+  // Object stores. `chunks` is the bulk of it, keyed [sessionId, seq] so a whole
+  // session reads back in order with one cursor and no sorting.
+  const STORE_SESSIONS = 'sessions';
+  const STORE_CHUNKS = 'chunks';
+  const STORE_NOTES = 'notes';
+
+  // How often buffered samples are committed. 4s is the trade: shorter means more
+  // transactions competing with the render loop, longer means more lost on a
+  // crash. At 256Hz x 4 channels a 4s chunk is 16KB, which is a comfortable size
+  // for a single structured clone.
+  const FLUSH_MS = 4000;
+
+  function promisify(req) {
+    return new Promise((resolve, reject) => {
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('IndexedDB request failed'));
+    });
+  }
+
+  function txDone(tx) {
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('IndexedDB transaction failed'));
+      tx.onabort = () => reject(tx.error || new Error('IndexedDB transaction aborted'));
+    });
+  }
+
+  function open({ name = DB_NAME, indexedDB = null } = {}) {
+    const idb = indexedDB || (typeof globalThis !== 'undefined' ? globalThis.indexedDB : null);
+    if (!idb) return Promise.reject(new Error('IndexedDB is not available'));
+    return new Promise((resolve, reject) => {
+      const req = idb.open(name, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_SESSIONS)) {
+          db.createObjectStore(STORE_SESSIONS, { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains(STORE_CHUNKS)) {
+          db.createObjectStore(STORE_CHUNKS, { keyPath: ['sessionId', 'seq'] });
+        }
+        if (!db.objectStoreNames.contains(STORE_NOTES)) {
+          // Voice notes and text notes both live here, keyed by their own id, with
+          // an index on session so a sit's labels read back together.
+          const s = db.createObjectStore(STORE_NOTES, { keyPath: 'id', autoIncrement: true });
+          s.createIndex('bySession', 'sessionId');
+        }
+      };
+      req.onsuccess = () => resolve(req.result);
+      req.onerror = () => reject(req.error || new Error('could not open the database'));
+    });
+  }
+
+  /*
+   * A recording in progress.
+   *
+   * `startedAt` is an ABSOLUTE wall-clock time, and every sample offset is
+   * relative to it. That combination is what lets a voice note recorded on a phone
+   * be aligned afterwards against a CSV recorded by a different app on the same
+   * phone — the fallback path for iOS, where Web Bluetooth may not be available at
+   * all. Storing only relative time would make that alignment impossible.
+   */
+  function Session(db, id, meta) {
+    let seq = 0;
+    let ended = false;
+    // Pending samples per stream, flushed together so one timer serves all of them.
+    const pending = { eeg: [[], [], [], []], acc: [], rr: [], row: [] };
+    let bytesWritten = 0;
+    let lastFlushAt = meta.startedAt;
+    let flushError = null;
+
+    function offsetSec(at) { return (at - meta.startedAt) / 1000; }
+
+    /*
+     * Commit whatever has accumulated.
+     *
+     * EEG is stored as Float32Array rather than a plain array: it is a quarter the
+     * memory, it structured-clones without conversion, and it is the layout any
+     * later analysis wants. The other streams are small and stay as objects, where
+     * being self-describing is worth more than the bytes.
+     */
+    async function flush() {
+      if (ended) return 0;
+      const chunks = [];
+      const at = Date.now();
+      for (let ch = 0; ch < 4; ch++) {
+        if (!pending.eeg[ch].length) continue;
+        chunks.push({
+          sessionId: id, seq: seq++, kind: 'eeg', channel: ch,
+          t0: offsetSec(lastFlushAt), hz: meta.eegHz || 256,
+          data: Float32Array.from(pending.eeg[ch]),
+        });
+        pending.eeg[ch] = [];
+      }
+      for (const kind of ['acc', 'rr', 'row']) {
+        if (!pending[kind].length) continue;
+        chunks.push({
+          sessionId: id, seq: seq++, kind,
+          t0: offsetSec(lastFlushAt), data: pending[kind].slice(),
+        });
+        pending[kind] = [];
+      }
+      lastFlushAt = at;
+      if (!chunks.length) return 0;
+      try {
+        const tx = db.transaction([STORE_CHUNKS, STORE_SESSIONS], 'readwrite');
+        const store = tx.objectStore(STORE_CHUNKS);
+        for (const c of chunks) {
+          store.put(c);
+          bytesWritten += c.data instanceof Float32Array
+            ? c.data.byteLength : JSON.stringify(c.data).length;
+        }
+        // Keep the session row current on every flush, so a session interrupted by
+        // a crash still reports an honest duration and size rather than looking
+        // like it never started.
+        tx.objectStore(STORE_SESSIONS).put(Object.assign({}, meta, {
+          id, bytes: bytesWritten, durationSec: offsetSec(at), ended: false,
+        }));
+        await txDone(tx);
+        flushError = null;
+      } catch (err) {
+        // A failed flush must NEVER take down the session. Losing four seconds of
+        // recording is bad; losing the sit because the disk was briefly full is
+        // worse. The error is remembered so the UI can say so.
+        flushError = (err && err.message) || 'write failed';
+        return 0;
+      }
+      return chunks.length;
+    }
+
+    const timer = setInterval(() => { flush(); }, FLUSH_MS);
+
+    return {
+      id,
+      get meta() { return meta; },
+      get bytes() { return bytesWritten; },
+      get error() { return flushError; },
+      // Raw EEG, per channel, exactly as it arrives from the headband.
+      pushEeg(channel, samples) {
+        if (ended || channel < 0 || channel > 3) return;
+        const buf = pending.eeg[channel];
+        for (let i = 0; i < samples.length; i++) buf.push(samples[i]);
+      },
+      pushAcc(samples) {
+        if (ended) return;
+        for (const s of samples) pending.acc.push([s.x, s.y, s.z]);
+      },
+      pushRr(values) {
+        if (ended) return;
+        for (const v of values) pending.rr.push(v);
+      },
+      // The 1Hz derived row. Kept even though it is recomputable, because it is
+      // tiny and it records what the app BELIEVED at the time — which is the thing
+      // to compare against when a formula later changes.
+      pushRow(row) { if (!ended) pending.row.push(row); },
+      flush,
+      async addNote(note) {
+        // Notes are written immediately rather than buffered. A label is the
+        // scarcest thing in this whole system — there are a few dozen per retreat
+        // against millions of samples — so it is never worth risking one to save a
+        // transaction.
+        const tx = db.transaction([STORE_NOTES], 'readwrite');
+        const rec = Object.assign({
+          sessionId: id, at: Date.now(), offsetSec: offsetSec(Date.now()),
+        }, note);
+        const req = tx.objectStore(STORE_NOTES).add(rec);
+        const key = await promisify(req);
+        await txDone(tx);
+        return key;
+      },
+      async end() {
+        if (ended) return;
+        await flush();
+        ended = true;
+        clearInterval(timer);
+        const tx = db.transaction([STORE_SESSIONS], 'readwrite');
+        tx.objectStore(STORE_SESSIONS).put(Object.assign({}, meta, {
+          id, bytes: bytesWritten, durationSec: offsetSec(Date.now()), ended: true,
+        }));
+        await txDone(tx);
+      },
+    };
+  }
+
+  async function startSession(db, meta = {}) {
+    const startedAt = meta.startedAt || Date.now();
+    // A time-ordered id, so listing sessions needs no sort and two sessions
+    // started in the same millisecond cannot collide.
+    const id = `${new Date(startedAt).toISOString().replace(/[:.]/g, '-')}-${Math.floor(startedAt % 1000)}`;
+    const full = Object.assign({ startedAt, eegHz: 256, accHz: 50 }, meta, { startedAt });
+    const tx = db.transaction([STORE_SESSIONS], 'readwrite');
+    tx.objectStore(STORE_SESSIONS).put(Object.assign({}, full, {
+      id, bytes: 0, durationSec: 0, ended: false,
+    }));
+    await txDone(tx);
+    return Session(db, id, full);
+  }
+
+  async function listSessions(db) {
+    const tx = db.transaction([STORE_SESSIONS], 'readonly');
+    const all = await promisify(tx.objectStore(STORE_SESSIONS).getAll());
+    return all.sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  /*
+   * Read a session back whole: chunks reassembled per stream, plus its notes.
+   *
+   * Chunks are concatenated in `seq` order rather than by their `t0`, because seq
+   * is the order they were written and t0 is derived from a clock that can jump.
+   */
+  async function loadSession(db, sessionId) {
+    const tx = db.transaction([STORE_CHUNKS, STORE_SESSIONS, STORE_NOTES], 'readonly');
+    const meta = await promisify(tx.objectStore(STORE_SESSIONS).get(sessionId));
+    if (!meta) return null;
+    const range = IDBKeyRange.bound([sessionId, -Infinity], [sessionId, Infinity]);
+    const chunks = await promisify(tx.objectStore(STORE_CHUNKS).getAll(range));
+    const notes = await promisify(tx.objectStore(STORE_NOTES).index('bySession').getAll(sessionId));
+    chunks.sort((a, b) => a.seq - b.seq);
+
+    const eeg = [[], [], [], []];
+    const acc = [], rr = [], rows = [];
+    for (const c of chunks) {
+      if (c.kind === 'eeg') { const d = c.data; for (let i = 0; i < d.length; i++) eeg[c.channel].push(d[i]); }
+      else if (c.kind === 'acc') acc.push(...c.data);
+      else if (c.kind === 'rr') rr.push(...c.data);
+      else if (c.kind === 'row') rows.push(...c.data);
+    }
+    return { meta, eeg, acc, rr, rows, notes: notes.sort((a, b) => a.at - b.at) };
+  }
+
+  async function deleteSession(db, sessionId) {
+    const tx = db.transaction([STORE_CHUNKS, STORE_SESSIONS, STORE_NOTES], 'readwrite');
+    tx.objectStore(STORE_SESSIONS).delete(sessionId);
+    tx.objectStore(STORE_CHUNKS).delete(IDBKeyRange.bound([sessionId, -Infinity], [sessionId, Infinity]));
+    const idx = tx.objectStore(STORE_NOTES).index('bySession');
+    const keys = await promisify(idx.getAllKeys(sessionId));
+    for (const k of keys) tx.objectStore(STORE_NOTES).delete(k);
+    await txDone(tx);
+  }
+
+  /*
+   * How much room is left, as the browser sees it.
+   *
+   * Reported rather than assumed. Quotas differ enormously between platforms, and
+   * iOS has historically been both smaller and willing to evict — so the app needs
+   * to be able to warn before a multi-day retreat quietly stops recording, instead
+   * of discovering it afterwards.
+   */
+  async function quota() {
+    if (typeof navigator === 'undefined' || !navigator.storage || !navigator.storage.estimate) {
+      return null;
+    }
+    const est = await navigator.storage.estimate();
+    return {
+      usageBytes: est.usage || 0,
+      quotaBytes: est.quota || 0,
+      fraction: est.quota ? (est.usage || 0) / est.quota : null,
+    };
+  }
+
+  // Ask the browser not to evict this data under pressure. Best-effort: it can be
+  // refused, and a refusal is not an error worth surfacing mid-session.
+  async function persist() {
+    if (typeof navigator === 'undefined' || !navigator.storage || !navigator.storage.persist) return false;
+    try { return await navigator.storage.persist(); } catch (e) { return false; }
+  }
+
+  return {
+    open, startSession, listSessions, loadSession, deleteSession, quota, persist,
+    DB_NAME, DB_VERSION, FLUSH_MS,
+    STORE_SESSIONS, STORE_CHUNKS, STORE_NOTES,
+  };
+});

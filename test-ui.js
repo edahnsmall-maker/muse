@@ -453,6 +453,193 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log('✓ the strap log is hidden when healthy, offered on refusal, and carries the bytes');
   }
 
+  // 13) DURABLE RECORDING. Until this existed, a page reload destroyed the whole
+  //     sit, and raw EEG was never kept at all — only a 2-second rolling buffer.
+  //     For a retreat, where the interesting moment happens once, that is the
+  //     difference between having data and not.
+  {
+    const out = await page.evaluate(async () => {
+      // A private database per run, so the test never touches real sessions.
+      const name = 'zenbio-test-' + Math.floor(performance.now());
+      const db = await Recorder.open({ name });
+      const started = Date.now();
+      const sess = await Recorder.startSession(db, { startedAt: started, note: 'test sit' });
+
+      // Feed each stream something identifiable, across more than one flush, so
+      // reassembly across chunk boundaries is exercised rather than assumed.
+      const expected = [[], [], [], []];
+      for (let round = 0; round < 3; round++) {
+        for (let ch = 0; ch < 4; ch++) {
+          const block = [];
+          for (let i = 0; i < 256; i++) block.push(ch * 1000 + round * 256 + i);
+          sess.pushEeg(ch, block);
+          expected[ch].push(...block);
+        }
+        sess.pushAcc([{ x: 1, y: 2, z: 3 }, { x: 4, y: 5, z: 6 }]);
+        sess.pushRr([812, 799]);
+        sess.pushRow({ t: round, calm: 0.5 + round / 10 });
+        await sess.flush();
+      }
+      const noteKey = await sess.addNote({ kind: 'text', text: 'something is happening' });
+
+      // NOT calling end(): this is the crash case. A phone that locks its screen
+      // or a tab that gets evicted never gets to run cleanup, so everything
+      // flushed so far must already be durable on its own.
+      const crash = await Recorder.loadSession(db, sess.id);
+
+      await sess.end();
+      const clean = await Recorder.loadSession(db, sess.id);
+      const list = await Recorder.listSessions(db);
+
+      // Raw fidelity: a float that survives storage must come back bit-identical,
+      // because everything downstream will be recomputed from it.
+      const eegOk = clean.eeg.every((chan, ch) =>
+        chan.length === expected[ch].length && chan.every((v, i) => v === expected[ch][i]));
+
+      const q = await Recorder.quota();
+      await Recorder.deleteSession(db, sess.id);
+      const afterDelete = await Recorder.loadSession(db, sess.id);
+      db.close();
+      return {
+        crashSamples: crash.eeg[0].length,
+        crashNotes: crash.notes.length,
+        eegOk,
+        lengths: clean.eeg.map((c) => c.length),
+        accFirst: clean.acc[0], accCount: clean.acc.length,
+        rrCount: clean.rr.length, rowCount: clean.rows.length,
+        noteText: clean.notes[0] && clean.notes[0].text,
+        noteHasAbsoluteTime: !!(clean.notes[0] && clean.notes[0].at > 1e12),
+        noteOffsetIsNumber: typeof (clean.notes[0] || {}).offsetSec === 'number',
+        noteKey: noteKey != null,
+        ended: clean.meta.ended, bytes: clean.meta.bytes,
+        listed: list.length >= 1,
+        deleted: afterDelete === null,
+        quota: q ? Math.round(q.quotaBytes / 1e6) : null,
+      };
+    });
+
+    // The crash case first, because it is the one that matters at a retreat.
+    assert.strictEqual(out.crashSamples, 768,
+      `a session interrupted WITHOUT end() must still hold everything flushed (got ${out.crashSamples} of 768 samples)`);
+    assert.strictEqual(out.crashNotes, 1,
+      'a label must be durable the moment it is made, not at the end of the sit');
+
+    assert.ok(out.eegOk, 'raw EEG must round-trip bit-identically across chunk boundaries');
+    assert.deepStrictEqual(out.lengths, [768, 768, 768, 768], 'all four channels must survive');
+    assert.deepStrictEqual(out.accFirst, [1, 2, 3], 'accelerometer samples must keep their axes');
+    assert.strictEqual(out.accCount, 6);
+    assert.strictEqual(out.rrCount, 6);
+    assert.strictEqual(out.rowCount, 3);
+    assert.strictEqual(out.noteText, 'something is happening');
+    // Absolute time is what lets a voice note be aligned against a recording made
+    // by a DIFFERENT app on the same phone — the iOS fallback path, where Web
+    // Bluetooth may be unavailable and the EEG comes from Mind Monitor instead.
+    assert.ok(out.noteHasAbsoluteTime,
+      'a note must carry absolute wall-clock time, or it cannot be aligned to an external recording');
+    assert.ok(out.noteOffsetIsNumber, 'and an offset within the session, for in-app use');
+    assert.strictEqual(out.ended, true);
+    assert.ok(out.bytes > 12000, `bytes written should reflect 3072 floats (got ${out.bytes})`);
+    assert.ok(out.listed, 'the session must appear in the session list');
+    assert.strictEqual(out.deleted, true, 'and delete must actually remove it');
+    console.log(`✓ sessions persist across a crash: 768 raw samples/channel, notes durable immediately`
+      + `${out.quota ? `, ~${out.quota}MB quota available` : ''}`);
+  }
+
+  // 14) VOICE NOTES. The retreat-critical path, and the one I cannot test on the
+  //     actual phone — so the gesture, the storage and the Blob round-trip are all
+  //     pinned here. A note must survive as real audio, not as a record that a
+  //     note happened.
+  {
+    const out = await page.evaluate(async () => {
+      // Stub getUserMedia and MediaRecorder: headless Chromium has no microphone,
+      // and the thing under test is the gesture -> storage path, not the codec.
+      const track = { stopped: false, stop() { this.stopped = true; } };
+      // defineProperty, not assignment: mediaDevices is a read-only accessor on
+      // Navigator, so `navigator.mediaDevices = ...` silently does nothing. (The
+      // real constraint behind this: getUserMedia needs a secure context, exactly
+      // like Web Bluetooth — one more reason the phone build has to be HTTPS.)
+      Object.defineProperty(navigator, 'mediaDevices', {
+        value: { getUserMedia: async () => ({ getTracks: () => [track] }) },
+        configurable: true, writable: true,
+      });
+      let live = null;
+      window.MediaRecorder = class {
+        constructor() { this.state = 'inactive'; this.mimeType = 'audio/webm'; this._h = {}; live = this; }
+        addEventListener(k, f) { this._h[k] = f; }
+        start() { this.state = 'recording'; }
+        stop() {
+          this.state = 'inactive';
+          this._h.dataavailable({ data: new Blob([new Uint8Array([1, 2, 3, 4, 5, 6, 7, 8])], { type: 'audio/webm' }) });
+          this._h.stop();
+        }
+      };
+      // A real session to file the note against.
+      const db = await Recorder.open({ name: 'zenbio-voice-' + Math.floor(performance.now()) });
+      recDb = db;
+      recSession = await Recorder.startSession(db, { startedAt: Date.now() - 5000 });
+      sessionStartedAt = Date.now() - 5000;
+
+      const btn = document.getElementById('voiceNote');
+      btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+      const whileRecording = {
+        flagged: btn.classList.contains('rec'),
+        label: btn.textContent,
+        recorderLive: live && live.state === 'recording',
+      };
+      // Hold past the 0.8s minimum, or it is discarded as a fumbled press.
+      await new Promise((r) => setTimeout(r, 900));
+      btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 250));
+
+      const loaded = await Recorder.loadSession(db, recSession.id);
+      const note = loaded.notes.find((n) => n.kind === 'voice');
+      const bytes = note && note.audio ? new Uint8Array(await note.audio.arrayBuffer()) : null;
+
+      // And a fumbled press must NOT create a note.
+      btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      const after = await Recorder.loadSession(db, recSession.id);
+
+      await recSession.end();
+      await Recorder.deleteSession(db, recSession.id);
+      db.close();
+      recSession = null; recDb = null; sessionStartedAt = null;
+      return {
+        whileRecording,
+        micReleased: track.stopped,
+        hasNote: !!note,
+        seconds: note && note.seconds,
+        mime: note && note.mimeType,
+        audioBytes: bytes ? Array.from(bytes) : null,
+        hasAbsoluteTime: !!(note && note.at > 1e12),
+        voiceNoteCount: after.notes.filter((n) => n.kind === 'voice').length,
+        restoredLabel: btn.textContent,
+      };
+    });
+
+    assert.ok(out.whileRecording.flagged, 'the button must show it is live — you cannot see the screen mid-sit');
+    assert.match(out.whileRecording.label, /listening/, 'and say so in words');
+    assert.ok(out.whileRecording.recorderLive, 'the recorder must actually be running');
+    assert.ok(out.hasNote, 'releasing the button must store a voice note');
+    // The audio itself, byte for byte. A note recording that a note happened is
+    // worthless — the recording IS the label.
+    assert.deepStrictEqual(out.audioBytes, [1, 2, 3, 4, 5, 6, 7, 8],
+      'the audio must round-trip through IndexedDB as real bytes');
+    assert.strictEqual(out.mime, 'audio/webm');
+    assert.ok(out.seconds >= 0.8, `the note must record its own length (got ${out.seconds})`);
+    assert.ok(out.hasAbsoluteTime,
+      'a voice note needs absolute time, so it can be aligned to a recording made by another app');
+    assert.ok(out.micReleased,
+      'the microphone track must be stopped, or the mic indicator stays on and drains the battery all sit');
+    assert.strictEqual(out.voiceNoteCount, 1,
+      'a fumbled sub-second press must not create a second note');
+    assert.match(out.restoredLabel, /hold to speak/, 'and the button must return to its resting label');
+    console.log(`✓ a held voice note stores real audio (${out.seconds.toFixed(1)}s), releases the mic, and ignores fumbles`);
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

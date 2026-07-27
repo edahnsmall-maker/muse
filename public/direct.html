@@ -92,6 +92,8 @@
      reading — but present, because chest motion and an inference from beat timing
      are not the same quality of number and should not look identical. */
   .rLabel em { font-style: normal; opacity: .45; font-size: 9px; letter-spacing: .04em; }
+  #voiceNote.rec { background: rgba(255,90,90,.22); border-color: rgba(255,120,120,.6);
+    color: #ffd9d9; }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
@@ -328,6 +330,7 @@
       <span class="pill panelToggle active" id="btnMetrics">Metrics</span>
       <span class="pill panelToggle" id="btnFeed">Live feed</span>
       <span class="pill panelToggle" id="btnVisuals">Visuals</span>
+      <span class="pill" id="voiceNote">hold to speak<kbd>V</kbd></span>
       <span class="pill" id="trainToggle">training: off<kbd>T</kbd></span>
       <span class="pill" id="responseToggle">response: sensitive</span>
       <span class="pill" id="cueToggle">cues: on</span>
@@ -346,6 +349,7 @@
 <script src="metrics.js"></script>
 <script src="markers.js"></script>
 <script src="polar.js"></script>
+<script src="record.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -409,6 +413,13 @@ function selectMode(index) {
   renderModeBar();
 }
 
+// Releasing V ends a voice note. A separate listener because keydown/keyup are
+// the hold gesture, and it is NOT gated on isTyping(): if a field somehow takes
+// focus mid-recording, the microphone must still be released.
+addEventListener('keyup', (e) => {
+  if (e.key === 'v' || e.key === 'V') stopVoiceNote();
+});
+
 addEventListener('keydown', (e) => {
   // While a text field has focus, the global shortcuts must stay out of the
   // way entirely — otherwise typing a note fires them.
@@ -425,6 +436,7 @@ addEventListener('keydown', (e) => {
     renderModeBar();
   }
   if (e.key === 'm' || e.key === 'M') { e.preventDefault(); openMarkPrompt(); }
+  if ((e.key === 'v' || e.key === 'V') && !e.repeat) { startVoiceNote(); return; }
   if (e.key === 't' || e.key === 'T') setTrainingMode(!trainingMode);
   if (e.key === 'Escape') closeSummary();
 });
@@ -501,6 +513,38 @@ function pmdLogWorthSending() {
 // The chart's own buffer is capped at ~3 minutes, so the summary needs its own.
 const sessionLog = [];
 let sessionStartedAt = null;
+
+/* --- Durable recording (see record.js) ------------------------------------
+ * Opened lazily on the first sample, so merely loading the page does not create
+ * an empty session, and so a browser without IndexedDB degrades to exactly the
+ * old behaviour rather than failing to start.
+ */
+let recDb = null;
+let recSession = null;
+let recStarting = false;
+let recError = null;
+
+async function ensureRecording() {
+  if (recSession || recStarting || recError) return recSession;
+  recStarting = true;
+  try {
+    recDb = await Recorder.open();
+    // Ask not to be evicted before a multi-day retreat, not after.
+    await Recorder.persist();
+    recSession = await Recorder.startSession(recDb, {
+      startedAt: sessionStartedAt || Date.now(),
+      userAgent: navigator.userAgent,
+    });
+  } catch (err) {
+    // Recording is additive. A browser in private mode, or one that refuses the
+    // database, must still be able to run a sit — it just cannot keep it.
+    recError = (err && err.message) || 'unavailable';
+    console.log('[rec] recording unavailable:', recError);
+  } finally {
+    recStarting = false;
+  }
+  return recSession;
+}
 let selfRating = null;      // the person's own guess, asked BEFORE any numbers
 const summaryEl = document.getElementById('summary');
 const summaryBodyEl = document.getElementById('summaryBody');
@@ -523,6 +567,10 @@ function logSessionSample(result, channels) {
     if (v != null) row[k] = v;
   }
   sessionLog.push(row);
+  // Kept alongside the raw signal even though it is recomputable, because it
+  // records what the app BELIEVED at the time — the thing to compare against
+  // when a formula later changes.
+  if (recSession) recSession.pushRow(row);
 }
 
 function closeSummary() { summaryEl.classList.remove('show'); }
@@ -872,6 +920,12 @@ function commitMark() {
     note,
     durationSec: Number.isFinite(durRaw) ? durRaw : null,
   });
+  // A label is the scarcest thing in this system — a few dozen per retreat
+  // against millions of samples — so it is written immediately, not at the end.
+  if (recSession) {
+    recSession.addNote({ kind: 'mark', markKind: m.kind, text: note,
+      durationSec: m.durationSec, tSec: m.tSec });
+  }
   pendingMark = null;
   markPromptEl.classList.remove('show');
   markNoteEl.blur();
@@ -961,6 +1015,11 @@ function updateBreathing() {
 let artifactRate = 0;
 
 function pushSamples(channelIndex, microvolts) {
+  // THE RAW SIGNAL, saved before anything derives anything from it. Every
+  // composite in metrics.js will change; raw EEG is the only thing that stays
+  // comparable across those changes, and it is ~10MB for a 40-minute sit.
+  if (recSession) recSession.pushEeg(channelIndex, microvolts);
+  else ensureRecording();
   const buf = buffers[channelIndex];
   buf.push(...microvolts);
   if (buf.length > WINDOW * 2) buf.splice(0, buf.length - WINDOW * 2); // bound memory
@@ -1377,6 +1436,7 @@ function onAccData(ev) {
   // accelerations would still produce a confident-looking oscillation, and the
   // 16-million-mG episode is the reason that is not a hypothetical.
   if (accVerdict && accVerdict.ok) accelBreath.push(decoded.samples);
+  if (recSession) recSession.pushAcc(decoded.samples);
 }
 
 // Optional PMD stream. Every step is allowed to fail: an older firmware, a
@@ -1577,6 +1637,7 @@ function onStrapData(ev) {
   if (p.contact != null) strapContact = p.contact;
   let gotNew = false;
   for (const rr of p.rr) { if (rrBuffer.push(rr)) gotNew = true; }
+  if (recSession && p.rr.length) recSession.pushRr(p.rr);
   if (!gotNew) return;
 
   // RMSSD needs a real window before it means anything. ~20 accepted intervals
@@ -1821,6 +1882,82 @@ copyLogBtn.addEventListener('click', async () => {
   }
   setTimeout(() => { copyLogBtn.textContent = 'copy strap log'; }, 3000);
 });
+
+/* --- Voice notes -----------------------------------------------------------
+ * A held button that records what you say and files it against the moment.
+ *
+ * WHY VOICE and not typing: this is meant to be used mid-sit with your eyes shut.
+ * Typing a note on a phone means opening your eyes, finding a text field and
+ * breaking the thing you were trying to describe. Talking does not.
+ *
+ * It also works with NO BLUETOOTH AT ALL, which on iOS is a real possibility —
+ * no iOS browser implements Web Bluetooth. Notes carry absolute wall-clock time
+ * as well as a session offset, so they can be aligned afterwards against a
+ * recording made by a different app on the same phone.
+ *
+ * Audio is stored as a Blob, not transcribed here. Transcribing on-device would
+ * be a guess about what you said; the recording is what you actually said.
+ */
+const voiceBtn = document.getElementById('voiceNote');
+let mediaRecorder = null;
+let voiceChunks = [];
+let voiceStartedAt = null;
+
+async function startVoiceNote() {
+  if (mediaRecorder || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    // Let the browser pick the container. Safari and Chrome disagree about what
+    // they will produce, and naming one means failing on the other.
+    mediaRecorder = new MediaRecorder(stream);
+    voiceChunks = [];
+    voiceStartedAt = Date.now();
+    mediaRecorder.addEventListener('dataavailable', (e) => {
+      if (e.data && e.data.size) voiceChunks.push(e.data);
+    });
+    mediaRecorder.addEventListener('stop', async () => {
+      // Stop the mic itself, not just the recorder: a live track leaves the
+      // recording indicator on and drains the battery for the rest of the sit.
+      stream.getTracks().forEach((t) => t.stop());
+      const blob = new Blob(voiceChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+      const secs = (Date.now() - voiceStartedAt) / 1000;
+      mediaRecorder = null;
+      voiceChunks = [];
+      voiceBtn.classList.remove('rec');
+      voiceBtn.innerHTML = 'hold to speak<kbd>V</kbd>';
+      // Under a second is a fumbled press, not a note.
+      if (secs < 0.8) { setStatus('too short — hold the button while you speak'); statusLockUntil = Date.now() + 1600; return; }
+      await ensureRecording();
+      if (!recSession) {
+        setStatus(`recording unavailable — the note was not saved (${escapeHtml(recError || 'no session')})`);
+        statusLockUntil = Date.now() + 6000;
+        return;
+      }
+      await recSession.addNote({ kind: 'voice', audio: blob,
+        mimeType: blob.type, seconds: secs, tSec: (Date.now() - (sessionStartedAt || Date.now())) / 1000 });
+      setStatus(`voice note saved (${secs.toFixed(0)}s)`);
+      statusLockUntil = Date.now() + 1800;
+    });
+    mediaRecorder.start();
+    voiceBtn.classList.add('rec');
+    voiceBtn.innerHTML = 'listening\u2026 release to save';
+  } catch (err) {
+    // A refused microphone is a permission problem, not a bug. Say which.
+    setStatus(`microphone unavailable: ${escapeHtml((err && err.message) || 'refused')}`);
+    statusLockUntil = Date.now() + 5000;
+  }
+}
+
+function stopVoiceNote() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+}
+
+// Pointer events rather than mouse/touch pairs: one code path for finger and
+// mouse, and `pointercancel` covers the phone taking the gesture away mid-press.
+voiceBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); startVoiceNote(); });
+voiceBtn.addEventListener('pointerup', stopVoiceNote);
+voiceBtn.addEventListener('pointercancel', stopVoiceNote);
+voiceBtn.addEventListener('pointerleave', stopVoiceNote);
 
 setInterval(updateBreathing, 2000);
 
