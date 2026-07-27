@@ -1273,6 +1273,24 @@ const accFrameLog = [];     // first few raw frames, hex, for diagnosis
 const ACC_LOG_FRAMES = 6;
 const ACC_KEEP = 600;       // ~12s at 50Hz
 
+// The one-line verdict shown in the Chest row. A named function rather than an
+// inline chain so test-ui.js can call the REAL branch order — a test that mirrors
+// the branches passes happily while the app on screen says something else.
+// Each branch names a DIFFERENT failure, because each has a different fix.
+function accStatusText() {
+  // Report the whole search, not just the last failure: which shapes were
+  // refused and with what code is the information needed to fix it. The full
+  // list is in the row's tooltip and the status bubble.
+  if (accStartError && !accVariant) return `refused ${accStartError}`;
+  if (accFrames === 0) return 'no frames';                     // accepted, silent
+  if (accDecoded === 0) {                                      // arriving, undecodable
+    return accFirstHead ? `${accFrames}f t${accFirstHead[0]}/${accFirstHead[1]}`
+      : `${accFrames}f no decode`;
+  }
+  if (accMag == null) return 'decoding…';
+  return `${Math.round(accMag)}mG ${accVerdict && accVerdict.ok ? '✓' : '✗ want 1000'}`;
+}
+
 function onAccData(ev) {
   const view = ev.target.value;
   accFrames++;
@@ -1358,6 +1376,16 @@ async function tryStartAccelerometer(gatt) {
      * accept one. It answers every attempt, so this terminates. Which variant won
      * is reported, and should be promoted to the default once known.
      */
+    // Stop any stream a previous page load left running. The device keeps
+    // streaming after a browser tab goes away, and refuses to START a measurement
+    // that is already active — which would look exactly like a bad request. Errors
+    // here are expected and meaningless (nothing was running).
+    try {
+      await ctl.writeValue(Polar.buildStopCommand());
+      await new Promise((r) => setTimeout(r, 250));
+      console.log('[PMD] sent a pre-emptive STOP in case a stream was still running');
+    } catch (e) { /* nothing was running */ }
+
     accTried = [];
     for (const variant of Polar.ACC_START_VARIANTS) {
       const answer = new Promise((resolve) => {
@@ -1376,12 +1404,16 @@ async function tryStartAccelerometer(gatt) {
       try { await ctl.writeValue(Polar.buildStopCommand()); } catch (e) { /* expected */ }
     }
     accAvailable = true;
+    accError = null;                 // clear a stale failure from an earlier attempt
     console.log('[PMD] variants tried:', accTried.join(', '), '| accepted:', accVariant || 'none');
     // A long diagnostic belongs in the wide status bubble, not a 128px table cell.
     // Locked long enough to read or screenshot.
     if (!accVariant) {
-      setStatus(`chest sensor refused every request shape — ${escapeHtml(accTried.join(' · '))}`);
-      statusLockUntil = Date.now() + 30000;
+      // Ten minutes: this is the one string needed to fix the protocol, and a
+      // bubble that vanishes in 30 seconds is a bubble that gets missed.
+      setStatus(`chest sensor refused every request shape — ${escapeHtml(accTried.join(' · '))}`
+        + (accSettings ? ` | settings: ${escapeHtml(JSON.stringify(accSettings))}` : ' | no settings response'));
+      statusLockUntil = Date.now() + 600000;
     } else if (accVariant !== Polar.ACC_START_VARIANTS[0].label) {
       setStatus(`chest sensor accepted "${escapeHtml(accVariant)}" — make it the default`);
       statusLockUntil = Date.now() + 20000;
@@ -1472,13 +1504,12 @@ async function connectStrap() {
     ch.addEventListener('characteristicvaluechanged', onStrapData);
     // Additive, and awaited so its console output lands in order. Failure here is
     // logged and ignored — HR and HRV keep working.
-    await tryStartAccelerometer(gatt);
+    // BEFORE the accelerometer attempt, not after: tryStartAccelerometer may set a
+    // long-lived diagnostic of its own, and setting this afterwards wiped it — the
+    // Chest row said "see msg" while the msg had already been overwritten.
     setStatus('heart strap linked — HRV needs about 20s of beats');
-    // This message MUST expire on its own. It previously stuck forever, because
-    // the only code that cleared the status sat behind an early return that
-    // required Muse data — so with no headband streaming, nothing ever cleared
-    // it and the app looked frozen.
     statusLockUntil = Date.now() + 4000;
+    await tryStartAccelerometer(gatt);
   } catch (err) {
     // A failed strap must never take down the EEG session.
     setStatus(`heart strap: ${err && err.message ? err.message : 'could not connect'}`);
@@ -1747,12 +1778,12 @@ setInterval(() => {
   const brainLabel = result.ratio == null ? '—' : result.alphaSum > result.betaSum ? 'Alpha (restful)' : 'Beta (active)';
   // A row with a level bar reads at a glance in a way a bare number does not.
   // Confidence tiers stay in the info overlay; the live table stays visually quiet.
-  const row = (label, value01, { text = null, tier = null, color = null, primary = false } = {}) => {
+  const row = (label, value01, { text = null, tier = null, color = null, primary = false, title = null } = {}) => {
     const pct = value01 == null ? 0 : Math.round(Math.max(0, Math.min(1, value01)) * 100);
     const bar = value01 == null ? '<span class="rBar"></span>'
       : `<span class="rBar"><i style="width:${pct}%;background:${color || 'rgba(255,255,255,.75)'}"></i></span>`;
     const val = text != null ? text : (value01 == null ? '—' : pct);
-    return `<div class="rRow${primary ? ' primary' : ''}">`
+    return `<div class="rRow${primary ? ' primary' : ''}"${title ? ` title="${title}"` : ''}>`
       + `<span class="rLabel">${label}</span>${bar}<span class="rVal">${val}</span></div>`;
   };
 
@@ -1795,18 +1826,8 @@ setInterval(() => {
     // looking output can fake that. Once this is confirmed on real hardware it
     // should become a quiet indicator rather than a number.
     if (accAvailable) {
-      // Each branch names a DIFFERENT failure, because the fix for each is
-      // different. "reading…" for all of them told me nothing.
-      let t;
-      // Report the whole search, not just the last failure: which shapes were
-      // refused and with what code is the information needed to fix it.
-      if (accStartError && !accVariant) t = 'refused — see msg';
-      else if (accFrames === 0) t = 'no frames';                   // accepted, silent
-      else if (accDecoded === 0) {                                 // arriving, undecodable
-        t = accFirstHead ? `${accFrames}f t${accFirstHead[0]}/${accFirstHead[1]}` : `${accFrames}f no decode`;
-      } else if (accMag == null) t = 'decoding…';
-      else t = `${Math.round(accMag)}mG ${accVerdict && accVerdict.ok ? '\u2713' : '\u2717 want 1000'}`;
-      tail.push(row('Chest', null, { text: t }));
+      tail.push(row('Chest', null, { text: accStatusText(),
+        title: accTried.length ? escapeHtml(accTried.join(' · ')) : null }));
     } else if (accError) {
       // Say what happened rather than showing nothing and leaving it a mystery.
       tail.push(row('Chest', null, { text: accError }));

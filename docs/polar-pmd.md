@@ -169,7 +169,7 @@ conversion factor is mandatory.
 | a steady but wrong number (e.g. 25, or 256000) | scale error — wrong resolution or byte width |
 | thrashing wildly | structural error — wrong offsets or bit order |
 | `no frames` | START accepted but the device is sending nothing |
-| `start err N` | the device REFUSED the START command with error code N — the request bytes are wrong (most likely the setting count field, see below) |
+| `refused N` | the device REFUSED every START shape, and N is the code from the last one. Hover the row for the whole ladder; the status bubble holds it too, for ten minutes |
 | `12f t2/1` | frames are arriving but none decode. The two numbers are `data[0]` (measurement type — must be 2 for ACC) and `data[9]` (frame type — 0/1/2 for 8/16/24-bit). If the first is not 2, the frame offsets are wrong; if the second is unexpected, the sample width is |
 | `decoding…` | decoded but not yet enough samples for a gravity verdict |
 | `not permitted — reconnect` | the PMD service was not declared in `requestDevice`'s `optionalServices` — see below |
@@ -219,10 +219,27 @@ terminates.
 
 The result is reported in the status line: either *"accepted `<variant>` — make it the
 default"* (promote it in `buildAccStartCommand` and delete the ladder) or *"refused
-every request shape"* followed by each variant and its error code. **That list is the
-thing to act on** — if every shape returns 5, the problem is a parameter *value*
-rather than the encoding, and the next thing to vary is sample rate (try 25 or 200)
-and resolution.
+every request shape"* followed by each variant and its error code **and the settings
+the device reported**. **That list is the thing to act on** — if every shape returns 5,
+the problem is a parameter *value* rather than the encoding, and the next thing to vary
+is sample rate (try 25 or 200) and resolution.
+
+That bubble is locked for **ten minutes**, and this is not fussiness: the first attempt
+at reporting it was locked for 30 seconds and then immediately overwritten by
+`connectStrap`'s cheerful "heart strap linked" message, which is set on a 4-second lock.
+The result on screen was a `Chest` row saying *"see msg"* pointing at a message that no
+longer existed. Order matters — set the connect message **before** awaiting
+`tryStartAccelerometer`, never after.
+
+### A stream the device never stopped
+
+Error 5 may not mean "bad request" at all. The H10 keeps streaming after the browser
+tab that started it goes away — the GATT link drops but the measurement stays active on
+the device — and a device asked to START a measurement that is already running has to
+refuse. Reconnecting many times during development is exactly how you get into that
+state. So the ladder now sends an unconditional STOP first and ignores the (expected,
+meaningless) error if nothing was running. If a *single* variant is accepted after that
+change, the encodings were never the problem and the ladder should be deleted.
 
 **Stage 2 (not built):** extract breathing. Band-pass the axis with the most
 respiratory variance (or the projection onto the principal axis) over roughly

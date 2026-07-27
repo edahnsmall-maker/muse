@@ -352,14 +352,10 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         accAvailable = true; accStartError = null; accFrames = 0; accDecoded = 0;
         accFirstHead = null; accMag = null; accVerdict = null; accVariant = null;
       };
-      const label = () => {
-        // Mirror the branch order used in the readout.
-        if (accStartError && !accVariant) return 'refused — see msg';
-        if (accFrames === 0) return 'no frames';
-        if (accDecoded === 0) return accFirstHead ? `${accFrames}f t${accFirstHead[0]}/${accFirstHead[1]}` : `${accFrames}f no decode`;
-        if (accMag == null) return 'decoding…';
-        return `${Math.round(accMag)}mG`;
-      };
+      // The REAL function the readout calls, not a copy of its branch order — a
+      // mirrored copy passes while the screen says something else, which is
+      // exactly the bug this suite exists to catch.
+      const label = () => accStatusText();
       reset(); out.silent = label();
       reset(); accStartError = 5; accVariant = null; out.refused = label();
       reset(); accFrames = 12; accFirstHead = [2, 1]; out.undecodable = label();
@@ -371,11 +367,11 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       return out;
     });
     assert.strictEqual(states.silent, 'no frames', 'accepted but silent must say so');
-    assert.strictEqual(states.refused, 'refused — see msg',
-      'a start refused by every variant must point at the detailed message');
+    assert.strictEqual(states.refused, 'refused 5',
+      'a start refused by every variant must name the error code the device returned');
     assert.strictEqual(states.undecodable, '12f t2/1',
       'undecodable frames must report the count and the measurement/frame type bytes');
-    assert.strictEqual(states.working, '1000mG', 'a working decode reports the magnitude');
+    assert.ok(/^1000mG/.test(states.working), `a working decode reports the magnitude (got ${states.working})`);
     assert.strictEqual(new Set(Object.values(states)).size, 4,
       'all four states must be distinguishable from each other');
     console.log('✓ each accelerometer failure mode reports something different: '
