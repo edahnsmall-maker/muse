@@ -84,6 +84,14 @@
     transition: width .25s linear, left .25s linear, right .25s linear; }
   .rBarC i.rt { left: 50%; background: linear-gradient(90deg, rgba(134,225,255,.55), rgba(190,240,255,.95)); }
   .rBarC i.lf { right: 50%; background: linear-gradient(270deg, rgba(167,139,250,.5), rgba(205,190,255,.9)); }
+  /* A held breath reads as STOPPED, not as a bar that happens not to be moving.
+     Draining the colour is the honest rendering: the chest is somewhere specific
+     (so the width stays) but nothing is happening (so the glow goes). */
+  .rBarC i.held { background: rgba(255,255,255,.34); }
+  /* Which sensor the breath came from. Quiet, because it is provenance, not a
+     reading — but present, because chest motion and an inference from beat timing
+     are not the same quality of number and should not look identical. */
+  .rLabel em { font-style: normal; opacity: .45; font-size: 9px; letter-spacing: .04em; }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
@@ -1305,6 +1313,16 @@ const ACC_KEEP = 600;       // ~12s at 50Hz
  * the retelling — "refused 5" instead of the twenty bytes that explain why. One
  * button, one paste, no transcription.
  */
+/*
+ * Breathing from chest-wall motion. Fed from onAccData, consulted in the strap
+ * tick. Takes precedence over RSA when it has a signal, because it does not lag
+ * and because it can see a breath hold, which RSA cannot see at all.
+ */
+const accelBreath = Polar.AccelBreath();
+let accBreathEst = null;
+let breathSource = null;    // 'chest' | 'rsa' | 'ppg' | null — shown, never guessed
+let breathHolding = false;
+
 const pmdLog = {
   featuresRaw: null, features: null,
   accSettings: null, accSettingsRaw: null,
@@ -1355,6 +1373,10 @@ function onAccData(ev) {
   if (accSamples.length > ACC_KEEP) accSamples.splice(0, accSamples.length - ACC_KEEP);
   const v = Polar.looksLikeGravity(accSamples.slice(-40));
   if (v) { accVerdict = v; accMag = v.meanMilliG; }
+  // Only feed the breath estimator once the decode has been vouched for. Garbage
+  // accelerations would still produce a confident-looking oscillation, and the
+  // 16-million-mG episode is the reason that is not a hypothetical.
+  if (accVerdict && accVerdict.ok) accelBreath.push(decoded.samples);
 }
 
 // Optional PMD stream. Every step is allowed to fail: an older firmware, a
@@ -1576,8 +1598,42 @@ function onStrapData(ev) {
       // is a real state (breath-holding, or a strap reading badly) and must not
       // be rendered as "at the midpoint".
       const ph = Polar.breathPhaseNow(rrBuffer.values());
-      breathAmount = ph ? ph.amount : null;
-      breathRising = ph ? ph.rising : null;
+
+      /* Chest motion first, heart timing second.
+       *
+       * The accelerometer is on the chest wall, so it sees the breath itself
+       * rather than its effect on beat timing: no ~1s lag, and a breath HOLD is
+       * visible because the chest actually stops. RSA cannot distinguish a hold
+       * from no signal, which is why holding used to show nothing.
+       *
+       * But the accelerometer cannot know which direction is inhale — the strap
+       * can be worn either way up, and magnitude is blind to sign. RSA can: heart
+       * rate rises on inhalation. So RSA orients the accelerometer, and then the
+       * accelerometer takes over. Each covers the other's blind spot.
+       */
+      if (accVerdict && accVerdict.ok) {
+        const rsaSeries = Polar.breathSignal(rrBuffer.values(), { hz: 5 });
+        if (rsaSeries) accelBreath.resolveSign(rsaSeries);
+        accBreathEst = accelBreath.estimate();
+      } else {
+        accBreathEst = null;
+      }
+
+      // `signKnown` matters: without it the bar would be a coin flip on which
+      // side means inhale, so fall back to RSA rather than guess.
+      if (accBreathEst && accBreathEst.signKnown
+          && (accBreathEst.amount != null || accBreathEst.holding)) {
+        breathAmount = accBreathEst.amount;
+        breathRising = accBreathEst.rising;
+        breathHolding = accBreathEst.holding;
+        breathSource = 'chest';
+        if (accBreathEst.bpm != null) strapBreathSec = 60 / accBreathEst.bpm;
+      } else {
+        breathAmount = ph ? ph.amount : null;
+        breathRising = ph ? ph.rising : null;
+        breathHolding = false;
+        breathSource = ph ? 'rsa' : null;
+      }
     }
   }
 }
@@ -1778,6 +1834,13 @@ setInterval(updateBreathing, 2000);
 function breathRow() {
   const rateSec = strapBreathSec != null ? strapBreathSec : breathPeriod;
   const rate = rateSec == null ? null : Math.round(60 / rateSec);
+  // Where the number comes from, because they are not equally good. Chest motion
+  // is the breath; RSA is an inference from beat timing that trails it by about a
+  // second. Showing them identically would hide a real difference in quality.
+  const src = breathSource === 'chest' ? 'chest' : breathSource === 'rsa' ? 'heart' : null;
+  const tip = breathSource === 'chest'
+    ? 'from chest-wall motion (strap accelerometer) — no lag, and a hold is visible'
+    : 'estimated from heart timing; lags about a second';
   let bar, val;
   if (breathAmount == null) {
     // No respiratory signal is a real state — a fast heart has little RSA, and
@@ -1789,15 +1852,27 @@ function breathRow() {
     const a = Math.max(-1, Math.min(1, breathAmount));
     const pct = Math.round(Math.abs(a) * 50);
     // Right of centre on the in-breath, left on the out-breath.
-    bar = `<span class="rBarC"><i class="${a >= 0 ? 'rt' : 'lf'}" style="width:${pct}%"></i></span>`;
-    val = `${rate == null ? '' : rate + '/min '}${breathRising ? 'in' : 'out'}`;
+    const cls = (a >= 0 ? 'rt' : 'lf') + (breathHolding ? ' held' : '');
+    bar = `<span class="rBarC"><i class="${cls}" style="width:${pct}%"></i></span>`;
+    /* A HOLD IS ITS OWN STATE, and this is what the accelerometer bought us.
+     *
+     * Held at the top of an inhale, the chest stays expanded — so the bar stays
+     * right of centre and says "hold" instead of continuing to claim a direction
+     * it no longer has. RSA could never do this: it sees respiratory modulation of
+     * beat timing, and a held breath has none, so a hold and a dead sensor were
+     * indistinguishable. This is the difference the user was looking for.
+     */
+    val = breathHolding ? 'hold'
+      : `${rate == null ? '' : rate + '/min '}${breathRising ? 'in' : 'out'}`;
   }
   // EXACTLY three children, matching .rRow's three grid columns. A fourth (a tier
   // light) wraps the value onto its own line — which is what put "6/min in" on a
   // row of its own. Tier confidence lives in the info overlay by design.
-  return `<div class="rRow" title="estimated from heart timing; lags about a second">`
-    + `<span class="rLabel">Breath</span>${bar}<span class="rVal">${val}</span></div>`;
+  return `<div class="rRow" title="${tip}">`
+    + `<span class="rLabel">Breath${src ? ` <em>${src}</em>` : ''}</span>`
+    + `${bar}<span class="rVal">${val}</span></div>`;
 }
+
 
 // A minimal readout for when the strap is connected but the headband isn't. The
 // strap alone genuinely measures three things — heart rate, HRV, and a real

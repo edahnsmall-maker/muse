@@ -733,6 +733,273 @@
     };
   }
 
+  /* === Breathing from chest-wall motion (PMD stage 2) =======================
+   *
+   * The strap sits on the chest, so the accelerometer sees the chest wall move
+   * directly. Compared with RSA this is the better signal in every way that
+   * matters here: no ~1s lag, and — the thing the user actually asked for — a
+   * BREATH HOLD is visible, because the chest genuinely stops. RSA cannot see a
+   * hold at all; "holding at full inhale" and "no signal" look identical in heart
+   * timing.
+   *
+   * TWO THINGS THIS CANNOT KNOW BY ITSELF, both established by the gravity work:
+   *
+   * 1. WHICH AXIS faces the chest wall. Magnitude is sqrt(x²+y²+z²), invariant
+   *    under permuting axes, so nothing verified about the decode says which is
+   *    which — and the strap can be worn either way up. So the axis is CHOSEN AT
+   *    RUNTIME, as the one carrying the most respiratory-band power. Never
+   *    hardcode one.
+   *
+   * 2. WHICH DIRECTION is inhale. A chest expanding could move the chosen axis
+   *    positive or negative depending on how the strap is oriented, and no amount
+   *    of accelerometer data settles it. Physiology does: heart rate RISES on
+   *    inhalation, so the RSA signal — lagging but directionally certain — can
+   *    orient this one. `resolveSign()` cross-correlates the two and the answer
+   *    is reported as `signKnown`, so the UI can decline to say "in" or "out"
+   *    until it is actually known rather than guessing at a coin flip.
+   *
+   * The two sensors fix each other's weakness: RSA knows which way is in, the
+   * accelerometer knows when and how much.
+   */
+  const ACC_BREATH_DEFAULTS = {
+    inHz: 50,          // native ACC rate
+    outHz: 5,          // decimated: 10x Nyquist for a 0.5Hz signal, tiny buffers
+    windowSec: 45,     // several breaths even at 4/min
+    trendSec: 12,      // high-pass corner: removes gravity and posture drift
+    smoothSec: 1.0,    // low-pass corner: removes sway, footsteps, heartbeat knock
+    minSec: 20,        // refuse to report a rate before this much data
+    minMilliG: 3,      // absolute floor: below this nothing is moving
+    holdFraction: 0.35, // recent amplitude below this fraction of the window = held
+    minRateSec: 2,     // 30 breaths/min
+    maxRateSec: 20,    // 3 breaths/min
+    minCorrelation: 0.3,
+  };
+
+  // Centred moving average. Centred, not trailing: a trailing filter shifts the
+  // waveform in time, and the whole point of using the accelerometer is that it
+  // does NOT lag.
+  function movingAverage(xs, halfWidth) {
+    const out = new Array(xs.length);
+    for (let i = 0; i < xs.length; i++) {
+      let sum = 0, n = 0;
+      for (let k = -halfWidth; k <= halfWidth; k++) {
+        const j = i + k;
+        if (j < 0 || j >= xs.length) continue;
+        sum += xs[j]; n++;
+      }
+      out[i] = sum / n;
+    }
+    return out;
+  }
+
+  function rms(xs) {
+    if (!xs.length) return 0;
+    return Math.sqrt(xs.reduce((a, b) => a + b * b, 0) / xs.length);
+  }
+
+  /*
+   * Dominant period by autocorrelation, in samples.
+   *
+   * Autocorrelation rather than counting zero crossings: a breath waveform is not
+   * a clean sinusoid, and a little noise around a crossing invents whole cycles.
+   * Returns null when nothing in the plausible band correlates well enough, which
+   * is the honest answer for a chest that is moving irregularly.
+   */
+  function dominantPeriod(xs, { minLag, maxLag, minCorrelation }) {
+    const n = xs.length;
+    if (n < maxLag + 8) return null;
+    const v = xs.reduce((a, b) => a + b * b, 0);
+    if (!(v > 1e-12)) return null;
+    const r = [];
+    for (let lag = minLag; lag <= maxLag; lag++) {
+      let sum = 0;
+      for (let i = 0; i + lag < n; i++) sum += xs[i] * xs[i + lag];
+      // Normalise by the overlap, so long lags are not penalised for having fewer
+      // terms — otherwise slow breathing is systematically rejected.
+      r.push((sum / (n - lag)) / (v / n));
+    }
+    let bestI = 0;
+    for (let i = 1; i < r.length; i++) if (r[i] > r[bestI]) bestI = i;
+    if (r[bestI] < minCorrelation) return null;
+
+    /* Take the FIRST strong peak, not the tallest.
+     *
+     * A periodic signal correlates with itself at every multiple of its period, so
+     * a 12/min breath scores just as well at a 20s lag as at its true 5s one — and
+     * with the overlap normalisation above, the long lag can win outright. The
+     * first test written for this reported 3.0/min for a 12/min input.
+     *
+     * So: accept the shortest lag that is a genuine local maximum and comes within
+     * a whisker of the best score. This is the standard fix for octave errors in
+     * pitch detection, and it fails toward the fundamental rather than a harmonic.
+     */
+    const good = r[bestI] * 0.85;
+    for (let i = 1; i < r.length - 1; i++) {
+      if (r[i] >= good && r[i] > r[i - 1] && r[i] >= r[i + 1]) {
+        return { lag: minLag + i, r: r[i] };
+      }
+    }
+    return { lag: minLag + bestI, r: r[bestI] };
+  }
+
+  function AccelBreath(options = {}) {
+    const cfg = Object.assign({}, ACC_BREATH_DEFAULTS, options);
+    const decimate = Math.max(1, Math.round(cfg.inHz / cfg.outHz));
+    const keep = Math.round(cfg.windowSec * cfg.outHz);
+    const axes = [[], [], []];
+    let pending = [[], [], []];
+    // The in/out orientation, once RSA has settled it. Persisted across estimates
+    // because it only changes when the strap is physically re-seated.
+    let sign = 0;
+
+    function push(samples) {
+      if (!samples || !samples.length) return;
+      for (const s of samples) {
+        pending[0].push(s.x); pending[1].push(s.y); pending[2].push(s.z);
+        if (pending[0].length >= decimate) {
+          // Block-average as the anti-aliasing filter for the decimation.
+          for (let a = 0; a < 3; a++) {
+            const blk = pending[a];
+            axes[a].push(blk.reduce((x, y) => x + y, 0) / blk.length);
+            if (axes[a].length > keep) axes[a].shift();
+          }
+          pending = [[], [], []];
+        }
+      }
+    }
+
+    // Band-passed series for one axis: detrend (high-pass) then smooth (low-pass).
+    function band(a) {
+      const xs = axes[a];
+      if (xs.length < 8) return null;
+      const trend = movingAverage(xs, Math.max(1, Math.round((cfg.trendSec * cfg.outHz) / 2)));
+      const ac = xs.map((v, i) => v - trend[i]);
+      return movingAverage(ac, Math.max(1, Math.round((cfg.smoothSec * cfg.outHz) / 2)));
+    }
+
+    function seconds() { return axes[0].length / cfg.outHz; }
+
+    /*
+     * Orient the signal using RSA, whose direction is known from physiology.
+     * `reference` is a breath series from breathSignal() — any length, any scale.
+     * Correlation is taken at the lag that maximises |r|, because RSA lags the
+     * mechanical breath by about a second and a zero-lag correlation would
+     * therefore understate it.
+     */
+    function resolveSign(reference) {
+      const est = pick();
+      if (!est) return sign;
+      const own = band(est.axis);
+      if (!own || !reference || reference.length < 8) return sign;
+      // Both series end at "now", so align them from the end.
+      const n = Math.min(own.length, reference.length);
+      const a = own.slice(-n);
+      const b = reference.slice(-n);
+
+      /* THE SHIFT BUDGET MUST SCALE WITH THE BREATH PERIOD.
+       *
+       * A fixed 2.5s window was the first attempt, and it inverted the answer: at
+       * 12 breaths/min the period is 5s, so a 2.5s shift is exactly antiphase and
+       * scores |r| ~ 1 just like the correct alignment — then edge effects decide
+       * which wins. The test caught it reporting a flip for a chest that was
+       * already in phase.
+       *
+       * RSA's lag was measured at about 1.0s in a 5s cycle, i.e. a fifth of a
+       * period, so a quarter-period cap covers the real lag with margin while
+       * making antiphase unreachable by construction.
+       */
+      const per = dominantPeriod(own, {
+        minLag: Math.round(cfg.minRateSec * cfg.outHz),
+        maxLag: Math.round(cfg.maxRateSec * cfg.outHz),
+        minCorrelation: cfg.minCorrelation,
+      });
+      // No detectable period means no reliable orientation. Leave it unknown.
+      if (!per) return sign;
+      const maxShift = Math.min(Math.round(per.lag * 0.25), Math.round(2.5 * cfg.outHz));
+
+      let bestAbs = 0, bestR = 0;
+      for (let shift = 0; shift <= maxShift && shift < n - 8; shift++) {
+        // Shift the REFERENCE later, since RSA trails the mechanical signal.
+        let sum = 0, va = 0, vb = 0;
+        for (let i = 0; i + shift < n; i++) {
+          sum += a[i] * b[i + shift]; va += a[i] * a[i]; vb += b[i + shift] * b[i + shift];
+        }
+        if (!(va > 1e-12 && vb > 1e-12)) continue;
+        const r = sum / Math.sqrt(va * vb);
+        if (Math.abs(r) > bestAbs) { bestAbs = Math.abs(r); bestR = r; }
+      }
+      if (bestAbs >= cfg.minCorrelation) sign = bestR > 0 ? 1 : -1;
+      return sign;
+    }
+
+    // Which axis is carrying the breath: the one with the most band-passed power.
+    function pick() {
+      let best = null;
+      for (let a = 0; a < 3; a++) {
+        const bp = band(a);
+        if (!bp) continue;
+        const amp = rms(bp);
+        if (!best || amp > best.amp) best = { axis: a, amp, series: bp };
+      }
+      return best;
+    }
+
+    /*
+     * The current state of the breath, or a reason there isn't one.
+     *
+     * `holding` is the point of this whole exercise. It is decided RELATIVELY —
+     * recent amplitude against the window's — because how far a chest visibly
+     * moves depends on the person, the strap tension and where it sits, and an
+     * absolute threshold in mG would be wrong for everyone but whoever it was
+     * tuned on. The absolute floor is only a backstop for a strap lying on a table.
+     */
+    function estimate() {
+      const est = pick();
+      if (!est || seconds() < cfg.minSec) {
+        return { amount: null, rising: null, bpm: null, holding: false,
+          axis: est ? est.axis : null, amplitudeMilliG: est ? est.amp : null,
+          signKnown: sign !== 0, seconds: seconds(), reason: 'warming up' };
+      }
+      const sig = est.series;
+      const recentN = Math.max(6, Math.round(6 * cfg.outHz));
+      const recentAmp = rms(sig.slice(-recentN));
+      const holding = recentAmp < cfg.minMilliG
+        || recentAmp < est.amp * cfg.holdFraction;
+
+      const per = dominantPeriod(sig, {
+        minLag: Math.round(cfg.minRateSec * cfg.outHz),
+        maxLag: Math.round(cfg.maxRateSec * cfg.outHz),
+        minCorrelation: cfg.minCorrelation,
+      });
+      const bpm = per ? 60 / (per.lag / cfg.outHz) : null;
+
+      if (holding) {
+        // A hold is NOT "no data" — the chest is somewhere, and where it is
+        // carries the information the user was looking for. Report the position
+        // and say it is held; do not report a direction, because there isn't one.
+        const held = sign === 0 ? null
+          : Math.tanh((sign * sig[sig.length - 1]) / (est.amp * 1.3 || 1));
+        return { amount: held, rising: null, bpm, holding: true, axis: est.axis,
+          amplitudeMilliG: recentAmp, signKnown: sign !== 0,
+          seconds: seconds(), reason: 'chest still' };
+      }
+
+      const i = sig.length - 1;
+      const oriented = (sign || 1) * sig[i];
+      const prev = (sign || 1) * sig[Math.max(0, i - 2)];
+      return {
+        amount: Math.tanh(oriented / (est.amp * 1.3)),
+        rising: oriented > prev,
+        bpm, holding: false, axis: est.axis, amplitudeMilliG: recentAmp,
+        signKnown: sign !== 0, seconds: seconds(), reason: null,
+      };
+    }
+
+    return { push, estimate, resolveSign, pick,
+      seconds, band, get sign() { return sign; },
+      reset() { axes[0].length = 0; axes[1].length = 0; axes[2].length = 0; pending = [[], [], []]; sign = 0; } };
+  }
+
   return {
     HR_SERVICE, HR_MEASUREMENT, BATTERY_SERVICE, BATTERY_LEVEL,
     PMD_SERVICE, PMD_CONTROL, PMD_DATA, PMD_TYPE_ACC,
@@ -743,6 +1010,7 @@
     ACC_START_VARIANTS, ACC_PARAM_VARIANTS, accParamCandidates,
     decodeAccFrame, signedLE, accelMagnitude, looksLikeGravity,
     resampleHr, breathSignal, breathPhaseNow,
+    AccelBreath, ACC_BREATH_DEFAULTS, movingAverage, dominantPeriod,
     RR_UNIT_MS, RR_MIN_MS, RR_MAX_MS, RR_MAX_STEP_FRACTION, RSA_MIN_BPM,
     parseHeartRateMeasurement,
     rmssd, sdnn, meanRR, bpmFromRR,

@@ -316,13 +316,56 @@ start request on the first attempt, sent 52 frames, and all 52 decoded to gravit
 The bytes are in `fixtures/h10-acc-frames.js`; the readout showed the wrong number
 first, which is exactly what that row is for.
 
-**Stage 2 (not built):** extract breathing. Band-pass the axis with the most
-respiratory variance (or the projection onto the principal axis) over roughly
-0.1–0.5 Hz, take the phase, gate on amplitude the way `RSA_MIN_BPM` does, and feed
-it through the existing seams (`breathAmount` in `setState`, `features.breathPhase`,
-the single `breathRow()`). Precedence should be **accelerometer → RSA → Muse PPG →
-calm-linked guess**, so a wrong guess degrades rather than breaks. Do not add a new
-breath row.
+**Stage 2 (built):** breathing from chest-wall motion — `Polar.AccelBreath` in
+`public/polar.js`, wired in `direct.html` with precedence **chest → RSA → PPG**.
+
+The pipeline, at 5Hz after block-averaging the 50Hz stream (10x Nyquist for a 0.5Hz
+signal, and the averaging is the anti-aliasing filter):
+
+1. **High-pass** by subtracting a 12s centred moving average. This is what removes
+   gravity — 1000 mG of it, against a respiratory excursion of tens of mG.
+2. **Low-pass** with a 1s centred moving average: sway, footsteps, the heartbeat's
+   own knock against the strap.
+3. **Choose the axis** with the most band-passed power. Never hardcoded — see the
+   gravity table above for why that would be unfounded.
+4. **Rate** by autocorrelation over 2–20s lags, taking the FIRST strong peak rather
+   than the tallest. A periodic signal correlates at every multiple of its period,
+   so the tallest peak reported 3.0/min for a 12/min input on the first attempt.
+5. **Hold detection** by comparing recent amplitude against the window's, not
+   against an absolute mG threshold. How far a chest visibly moves depends on the
+   person, the strap tension and where it sits; an absolute number would be wrong
+   for everyone but whoever it was tuned on. An absolute floor remains as a backstop
+   for a strap lying on a table.
+
+Both moving averages are **centred**, not trailing. A trailing filter shifts the
+waveform in time, and not lagging is the entire reason to prefer this over RSA.
+
+### Which direction is inhale: the accelerometer cannot know, RSA can
+
+The strap can be worn either way up, and nothing about the decode establishes the
+sign of chest expansion — magnitude is blind to it, exactly as it is blind to axis
+order. Physiology settles it: **heart rate rises on inhalation**, so the RSA signal,
+lagging but directionally certain, orients the accelerometer, which is fast but
+sign-ambiguous. Each sensor covers the other's blind spot.
+
+`resolveSign(reference)` cross-correlates the two and reports `signKnown`. Until it
+is true the UI falls back to RSA rather than guess, because a coin flip on which side
+of the bar means "in" is worse than a lagging but correct reading.
+
+**The shift budget must scale with the breath period.** A fixed 2.5s search window
+inverted the answer at 12 breaths/min, where 2.5s is exactly antiphase and scores
+|r| ~ 1 just like the correct alignment. RSA's lag was measured at ~1.0s in a 5s
+cycle — a fifth of a period — so the cap is a quarter period, which covers the real
+lag and makes antiphase unreachable by construction.
+
+### A hold is a state, not an absence
+
+This is what the whole accelerometer effort was for. Held at the top of an inhale the
+chest stays expanded, so the bar stays right of centre, drains its colour, and reads
+`hold`. RSA cannot express this: it sees respiratory modulation of beat timing, and a
+held breath has none, so "holding at full inhale" and "sensor dead" are the same
+picture. The earlier plateau at +50% was heart rate decaying toward its own average,
+inflated by normalisation — the right sign for the wrong reason.
 
 ## Sources
 

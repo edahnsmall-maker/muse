@@ -284,6 +284,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         + `font:${getComputedStyle(readout).font};`;
       document.body.appendChild(host);
       breathAmount = 0.5; breathRising = true; strapBreathSec = 10;   // -> "6/min in"
+      breathSource = 'rsa'; breathHolding = false;
       host.innerHTML = breathRow();
       const probe = (label) => {
         const r = host.querySelector('.rRow');
@@ -291,7 +292,23 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         const h = r.getBoundingClientRect().height;
         return { label, kids, h: Math.round(h) };
       };
-      const results = [probe('breath')];
+      const results = [probe('breath rsa')];
+      // The chest-motion row: a longer label (it carries a source tag) and a
+      // different value. The 3-children rule is easy to break by adding one.
+      breathSource = 'chest'; breathHolding = false;
+      host.innerHTML = breathRow();
+      results.push(probe('breath chest'));
+      // And a HELD breath, the state the accelerometer exists to show.
+      breathHolding = true;
+      host.innerHTML = breathRow();
+      const heldRow = host.querySelector('.rRow');
+      results.push(Object.assign(probe('breath hold'), {
+        text: heldRow.textContent,
+        barWidth: heldRow.querySelector('.rBarC i')
+          ? heldRow.querySelector('.rBarC i').style.width : null,
+        drained: !!heldRow.querySelector('.rBarC i.held'),
+      }));
+      breathHolding = false; breathSource = null;
       // And a text-valued row from the main helper: "73 bpm" is the case that wrapped.
       host.innerHTML = '<div class="rRow"><span class="rLabel">Heart</span>'
         + '<span class="rBar"></span><span class="rVal">73 bpm</span></div>';
@@ -308,8 +325,22 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       assert.ok(r.h <= 34,
         `${r.label}: row is ${r.h}px tall, so its value wrapped onto a second line (expect a single ~27px row)`);
     }
-    await page.evaluate(() => { breathAmount = null; breathRising = null; strapBreathSec = null; });
+    // The hold row specifically: a held breath must say so, must KEEP its position
+    // (the chest is somewhere — that is the information), and must stop looking
+    // live. RSA could not express any of this, which is why holding showed nothing.
+    const held = rows.find((r) => r.label === 'breath hold');
+    assert.match(held.text, /hold/, 'a held breath must say "hold", not a direction');
+    assert.ok(!/\bin\b|\bout\b/.test(held.text),
+      `a held breath has no direction, so it must not claim one (got "${held.text}")`);
+    assert.strictEqual(held.barWidth, '25%',
+      'a hold must keep the bar where the chest actually is, not zero it');
+    assert.ok(held.drained, 'a held bar must be visually distinct from a live one');
+    await page.evaluate(() => {
+      breathAmount = null; breathRising = null; strapBreathSec = null;
+      breathSource = null; breathHolding = false;
+    });
     console.log(`✓ readout rows stay on one line (${rows.map((r) => r.label + ' ' + r.h + 'px').join(', ')})`);
+    console.log(`✓ a held breath reads as "${held.text.trim()}" and keeps its position at ${held.barWidth}`);
   }
 
   // 10) The strap request MUST declare the PMD service in optionalServices.

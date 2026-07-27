@@ -231,70 +231,58 @@ you to ignore failures.
 
 ---
 
-## 7. NEXT TASK: chest-wall breathing from the H10 accelerometer
+## 7. DONE: chest-wall breathing from the H10 accelerometer
 
-**Why.** Breath phase currently comes from RSA — the respiratory modulation of heart
-timing. It works, but with two limits that are proven, not suspected:
+Both stages are built and stage 1 is verified on hardware. Read
+[`docs/polar-pmd.md`](docs/polar-pmd.md) before touching any of it — the protocol,
+the four things that turned out to be wrong, and what the gravity check can and
+cannot catch are all recorded there.
 
-- **It lags ~1.0s in a 5s cycle** (measured by cross-correlation in `test-polar.js`,
-  correlation 0.43). The heart *responds* to breathing; it cannot predict it.
-- **RSA shrinks as heart rate rises**, so it gates out exactly when the wearer is a
-  bit activated. Real use at 89bpm produced no usable reading.
+**Where breath comes from now:** precedence is **chest → RSA → PPG**, in
+`Polar.AccelBreath` (`public/polar.js`) and the strap tick in `direct.html`. The row
+shows its source, because chest motion and an inference from beat timing are not the
+same quality of number.
 
-The H10 sits on the ribcage. Its accelerometer measures chest-wall movement, which is
-breathing **directly** — no inference, no physiological lag, and it works at any
-heart rate.
+**Four mistakes this cost, all of the same kind** — reasoning about a protocol instead
+of listening to the device, with a test that agreed with the reasoning:
 
-**The catch.** This needs Polar's proprietary **PMD** (Polar Measurement Data)
-service rather than the standard Heart Rate Service. **The protocol is now transcribed
-from Polar's official specification into [`docs/polar-pmd.md`](docs/polar-pmd.md)** —
-UUIDs, measurement types, control-point commands, the settings TLV table, the data
-frame layout, the ACC frame types, and the delta-compression scheme. Read that first;
-it is quoted from the spec rather than remembered.
+1. **The PMD service was not in `optionalServices`,** so ACC could never start. Web
+   Bluetooth grants access per service at pairing time.
+2. **Error 5 on every start request.** Five encodings were tried; all refused. The
+   device's own settings response said why — it advertises `sampleRate`, `resolution`
+   and `range`, and **no `channels`** — and every attempt had either sent `channels`
+   or dropped `range`. The ladder was searching the encoding axis while the wrong
+   thing was the *set of settings*. Send exactly what the device advertises.
+3. **The ACC frames are not delta-compressed**, whatever the spec's delta section
+   implies. The delta decoder returned one sample per frame instead of 36, and on some
+   frames invented values — a strap lying still read **16,122,280 mG**. Content is a
+   flat array of `int16` triplets.
+4. **`isResponse` (the 0xF0 marker) was computed and never checked,** so any
+   notification could be read as a control response and its byte 3 reported as the
+   device's error code.
 
-Two things from it that change the approach:
+**Every unit test involved passed throughout all four.** Each was built from the same
+notes as the code, so it checked the notes against themselves. The replacements are
+`fixtures/h10-acc-frames.js` — real bytes from the device, with **gravity** as the
+assertion, which is ground truth this codebase does not define.
 
-- **The conversion factor is mandatory.** The spec says outright that without it "the
-  sample values are not correct". So you must issue *Get measurement settings*
-  (command 1) and use the returned factor, resolution and channel count, rather than
-  hardcoding anything. This is discoverable at runtime, which removes most of the
-  guesswork.
-- **Two points remain UNVERIFIED** and are flagged as such in that file: the index base
-  for the delta-size and sample-count bytes (a `+1`/`+2` whose origin is ambiguous), and
-  the sign-extension wording, which is genuinely muddled in the PDF. Both are exactly
-  the kind of thing that yields a decode which runs and produces garbage.
+**Two things gravity cannot establish, and must never be assumed:**
 
-**Stage 1 is done** — decoding, the control-point handshake, raw-frame logging and a
-live gravity check in the readout. See "Implementation status" in
-[`docs/polar-pmd.md`](docs/polar-pmd.md) for how to verify it on hardware and what
-each failure mode looks like. Stage 2 (extracting breathing from the decoded axes) is
-specified there too.
+- **Which axis faces the chest.** Magnitude is invariant under permuting axes. The
+  axis is chosen at runtime by respiratory-band power.
+- **Which direction is inhale.** The strap can be worn either way up. RSA settles it,
+  because heart rate rises on inhalation — so the lagging sensor orients the fast one.
+  Until it has, `signKnown` is false and the UI falls back to RSA rather than guess.
 
-**The build order that was used, and should be kept for stage 2:**
+**The payoff, and the thing to check first if you change this:** a breath hold is now
+a *state*. Held at the top of an inhale the chest stays expanded, so the bar stays
+right of centre, drains its colour, and reads `hold`. RSA could never express that —
+a held breath has no respiratory modulation, so "holding at full inhale" and "sensor
+dead" were the same picture.
 
-1. **Log raw frames first.** Do not write a decoder from assumption. Dump bytes,
-   look at them, confirm the frame layout before parsing.
-2. **Decode into a pure, tested function** in `polar.js`, exactly like
-   `parseHeartRateMeasurement`. Hand-build frames in `test-polar.js`.
-3. **Sanity-check against physics, not against a unit test built from these notes** —
-   that would only check the notes against themselves. At rest the total magnitude must
-   sit steadily near **1000 mG**; turning the strap over should invert one axis while
-   the magnitude holds; breathing should appear as a slow oscillation of a few tens of
-   mG. If the magnitude is 30, or 400000, or thrashing, the decode is wrong no matter
-   how smooth the numbers look.
-4. **Extract breathing:** band-pass the axis with the most respiratory variance (or
-   the projection onto the principal axis) over roughly 0.1–0.5 Hz, then take the
-   phase. Gate on amplitude the way `RSA_MIN_BPM` does — no signal must read as *no
-   reading*, never as a midpoint.
-5. **Keep RSA as the fallback.** Precedence should be accelerometer → RSA → Muse PPG
-   → the calm-linked guess. A wrong guess about the protocol must degrade, not break.
-6. Feed it through the existing seams: `breathAmount` in `setState`,
-   `features.breathPhase`, and the single `breathRow()`. Do not add new breath rows —
-   see the warning below.
-
-**Success test:** hold your breath. The bar should go flat and the row should say it
-has no signal, promptly. Then breathe deliberately fast and slow; it should track
-without the ~1s lag.
+**Tuning that is still a first guess:** `ACC_BREATH_DEFAULTS.holdFraction` (0.35) and
+`minMilliG` (3). The hold test is relative rather than absolute for good reason, but
+the numbers themselves want a session of deliberate holds to confirm.
 
 ---
 

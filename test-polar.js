@@ -623,6 +623,158 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
   console.log('✓ malformed ACC frames are refused rather than decoded into nonsense');
 }
 
+// 24b) BREATHING FROM CHEST MOTION. The ground truth here is a frequency and an
+//      axis that the test constructs and the implementation is never told, so this
+//      is not the decoder-agrees-with-itself trap: a wrong band-pass, a wrong
+//      decimation or a hardcoded axis all fail it.
+{
+  const HZ = 50;
+  // A synthetic strap: gravity parked on `gravityAxis`, breathing on `breathAxis`,
+  // plus a little broadband noise so nothing succeeds only on a clean sinusoid.
+  const synth = ({ breathAxis, gravityAxis, bpm, seconds, amplitude = 40, noise = 3, holdAfter = null }) => {
+    const out = [];
+    let seed = 12345;
+    const rand = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return (seed / 0x7fffffff) * 2 - 1; };
+    for (let n = 0; n < seconds * HZ; n++) {
+      const t = n / HZ;
+      const held = holdAfter != null && t >= holdAfter;
+      const v = [0, 0, 0];
+      v[gravityAxis] = 1000;
+      // A hold freezes the chest wherever it was, which is what a real hold does.
+      const phase = held ? 2 * Math.PI * (bpm / 60) * holdAfter : 2 * Math.PI * (bpm / 60) * t;
+      v[breathAxis] += amplitude * Math.sin(phase);
+      for (let a = 0; a < 3; a++) v[a] += noise * rand();
+      out.push({ x: v[0], y: v[1], z: v[2] });
+    }
+    return out;
+  };
+
+  // 1) The axis must be FOUND, not assumed. Breathing is placed on each axis in
+  //    turn, with gravity somewhere else, and each must be picked out.
+  for (const breathAxis of [0, 1, 2]) {
+    const gravityAxis = (breathAxis + 1) % 3;
+    const b = Polar.AccelBreath();
+    b.push(synth({ breathAxis, gravityAxis, bpm: 12, seconds: 40 }));
+    const est = b.estimate();
+    assert.strictEqual(est.axis, breathAxis,
+      `breathing on axis ${breathAxis} must be found there, not on ${est.axis}`);
+    // 12 breaths/min from a signal the estimator was never told the rate of.
+    assert.ok(est.bpm != null && Math.abs(est.bpm - 12) < 1.5,
+      `rate should be ~12/min, got ${est.bpm == null ? 'null' : est.bpm.toFixed(1)}`);
+    assert.strictEqual(est.holding, false, 'a breathing chest is not holding');
+    assert.ok(est.amount != null && Math.abs(est.amount) <= 1);
+  }
+
+  // 2) Gravity must not be mistaken for breath. It is 25x larger than the
+  //    respiratory excursion, so a missing high-pass shows up here.
+  {
+    const b = Polar.AccelBreath();
+    b.push(synth({ breathAxis: 2, gravityAxis: 0, bpm: 12, seconds: 40 }));
+    assert.strictEqual(b.estimate().axis, 2,
+      'the axis holding 1000mG of gravity must not win on amplitude');
+  }
+
+  // 3) SLOW breathing, which is what a meditator actually does. 4/min has a 15s
+  //    period, longer than the detrend window's half-width — the case a careless
+  //    high-pass corner silently eats.
+  {
+    const b = Polar.AccelBreath();
+    b.push(synth({ breathAxis: 1, gravityAxis: 2, bpm: 4.5, seconds: 60 }));
+    const est = b.estimate();
+    assert.ok(est.bpm != null && Math.abs(est.bpm - 4.5) < 1.0,
+      `4.5/min must survive the high-pass, got ${est.bpm == null ? 'null' : est.bpm.toFixed(1)}`);
+  }
+
+  // 4) THE BREATH HOLD — the thing that was asked for and could not be done with
+  //    RSA. Breathe for 40s, then stop. The chest stops moving, and that must be
+  //    reported as holding rather than as a confident continuing waveform.
+  {
+    const b = Polar.AccelBreath();
+    b.push(synth({ breathAxis: 2, gravityAxis: 0, bpm: 12, seconds: 55, holdAfter: 40 }));
+    const est = b.estimate();
+    assert.strictEqual(est.holding, true,
+      `a chest that stopped 15s ago must read as holding (amp ${est.amplitudeMilliG.toFixed(1)}mG)`);
+    // And it must NOT have gone quiet: a hold has a position, which is the whole
+    // point. Position needs the sign, so establish it first.
+    b.resolveSign(b.band(2));
+    assert.ok(b.estimate().amount != null,
+      'a hold must still report WHERE the chest is, once in/out is known');
+  }
+
+  // 5) Mid-breath is not holding. The hold test above must not be passing because
+  //    the detector says "holding" to everything.
+  {
+    const b = Polar.AccelBreath();
+    b.push(synth({ breathAxis: 2, gravityAxis: 0, bpm: 12, seconds: 55, holdAfter: 54.5 }));
+    assert.strictEqual(b.estimate().holding, false,
+      'half a second of stillness is not a breath hold');
+  }
+
+  // 6) A strap on a table reads as holding, not as very faint breathing.
+  {
+    const b = Polar.AccelBreath();
+    b.push(synth({ breathAxis: 2, gravityAxis: 0, bpm: 12, seconds: 40, amplitude: 0, noise: 0.5 }));
+    assert.strictEqual(b.estimate().holding, true, 'a motionless strap is not breathing');
+  }
+
+  // 7) Before there is enough data, say so rather than guessing.
+  {
+    const b = Polar.AccelBreath();
+    b.push(synth({ breathAxis: 2, gravityAxis: 0, bpm: 12, seconds: 8 }));
+    const est = b.estimate();
+    assert.strictEqual(est.amount, null, '8 seconds is not enough for a breath estimate');
+    assert.strictEqual(est.reason, 'warming up');
+  }
+  console.log('✓ accelerometer breath finds its own axis, its rate, and a breath hold');
+}
+
+// 24c) IN vs OUT cannot be known from the accelerometer alone — the strap can be
+//      worn either way up. RSA settles it, because heart rate rises on inhalation.
+{
+  const HZ = 50, OUT = 5;
+  const chest = (flip) => {
+    const out = [];
+    for (let n = 0; n < 40 * HZ; n++) {
+      const t = n / HZ;
+      out.push({ x: 1000, y: 0, z: flip * 40 * Math.sin(2 * Math.PI * 0.2 * t) });
+    }
+    return out;
+  };
+  // An RSA-style reference at the same rate, in phase with true inhalation.
+  const reference = [];
+  for (let n = 0; n < 40 * OUT; n++) reference.push(Math.sin(2 * Math.PI * 0.2 * (n / OUT)));
+
+  const up = Polar.AccelBreath();
+  up.push(chest(+1));
+  assert.strictEqual(up.estimate().signKnown, false,
+    'direction must not be claimed before anything has established it');
+  up.resolveSign(reference);
+  assert.strictEqual(up.sign, 1, 'a chest in phase with RSA needs no flip');
+  assert.strictEqual(up.estimate().signKnown, true);
+
+  const down = Polar.AccelBreath();
+  down.push(chest(-1));
+  down.resolveSign(reference);
+  assert.strictEqual(down.sign, -1,
+    'a strap worn the other way up must be detected and flipped');
+
+  // The flip must actually change the reported direction, or it is decorative.
+  const a = up.estimate().amount, d = down.estimate().amount;
+  assert.ok(a != null && d != null);
+  assert.ok(Math.abs(a - d) < 0.35,
+    `both orientations must report the SAME breath position after correction (${a.toFixed(2)} vs ${d.toFixed(2)})`);
+
+  // Noise must not be mistaken for a direction.
+  const noiseRef = [];
+  let seed = 7;
+  for (let n = 0; n < 40 * OUT; n++) { seed = (seed * 1103515245 + 12345) & 0x7fffffff; noiseRef.push((seed / 0x7fffffff) * 2 - 1); }
+  const na = Polar.AccelBreath();
+  na.push(chest(+1));
+  na.resolveSign(noiseRef);
+  assert.strictEqual(na.sign, 0, 'an uncorrelated reference must leave the direction unknown');
+  console.log('✓ in/out is resolved against RSA, and left unknown when it cannot be');
+}
+
 // 25) THE CHECK THAT ACTUALLY MATTERS. A correct decode of a body at rest reads
 //     ~1000 mG, because that is gravity. This is the one assertion here that a
 //     wrong decode cannot satisfy by accident, and it is why the runtime shows
