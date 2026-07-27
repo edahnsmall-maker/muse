@@ -10,8 +10,12 @@ standard, so `parseHeartRateMeasurement` could be written from the spec and test
 constructing packets. PMD is Polar's own protocol, delta-compressed, and its failure mode
 is silent: a wrong decode yields plausible numbers rather than an error, and a test written
 against a wrong assumption passes because it builds its fixture from the same wrong
-assumption. So the details below are quoted, not remembered — and even so, the two marked
-**UNVERIFIED** need confirming against real bytes.
+assumption. So the details below are quoted, not remembered.
+
+**Both points this file once flagged as UNVERIFIED have now been settled against a
+real H10, and both turned out to be wrong** — the delta framing does not apply to ACC
+at all. See "Delta compression" below. The lesson generalises: the parts of a protocol
+you reason your way to are exactly the parts to distrust until hardware speaks.
 
 ---
 
@@ -92,48 +96,66 @@ exponent 23–30, sign 31 — i.e. plain little-endian `getFloat32`.)
 **H10 accelerometer capability:** sample rates 25 / 50 / 100 / 200 Hz, ranges ±2 / 4 / 8 G,
 values in mG.
 
-## Delta compression
+## Delta compression — NOT used for ACC on the H10
 
-Quoted, condensed:
+The spec has a delta-compression section. **It does not describe the H10's ACC
+frames.** Six real frames settle it:
+
+```
+02 a2 19 d9 7e 9b 43 52 08 01  be 03 0e 00 b6 fe  cd 03 11 00 b6 fe  ...
+^  ^------- timestamp -------^ ^^ ^-- sample 0 --^ ^-- sample 1 --^
+type                       frameType=1
+```
+
+Content is **216 bytes per frame — exactly 36 samples x 3 channels x 2 bytes**, with
+no delta-width byte and no sample-count byte anywhere in it. Sample 0 is
+`(958, 14, -330)`, magnitude 1013 mG. Sample 1 is `(973, 17, -330)`, magnitude 1027.
+Both are gravity. A delta reading would have to treat `cd` as a bit width of 205.
+
+So ACC frames are a **flat array of signed little-endian samples**, sample width from
+the frame type (0/1/2 -> 1/2/3 bytes), and `decodeAccFrame` refuses any frame whose
+content is not a whole number of samples rather than decoding as far as it goes.
+
+**What the delta implementation actually did.** It read the seed sample correctly, hit
+`0xcd` as a bit width, failed its own sanity guard, and returned one sample per frame
+— silently dropping 35 of 36 and taking the effective rate from 50Hz to about 1.4Hz.
+On frames where that byte happened to be <= 32 the delta path ran and invented values,
+which is how a strap lying still reported **16,122,280 mG**. The unit test covering
+this passed throughout, because it encoded 6-bit deltas exactly the way the decoder
+decoded them and then asserted it got them back.
+
+That test is deleted. In its place, `fixtures/h10-acc-frames.js` holds the real bytes
+and the assertion is gravity: 216 samples averaging **1011.8 +/- 7.6 mG**.
+
+### What gravity catches, and the one thing it cannot
+
+Established by deliberately breaking the decode and watching the test:
+
+| Injected bug | Caught? | How it showed up |
+|---|---|---|
+| sample width 16 -> 8 bit | yes | 72 samples instead of 36 |
+| byte order LE -> BE | yes | 23,374 mG |
+| content offset off by one | yes | 35 samples instead of 36 |
+| **axis order permuted** | **no** | **impossible** |
+
+Magnitude is `sqrt(x^2 + y^2 + z^2)`, invariant under permuting the axes. **Nothing
+verified here establishes which axis is which.** Do not write breath code that assumes
+a named axis is normal to the chest wall — select the axis at runtime by
+respiratory-band power, which needs no such assumption.
+
+### The original delta text, kept for the record
+
+Quoted, condensed, in case a future device does use it:
 
 > Each value in data is used to calculate the next value as a sum of the two adjacent
-> values (previous + next). The first value is the reference value. Delta frame has a size
-> (bits) determined by the device. The Delta frame size may differ. Also the number of
-> samples in the delta frame may differ. You will find both the delta frame size and the
-> sample count in front of the delta frame.
+> values (previous + next). The first value is the reference value. Delta frame has a
+> size (bits) determined by the device... Initially the delta frame size is at index
+> `(channels * ceil(resolution / 8.0)) + 1` and sample count at index
+> `(channels * ceil(resolution / 8.0)) + 2`.
 
-> Initially the delta frame size is at index `(channels * ceil(resolution / 8.0)) + 1` and
-> sample count at index `(channels * ceil(resolution / 8.0)) + 2`. Where resolution is
-> always in full Bytes.
-
-> Reference sample is the first ("seed") sample and it is being used in calculation of the
-> subsequent delta samples. So the current delta sample will be summed up with the previous
-> sample, and so on.
-
-So, per frame:
-
-```
-[ reference sample: channels × bytesPerSample ][ deltaBitWidth ][ sampleCount ][ bit-packed deltas... ]
-```
-
-…and a frame can contain **several** such delta blocks back to back, since "the delta
-frame size may differ" between them. Each block re-seeds from the running value.
-
-Sign extension, for the reference sample: build the integer by OR-ing each byte shifted
-left by `index * 8`; then if `sample & bitmask` is negative, OR in `0xFFFFFFFF << (chunkSize * 8)`.
-For the packed deltas: accumulate bits, and if the result is non-zero, OR in
-`INT_MAX << (bitWidth - 1)` to extend the sign.
-
-### The two UNVERIFIED points
-
-1. **The `+1` / `+2` index base.** The formula reads as though it is relative to the frame
-   *type* byte (`data[9]`), not to the start of the content (`data[10]`) — with the
-   reference sample occupying the bytes immediately after the frame type. That is the
-   reading that makes the arithmetic work, but it is an inference, and an off-by-one here
-   yields a decode that runs and produces garbage.
-2. **The sign-extension wording** in the PDF is genuinely awkward (`bitmask = -0x1 shl
-   resolution - 1`, with "resolution" used to mean bytes in one place and bits in
-   another). Implement it, then check against physics rather than against the prose.
+No implementation of this ships. A speculative decoder that no available hardware
+exercises is how the 16-million-mG reading happened; if a device turns up that needs
+one, write it then, against its bytes.
 
 ## How to verify a decode is right
 
@@ -288,6 +310,11 @@ Code 6 is worth knowing: the H10 keeps streaming after the browser tab that star
 it goes away, and cannot START a measurement that is already active. The app sends
 an unconditional STOP before negotiating, and ignores the expected error when
 nothing was running.
+
+**Stage 1 VERIFIED on hardware (2026-07-27).** A real H10 accepted the corrected
+start request on the first attempt, sent 52 frames, and all 52 decoded to gravity.
+The bytes are in `fixtures/h10-acc-frames.js`; the readout showed the wrong number
+first, which is exactly what that row is for.
 
 **Stage 2 (not built):** extract breathing. Band-pass the axis with the most
 respiratory variance (or the projection onto the principal axis) over roughly

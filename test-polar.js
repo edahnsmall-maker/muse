@@ -511,37 +511,91 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
   console.log('\u2713 signedLE handles 8/16/24-bit two\u2019s-complement correctly');
 }
 
-// 23) Round-trip through a frame built the way the decoder expects.
-//     SELF-CONSISTENCY ONLY — see the warning above.
+// 23) THE REAL FRAMES. This replaces a test that encoded 6-bit deltas exactly the
+//     way the decoder decoded them and then asserted it got them back — a test that
+//     could only ever confirm the decoder agreed with itself, and which passed
+//     happily while a strap sitting still reported 16 million mG.
+//
+//     These are bytes a real H10 sent, and the thing asserted about them is gravity.
 {
-  // Encode 3-channel 16-bit samples with 6-bit LSB-first signed deltas.
-  const ref = [900, -120, 400];
-  const deltas = [[3, -2, 1], [-4, 5, 0], [7, 1, -3]];
-  const bits = [];
-  for (const d of deltas) for (const v of d) {
-    const u = v < 0 ? v + 64 : v;                 // 6-bit two's complement
-    for (let k = 0; k < 6; k++) bits.push((u >> k) & 1);
+  const fx = require('./fixtures/h10-acc-frames.js');
+  let all = [];
+  for (const [n, hex] of fx.frames.entries()) {
+    const out = Polar.decodeAccFrame(fx.toView(hex), { channels: 3 });
+    assert.ok(out, `real frame ${n} must decode`);
+    assert.strictEqual(out.frameType, 1, 'the H10 sends 16-bit ACC frames');
+    // 216 content bytes / (3 channels x 2 bytes) = 36. Not 1, which is what the
+    // delta reading produced when it hit 0xcd as a "bit width" and bailed.
+    assert.strictEqual(out.samples.length, 36,
+      `real frame ${n} carries 36 samples, not ${out.samples.length}`);
+    all = all.concat(out.samples);
   }
-  const packed = new Uint8Array(Math.ceil(bits.length / 8));
-  bits.forEach((bit, k) => { if (bit) packed[k >> 3] |= 1 << (k & 7); });
+  assert.strictEqual(all.length, 216);
 
-  const head = [Polar.PMD_TYPE_ACC, 0, 0, 0, 0, 0, 0, 0, 0, 1]; // type, 8-byte ts, frameType=1
-  const refBytes = [];
-  for (const v of ref) { const u = v < 0 ? v + 65536 : v; refBytes.push(u & 0xff, (u >> 8) & 0xff); }
-  const frame = new Uint8Array([...head, ...refBytes, 6, deltas.length, ...packed]);
+  // GRAVITY. Not negotiable, and not something this file defines.
+  const mags = all.map((s) => Polar.accelMagnitude(s));
+  const mean = mags.reduce((a, c) => a + c, 0) / mags.length;
+  assert.ok(mean > 950 && mean < 1075,
+    `216 samples from a strap at rest must average ~1000 mG, got ${mean.toFixed(1)}`);
+  // Every single sample, not just the average: an average can be dragged to 1000 by
+  // symmetric garbage, which is precisely what a wrong decode produces.
+  for (const [i, m] of mags.entries()) {
+    assert.ok(m > 900 && m < 1150, `sample ${i} reads ${m.toFixed(0)} mG, not gravity`);
+  }
+  // A body at rest is also STEADY. Thrashing within the right average is still wrong.
+  const sd = Math.sqrt(mags.reduce((a, c) => a + (c - mean) ** 2, 0) / mags.length);
+  assert.ok(sd < 40, `magnitude must be steady at rest, got sd ${sd.toFixed(1)} mG`);
+  assert.ok(Polar.looksLikeGravity(all.slice(-40)).ok, 'the gravity verdict must pass');
 
-  const out = Polar.decodeAccFrame(new DataView(frame.buffer));
-  assert.ok(out, 'should decode');
-  assert.strictEqual(out.frameType, 1);
-  assert.strictEqual(out.samples.length, 1 + deltas.length, 'reference sample plus one per delta');
-  assert.deepStrictEqual(out.samples[0], { x: 900, y: -120, z: 400 }, 'reference sample, signed');
-  // Deltas ACCUMULATE — each sample is the previous plus its delta, not the
-  // reference plus its delta. Getting this wrong yields a plausible-looking
-  // signal that simply never drifts.
-  assert.deepStrictEqual(out.samples[1], { x: 903, y: -122, z: 401 });
-  assert.deepStrictEqual(out.samples[2], { x: 899, y: -117, z: 401 });
-  assert.deepStrictEqual(out.samples[3], { x: 906, y: -116, z: 398 });
-  console.log('\u2713 delta frames accumulate from the reference sample (self-consistency only)');
+  /* WHAT GRAVITY CANNOT CATCH, established by deliberately breaking the decode:
+   *   sample width wrong (16 -> 8 bit)  -> caught (72 samples, not 36)
+   *   byte order wrong (LE -> BE)       -> caught (23374 mG)
+   *   content offset off by one         -> caught (35 samples, not 36)
+   *   AXIS ORDER PERMUTED               -> NOT caught, and cannot be
+   * Magnitude is sqrt(x^2+y^2+z^2), which is invariant under permuting the axes, so
+   * nothing here establishes which axis is which. That matters for the breath work:
+   * do NOT write code that assumes a named axis is normal to the chest wall. Pick
+   * the axis at runtime by respiratory-band power, which needs no such assumption.
+   */
+  console.log(`✓ 216 real H10 samples decode to gravity: ${mean.toFixed(1)} ± ${sd.toFixed(1)} mG`);
+}
+
+// 23b) The rest of that captured session, checked against the same real bytes.
+{
+  const fx = require('./fixtures/h10-acc-frames.js');
+  // The settings response that explained error 5: no `channels` in it.
+  const set = Polar.parseControlResponse(fx.toView(fx.accSettingsRaw));
+  assert.strictEqual(set.isResponse, true);
+  assert.strictEqual(set.errorCode, 0);
+  assert.deepStrictEqual(set.settings,
+    { sampleRate: [25, 50, 100, 200], resolution: [16], range: [2, 4, 8] },
+    'the real ACC settings response must parse to exactly what the device sent');
+  assert.ok(!('channels' in set.settings),
+    'the H10 does not advertise channels — sending it is what error 5 objected to');
+  assert.deepStrictEqual(Polar.accStartSettingIds(set.settings), [0, 1, 2]);
+
+  // ECG as the control condition: a different type, a different shape, same parser.
+  const ecg = Polar.parseControlResponse(fx.toView(fx.ecgSettingsRaw));
+  assert.deepStrictEqual(ecg.settings, { sampleRate: [130], resolution: [14] },
+    'the H10 reports ECG at 130Hz/14-bit');
+
+  // The feature bitmap, cross-checked against the settings responses above: mask
+  // 0x05 claims ECG and ACC, and both of those answered. Two independent sources
+  // agreeing is what makes the inferred layout believable.
+  const f = Polar.parseFeatures(fx.toView(fx.featuresRaw));
+  assert.strictEqual(f.looksValid, true, 'the 0x0F marker must be recognised');
+  assert.deepStrictEqual(f.types, ['ECG', 'ACC'],
+    'mask 0x05 means ECG and ACC, which is exactly what answered GET SETTINGS');
+
+  // The accepted START, and the STOP of a stream that was not running.
+  const ok = Polar.parseControlResponse(fx.toView(fx.startAcceptedRaw));
+  assert.strictEqual(ok.command, Polar.PMD_CMD_START);
+  assert.strictEqual(ok.errorCode, 0, 'the corrected start request was accepted');
+  const stop = Polar.parseControlResponse(fx.toView(fx.stopNothingRunningRaw));
+  assert.strictEqual(stop.command, Polar.PMD_CMD_STOP);
+  assert.strictEqual(stop.errorCode, 6,
+    'stopping a stream that is not running answers 6, so the pre-emptive STOP is harmless');
+  console.log('✓ the real control responses parse: features, both settings, start, stop');
 }
 
 // 24) Garbage in must not produce confident output.
@@ -552,11 +606,21 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
   const wrongType = new Uint8Array(20); wrongType[0] = 0; // ECG
   assert.strictEqual(Polar.decodeAccFrame(new DataView(wrongType.buffer)), null,
     'an ECG frame must not be decoded as acceleration');
-  // An absurd bit width must stop the loop, not spin.
-  const bad = new Uint8Array([Polar.PMD_TYPE_ACC, 0,0,0,0,0,0,0,0, 1, 1,0, 2,0, 3,0, 200, 250, 9,9,9,9]);
-  const r = Polar.decodeAccFrame(new DataView(bad.buffer));
-  assert.ok(r === null || r.samples.length <= 2, 'an implausible bit width must halt decoding');
-  console.log('\u2713 malformed ACC frames are refused rather than decoded into nonsense');
+  // An unknown frame type has an unknown sample width, so there is nothing to do
+  // but refuse. Guessing 16-bit here would produce numbers with no basis.
+  const badType = new Uint8Array([Polar.PMD_TYPE_ACC, 0,0,0,0,0,0,0,0, 7, 1,0,2,0,3,0]);
+  assert.strictEqual(Polar.decodeAccFrame(new DataView(badType.buffer)), null,
+    'an unrecognised frame type must be refused, not assumed');
+  // A PARTIAL sample must sink the whole frame. Decoding as far as it goes would
+  // hand back plausible samples from a frame we demonstrably misunderstand.
+  const ragged = new Uint8Array([Polar.PMD_TYPE_ACC, 0,0,0,0,0,0,0,0, 1, 1,0, 2,0, 3,0, 4,0]);
+  assert.strictEqual(ragged.length - 10, 8, 'fixture is 8 content bytes: one triplet plus two');
+  assert.strictEqual(Polar.decodeAccFrame(new DataView(ragged.buffer)), null,
+    'content that is not a whole number of samples must be refused entirely');
+  // And the length check must not be so strict that real frames fail it.
+  const fx = require('./fixtures/h10-acc-frames.js');
+  assert.ok(Polar.decodeAccFrame(fx.toView(fx.frames[0])), 'a real frame must still decode');
+  console.log('✓ malformed ACC frames are refused rather than decoded into nonsense');
 }
 
 // 25) THE CHECK THAT ACTUALLY MATTERS. A correct decode of a body at rest reads

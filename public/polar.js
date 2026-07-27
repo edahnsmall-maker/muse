@@ -658,75 +658,53 @@
   /*
    * Decode one PMD ACC data frame into samples of {x, y, z} in mG.
    *
-   * Frame layout (docs/polar-pmd.md):
-   *   [0]       measurement type
+   * Frame layout, VERIFIED against 216 samples from a real H10 (see
+   * fixtures/h10-acc-frames.js):
+   *   [0]       measurement type   (2 = ACC)
    *   [1..8]    timestamp
-   *   [9]       frame type  (ACC: 0 = 8-bit, 1 = 16-bit, 2 = 24-bit, all signed mG)
-   *   [10..]    one or more delta blocks:
-   *               reference sample   channels x bytesPerSample, signed LE
-   *               deltaBitWidth      1 byte
-   *               sampleCount        1 byte
-   *               packed deltas      sampleCount x channels values of deltaBitWidth bits
+   *   [9]       frame type         (0 = 8-bit, 1 = 16-bit, 2 = 24-bit, signed mG)
+   *   [10..]    a flat array of samples: channels x bytesPerSample, signed LE
    *
-   * The spec gives the delta-width index as (channels * ceil(resolution/8)) + 1
-   * relative to the frame-type byte, which lands exactly one past the reference
-   * sample — internally consistent, and the reading used here.
+   * THE H10 DOES NOT DELTA-COMPRESS ITS ACC FRAMES, whatever the spec's delta
+   * section implies. This code used to implement that section, and the frames make
+   * the mistake unmissable: content is 216 bytes, exactly 36 samples x 3 channels x
+   * 2 bytes, with no width or count header anywhere in it. Reading byte 16 as a
+   * "delta bit width" got 0xcd = 205, which the guard rejected — so it kept the
+   * seed sample, silently discarded the other 35, and dropped the effective rate
+   * from 50Hz to about 1.4Hz. Worse, on frames where that byte happened to be <= 32
+   * the delta path ran and invented values, which is how a strap sitting still
+   * reported 16 million mG.
    *
-   * UNVERIFIED: bit order within the packed deltas. LSB-first is assumed, which is
-   * what every implementation consulted uses, but if the decode is wrong this is
-   * the first thing to flip. Check with accelMagnitude(), not with a test.
+   * The delta code is gone rather than kept for other devices. Speculative decoders
+   * that no available hardware exercises are how the 16-million-mG reading happened
+   * in the first place; if a device turns up that needs one, write it then, against
+   * its bytes.
+   *
+   * A frame whose content is not a whole number of samples is REFUSED, not decoded
+   * as far as it goes. Returning a short read here would hand plausible numbers to
+   * a caller that has no way to know they are wrong.
    */
   function decodeAccFrame(view, { channels = 3 } = {}) {
-    if (!view || view.byteLength < 12) return null;
+    if (!view || view.byteLength < 11) return null;
     const b = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
     if (b[0] !== PMD_TYPE_ACC) return null;
     const frameType = b[9];
     const bytesPer = frameType === 0 ? 1 : frameType === 1 ? 2 : frameType === 2 ? 3 : 0;
-    if (!bytesPer) return null;
+    if (!bytesPer || channels < 1 || channels > 3) return null;
+
+    const content = b.length - 10;
+    const stride = channels * bytesPer;
+    // The length check IS the structural test. 216 % 6 === 0 is what says "flat
+    // array of triplets" rather than "something with headers in it".
+    if (content < stride || content % stride !== 0) return null;
 
     const samples = [];
-    let i = 10;
-    let guard = 0;
-    while (i + channels * bytesPer + 2 <= b.length && guard++ < 64) {
-      // Reference ("seed") sample.
-      const cur = [];
-      for (let ch = 0; ch < channels; ch++) cur.push(signedLE(b, i + ch * bytesPer, bytesPer));
-      i += channels * bytesPer;
-      samples.push(cur.slice());
-
-      const bitWidth = b[i++];
-      const count = b[i++];
-      if (bitWidth === 0 || bitWidth > 32) break;   // nonsense: stop rather than churn
-      if (count === 0) continue;
-
-      const totalBits = bitWidth * count * channels;
-      const needBytes = Math.ceil(totalBits / 8);
-      if (i + needBytes > b.length) break;
-
-      let bitPos = 0;
-      for (let n = 0; n < count; n++) {
-        for (let ch = 0; ch < channels; ch++) {
-          let v = 0;
-          for (let bit = 0; bit < bitWidth; bit++) {
-            const abs = bitPos + bit;
-            const byte = b[i + (abs >> 3)];
-            v |= ((byte >> (abs & 7)) & 1) << bit;
-          }
-          bitPos += bitWidth;
-          // Sign-extend the delta from bitWidth bits.
-          const signBit = 1 << (bitWidth - 1);
-          const delta = (v & signBit) ? v - (1 << bitWidth) : v;
-          cur[ch] += delta;
-        }
-        samples.push(cur.slice());
-      }
-      i += needBytes;
+    for (let i = 10; i + stride <= b.length; i += stride) {
+      const s = [];
+      for (let ch = 0; ch < channels; ch++) s.push(signedLE(b, i + ch * bytesPer, bytesPer));
+      samples.push({ x: s[0], y: s[1] || 0, z: s[2] || 0 });
     }
-    if (!samples.length) return null;
-    return {
-      frameType,
-      samples: samples.map((s) => ({ x: s[0], y: s[1] || 0, z: s[2] || 0 })),
-    };
+    return { frameType, samples };
   }
 
   /*
