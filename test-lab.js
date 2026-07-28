@@ -65,6 +65,44 @@ function makeArchive({ id, seedOffset = 0, planted = true, spans = 4, minutes = 
   return { name: `session-${id}.zip`, bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
 }
 
+/*
+ * An archive containing a recorded eyes-closed/open control run.
+ *
+ * `working` decides whether calm actually rises with the eyes closed. Both outcomes
+ * are tested, because the FAILURE message is the important one: a control that cannot
+ * fail is not a control.
+ */
+function makeTrialArchive({ id, seedOffset = 0, working = true }) {
+  const Trials = require('./public/trials.js');
+  const run = Trials.buildBlocks('alpha-control');
+  const t0 = new Date('2026-07-28T06:00:00').getTime() + seedOffset * 86400000;
+  let seed = 777 + seedOffset;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+
+  const rows = [];
+  for (let t = 0; t < run.totalSec; t++) {
+    const at = Trials.blockAt(run, t);
+    const closed = at && at.block.condition === 'closed';
+    // Working: calm high when closed. Broken: no relationship at all.
+    const base = working ? (closed ? 0.72 : 0.3) : 0.5;
+    rows.push({
+      t, epochMs: t0 + t * 1000,
+      calm: Math.max(0, Math.min(1, base + rnd() * 0.08)),
+      focus: Math.max(0, Math.min(1, 0.5 + rnd() * 0.1)),
+      drowsy: Math.max(0, Math.min(1, 0.4 + rnd() * 0.1)),
+    });
+  }
+  const notes = run.blocks.map((b, i) => ({
+    id: i + 1, kind: 'block', at: t0 + b.fromSec * 1000, offsetSec: b.fromSec,
+    trialKey: 'alpha-control', condition: b.condition, blockIndex: b.index, text: b.label,
+  }));
+  const { files } = Exporter.buildFiles({
+    meta: { startedAt: t0, durationSec: run.totalSec, bytes: 1e6, ended: true, eegHz: 256, accHz: 50 },
+    eeg: [[1], [2], [], []], acc: [], rr: [], rows, notes,
+  }, {});
+  return { name: `trial-${id}.zip`, bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
+}
+
 async function drop(page, archives) {
   await page.setInputFiles('#file', archives.map((a) => ({
     name: a.name, mimeType: 'application/zip', buffer: a.bytes,
@@ -247,6 +285,60 @@ async function drop(page, archives) {
     assert.strictEqual(st.errored, 1, 'a broken archive must be kept and marked, not dropped');
     assert.match(st.text, /broken\.zip/, 'and named on screen');
     console.log('✓ a corrupt archive is named on screen rather than silently skipped');
+  }
+
+  // 7) TRIAL BLOCKS must be rebuilt from the RECORD and reported per protocol, with
+  //    the positive control called out as a check on the equipment.
+  {
+    await page.evaluate(() => { sessions.length = 0; render(); });
+    await drop(page, [
+      makeTrialArchive({ id: 'ok1', seedOffset: 60, working: true }),
+      makeTrialArchive({ id: 'ok2', seedOffset: 61, working: true }),
+    ]);
+    const st = await page.evaluate(() => ({
+      blocks: sessions[0].trialBlocks.length,
+      conditions: sessions[0].trialBlocks.map((b) => b.condition),
+      // The settle window must be excluded on the way back IN, not just on the way out.
+      settleSkipped: sessions[0].trialBlocks.every((b) => b.analyseFromSec > b.fromSec),
+      contiguous: sessions[0].trialBlocks.every((b, i, a) =>
+        i === 0 || Math.abs(b.fromSec - a[i - 1].toSec) < 0.01),
+      text: document.getElementById('trials') ? document.getElementById('trials').textContent : '',
+    }));
+    assert.strictEqual(st.blocks, 12, '6 repeats x 2 conditions must be recovered');
+    for (let i = 1; i < st.conditions.length; i++) {
+      assert.notStrictEqual(st.conditions[i], st.conditions[i - 1],
+        'the recovered blocks must still alternate');
+    }
+    assert.ok(st.settleSkipped, 'the settling window must be excluded when reading back');
+    assert.ok(st.contiguous,
+      'each block must end where the next begins — derived from the record, not the'
+      + ' protocol definition, so a cut-short run reports what actually happened');
+    assert.match(st.text, /positive control/i, 'the control must be labelled as one');
+    assert.match(st.text, /CONTROL PASSED/,
+      `a working apparatus must be reported as passing (got: ${st.text.slice(0, 200)})`);
+    assert.match(st.text, /Berger/, 'and say why that is the expected result');
+    console.log('✓ trial blocks are rebuilt from the record, and a good control reports PASSED');
+  }
+
+  // 8) *** A BROKEN APPARATUS MUST FAIL LOUDLY. *** A control that cannot fail is not
+  //     a control, and this is the message that saves weeks of chasing a phantom.
+  {
+    await page.evaluate(() => { sessions.length = 0; render(); });
+    await drop(page, [
+      makeTrialArchive({ id: 'bad1', seedOffset: 70, working: false }),
+      makeTrialArchive({ id: 'bad2', seedOffset: 71, working: false }),
+    ]);
+    const st = await page.evaluate(() => ({
+      text: document.getElementById('trials').textContent,
+      bad: !!document.querySelector('#trials .verdict.bad'),
+    }));
+    assert.match(st.text, /CONTROL FAILED/,
+      `no eyes-closed alpha effect must be reported as a FAILURE (got: ${st.text.slice(0, 200)})`);
+    assert.match(st.text, /NOTHING else on this page means anything/,
+      'and must say plainly that the rest of the analysis is void until it passes');
+    assert.match(st.text, /electrode contact/, 'and name the first thing to check');
+    assert.ok(st.bad, 'and be styled as a failure, not as a neutral result');
+    console.log('✓ a broken apparatus reports CONTROL FAILED and voids the rest');
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

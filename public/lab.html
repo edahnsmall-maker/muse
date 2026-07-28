@@ -84,6 +84,7 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 
 <script src="dsp.js"></script>
 <script src="labels.js"></script>
+<script src="trials.js"></script>
 <script src="import.js"></script>
 <script src="analysis.js"></script>
 <script>
@@ -128,8 +129,28 @@ async function load(files) {
       }));
       const duration = read.metrics.length ? read.metrics[read.metrics.length - 1].t : null;
       const { spans, wholeSit } = Labels.spans(notes, { durationSec: duration });
+      /* Trial blocks, rebuilt from the recorded boundaries rather than from the
+       * protocol definition. If a run was cut short, or the app was reloaded, or a
+       * block was missed, the record says so and the definition would not — so the
+       * data is the authority on what actually happened.
+       */
+      const blockNotes = read.notes
+        .filter((n) => n.kind === 'block' && n.condition != null && n.offsetSec != null)
+        .sort((a, b) => a.offsetSec - b.offsetSec);
+      const trialBlocks = blockNotes.map((n, i) => {
+        const proto = Trials.BY_KEY[n.trialKey];
+        const next = blockNotes[i + 1];
+        // The block ends where the next one starts. Falling back to the protocol's
+        // nominal length only for the final block, which has no successor.
+        const toSec = next ? next.offsetSec
+          : (proto ? n.offsetSec + proto.blockSec : (duration || n.offsetSec));
+        const settle = proto ? proto.settleSec : 0;
+        return { condition: n.condition, trialKey: n.trialKey, blockIndex: n.blockIndex,
+          fromSec: n.offsetSec, analyseFromSec: n.offsetSec + settle, toSec };
+      });
       sessions.push({
-        sessionId: f.name, file: f.name, read, notes, spans, wholeSit, durationSec: duration,
+        sessionId: f.name, file: f.name, read, notes, spans, wholeSit, trialBlocks,
+        durationSec: duration,
       });
     } catch (err) {
       // A bad archive must be reported by name. Silently skipping it would mean
@@ -143,6 +164,7 @@ async function load(files) {
 function render() {
   renderLoaded();
   renderTimelines();
+  renderTrials();
   renderSearch();
 }
 
@@ -282,6 +304,120 @@ function drawTimeline(s, canvas, legendEl) {
  * The search. This is the part that has to be trusted, so its output leads with the
  * verdict in words and shows the size of the search next to every result.
  */
+/*
+ * Trial results. Reported separately from the general search because a trial is a
+ * different kind of evidence: the label was decided in advance, so a difference
+ * between conditions cannot be an artefact of the labeller having seen the screen.
+ *
+ * The positive control is shown FIRST and framed as a check on the equipment. If it
+ * fails, everything below it is void — so the page says that outright rather than
+ * leaving both tables on screen with equal weight.
+ */
+function renderTrials() {
+  const withTrials = sessions.filter((s) => !s.error && s.trialBlocks && s.trialBlocks.length);
+  let host = document.getElementById('trials');
+  if (!withTrials.length) { host?.remove(); return; }
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'trials';
+    (document.getElementById('timelines') || loadedEl).after(host);
+  }
+
+  // Grouped by protocol: mixing a control with a meditation trial would average two
+  // different questions together.
+  const byProtocol = {};
+  for (const s of withTrials) {
+    for (const b of s.trialBlocks) {
+      const key = b.trialKey || 'unknown';
+      (byProtocol[key] = byProtocol[key] || []).push({ session: s, block: b });
+    }
+  }
+
+  const sections = Object.entries(byProtocol).map(([key, entries]) => {
+    const proto = Trials.BY_KEY[key];
+    const sessionIds = Array.from(new Set(entries.map((e) => e.session.sessionId)));
+    // Build units per session, so blocks stay tied to the sit they came from.
+    const units = [];
+    for (const sid of sessionIds) {
+      const s = withTrials.find((x) => x.sessionId === sid);
+      const blocks = entries.filter((e) => e.session.sessionId === sid).map((e) => e.block);
+      units.push(...Trials.unitsFromRun(
+        { protocol: proto || { conditions: [], key }, blocks },
+        s.read.metrics, { sessionId: sid },
+      ));
+    }
+    if (!units.length) return '';
+
+    const isControl = key === 'alpha-control';
+    const featureList = Array.from(units.reduce((set, u) => {
+      Object.keys(u.features).forEach((k) => set.add(k)); return set;
+    }, new Set())).sort();
+
+    // For a control, the expected direction was declared in advance, so report it.
+    let controlHtml = '';
+    if (isControl) {
+      const checks = ['calm', 'focus', 'drowsy'].filter((f) => featureList.includes(f))
+        .map((f) => Trials.controlCheck(units, { feature: f, expectHigherIn: 'closed' }));
+      const calm = checks.find((c) => c.feature === 'calm');
+      const verdict = !calm || calm.ok == null
+        ? { cls: 'warn', text: 'Not enough blocks to check the control yet.' }
+        : calm.ok
+          ? { cls: 'good', text: 'CONTROL PASSED. Calm is clearly higher with the eyes'
+              + ' closed, which is the textbook Berger effect. The signal chain —'
+              + ' electrodes, filtering, band powers, timing, export — is doing'
+              + ' something real, so a null result elsewhere is a fact about'
+              + ' meditation rather than about the wiring.' }
+          : { cls: 'bad', text: 'CONTROL FAILED. Calm is not higher with the eyes closed,'
+              + ' and it should be — this is one of the most reliable findings in EEG.'
+              + ' Something in the signal chain is wrong: check electrode contact first,'
+              + ' then whether the blocks were actually followed. Until this passes,'
+              + ' NOTHING else on this page means anything.' };
+      controlHtml = `<div class="card verdict ${verdict.cls}">${esc(verdict.text)}</div>`
+        + `<div class="card scroll"><table>
+            <tr><th>Feature</th><th>Eyes closed</th><th>Eyes open</th><th>Difference</th>
+                <th>Effect size</th><th>Expected direction</th></tr>
+            ${checks.map((c) => `<tr><td>${esc(c.feature)}</td>
+              <td class="num">${f2(c.meanExpected)}</td>
+              <td class="num">${f2(c.meanOther)}</td>
+              <td class="num">${f2(c.difference)}</td>
+              <td class="num">${c.effectSize == null ? '—'
+                : (c.effectSize === Infinity ? '∞' : c.effectSize.toFixed(2))}</td>
+              <td>${c.ok === true ? '<span class="good">yes</span>'
+                : c.ok === false ? '<span class="bad">no</span>' : '<span class="dim">—</span>'}</td>
+            </tr>`).join('')}</table></div>`;
+    }
+
+    // And the same disciplined search, over the trial's own condition label.
+    const res = Analysis.search(units, { iterations: 1500 });
+    const rows = res.tests.slice(0, 20).map((t) => `<tr>
+      <td>${esc(t.feature)}</td><td class="num">${f2(t.trainRho)}</td>
+      <td class="num">${t.p == null ? '—' : t.p.toFixed(4)}</td>
+      <td class="num">${t.q == null ? '—' : t.q.toFixed(3)}</td>
+      <td class="num">${f2(t.testRho)}</td>
+      <td>${t.heldUp === true ? '<span class="good">held</span>'
+        : t.heldUp === false ? '<span class="bad">did not hold</span>'
+        : '<span class="dim">—</span>'}</td></tr>`).join('');
+
+    const counts = units.reduce((m, u) => { m[u.conditionKey] = (m[u.conditionKey] || 0) + 1; return m; }, {});
+    return `<h2>${esc(proto ? proto.label : key)}${isControl ? ' — positive control' : ''}</h2>
+      <p class="sub">${esc(proto ? proto.expectation : 'unknown protocol — expectation not recorded')}</p>
+      ${controlHtml}
+      <div class="card">
+        <div class="note" style="margin-bottom:10px">
+          ${units.length} blocks across ${sessionIds.length} session(s) ·
+          ${Object.entries(counts).map(([k, v]) => `${esc(k)}: ${v}`).join(' · ')} ·
+          settling periods excluded
+        </div>
+        <div class="card verdict" style="margin:0 0 12px">${esc(res.verdict)}</div>
+        <div class="scroll"><table>
+          <tr><th>Feature</th><th>rho (train)</th><th>p</th><th>q</th>
+              <th>rho (held out)</th><th>Held out</th></tr>${rows}</table></div>
+      </div>`;
+  }).join('');
+
+  host.innerHTML = sections;
+}
+
 function renderSearch() {
   const usable = sessions.filter((s) => !s.error);
   const units = Analysis.unitsFromSpans(usable.map((s) => ({

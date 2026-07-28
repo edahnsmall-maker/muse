@@ -133,6 +133,21 @@
      phrase is what keeps "4" meaning the same thing in week six. */
   .dimWord { font-size: 11px; opacity: .5; margin-left: 8px; min-height: 14px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Trial instruction overlay. Centred and large, and it must never intercept a
+     click — the pills underneath it stay reachable. */
+  #trialHud { position: fixed; left: 50%; top: 12vh; transform: translateX(-50%);
+    z-index: 55; text-align: center; pointer-events: none; max-width: min(560px, 88vw); }
+  #trialHud[hidden] { display: none; }
+  #trialCond { font: 600 12px/1.4 Inter, system-ui, sans-serif; letter-spacing: .14em;
+    text-transform: uppercase; color: rgba(255,255,255,.5); }
+  #trialInstr { font: 400 25px/1.35 Inter, system-ui, sans-serif; margin-top: 8px;
+    color: #f2f4f8; text-shadow: 0 2px 24px rgba(0,0,0,.8); }
+  #trialMeta { margin-top: 10px; font: 11px/1.5 ui-monospace, monospace;
+    color: rgba(255,255,255,.4); letter-spacing: .04em; }
+  /* The settling period is visibly discounted, so it is obvious that this stretch is
+     not being measured and there is time to actually change what you are doing. */
+  #trialHud.settling #trialInstr { opacity: .5; }
+  #trialHud.settling #trialMeta::after { content: ' · settling, not counted'; }
   #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
     padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
     color: inherit; border: 1px solid rgba(255,255,255,.16); }
@@ -373,6 +388,14 @@
 <!-- Out of the way, and always in the same place. Recording is explicit now:
      it starts and stops when you say so, and stopping is what packages the sit. -->
 <button id="recBtn" title="Start or stop recording this sit">Record</button>
+<!-- The current instruction, large and central. A trial is only as good as the
+     meditator's ability to actually follow it, and small grey text at the edge of a
+     dark screen is not something you can read with barely-open eyes. -->
+<div id="trialHud" hidden>
+  <div id="trialCond"></div>
+  <div id="trialInstr"></div>
+  <div id="trialMeta"></div>
+</div>
 <div id="summary">
   <h2 id="summaryTitle">Session</h2>
   <div id="summaryBody"></div>
@@ -417,6 +440,7 @@
       </span>
       <span class="pillGroup">
         <span class="pill" id="trainToggle">Training: off<kbd>T</kbd></span>
+        <span class="pill" id="trialsLink">Trials</span>
         <span class="pill" id="notesLink">Notes<kbd>N</kbd></span>
         <span class="pill" id="voiceNote">Hold to speak<kbd>V</kbd></span>
       </span>
@@ -448,6 +472,7 @@
 
       </div>
       <div id="timerPicker" class="popover" hidden></div>
+      <div id="trialPicker" class="popover" hidden></div>
     </div>
     <div id="hint"></div>
   </div>
@@ -464,6 +489,7 @@
 <script src="record.js"></script>
 <script src="export.js"></script>
 <script src="labels.js"></script>
+<script src="trials.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -2367,6 +2393,168 @@ addEventListener('beforeunload', (e) => {
   return (e.returnValue = 'A recording is still running. Stop it first to close the session cleanly.');
 });
 
+/* --- Calibration trials ----------------------------------------------------
+ * A guided protocol where the instruction IS the label. See trials.js for why this
+ * is the only path to validating anything the app claims.
+ *
+ * AUDIBLE CUES ARE NOT A NICETY. Two of these protocols are done with the eyes
+ * closed, so a block boundary that is only announced on screen cannot be noticed —
+ * and a meditator who misses a boundary contributes a block labelled as one thing
+ * and spent doing another, which is worse than no data. Each condition gets its own
+ * pitch, so you know which block you are in without looking.
+ */
+const trialHudEl = document.getElementById('trialHud');
+const trialCondEl = document.getElementById('trialCond');
+const trialInstrEl = document.getElementById('trialInstr');
+const trialMetaEl = document.getElementById('trialMeta');
+const trialPickerEl = document.getElementById('trialPicker');
+const trialsLinkEl = document.getElementById('trialsLink');
+
+let trialRun = null;        // the built block sequence
+let trialStartedAt = null;  // session-clock seconds at which block 0 begins
+let trialPrevSec = null;
+let audioCtx = null;
+
+// Which side each protocol started on last time, so runs alternate rather than
+// repeating one order and confounding condition with order across the dataset.
+function nextStartWith(key) {
+  const stored = Number(localStorage.getItem(`zenbio.trialStart.${key}`) || 0);
+  localStorage.setItem(`zenbio.trialStart.${key}`, String((stored + 1) % 2));
+  return stored % 2;
+}
+
+function tone(hz, ms = 180) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator();
+    const g = audioCtx.createGain();
+    o.type = 'sine';
+    o.frequency.value = hz;
+    // Ramped, not switched: an abrupt gate clicks, and a click in the middle of a sit
+    // is a startle rather than a cue.
+    g.gain.setValueAtTime(0, audioCtx.currentTime);
+    g.gain.linearRampToValueAtTime(0.16, audioCtx.currentTime + 0.02);
+    g.gain.linearRampToValueAtTime(0, audioCtx.currentTime + ms / 1000);
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start();
+    o.stop(audioCtx.currentTime + ms / 1000 + 0.02);
+  } catch (e) { /* no audio available; the screen still shows the instruction */ }
+}
+
+function renderTrialPicker() {
+  trialPickerEl.innerHTML = '<div style="width:100%;display:flex;flex-direction:column;gap:8px">'
+    + Trials.PROTOCOLS.map((p) => {
+      const mins = Math.round(Trials.durationSec(p.key) / 60);
+      return `<button data-trial="${p.key}" style="text-align:left;padding:9px 12px">`
+        + `<div style="font-size:13px">${escapeHtml(p.label)} <span style="opacity:.5">`
+        + `· ${mins} min</span></div>`
+        + `<div style="font-size:11px;opacity:.55;margin-top:2px">${escapeHtml(p.purpose)}</div>`
+        + `</button>`;
+    }).join('')
+    + (trialRun ? '<button data-trial="" style="opacity:.7">Stop the trial</button>' : '')
+    + '</div>';
+  trialPickerEl.querySelectorAll('[data-trial]').forEach((b) => {
+    b.addEventListener('click', () => {
+      trialPickerEl.hidden = true;
+      if (!b.dataset.trial) stopTrial();
+      else startTrial(b.dataset.trial);
+    });
+  });
+}
+
+async function startTrial(key) {
+  const proto = Trials.BY_KEY[key];
+  if (!proto) return;
+  // A trial that is not recorded is a trial wasted, so recording is started for you
+  // rather than left as a thing to remember.
+  if (!recArmed) await startRecording();
+  trialRun = Trials.buildBlocks(key, { startWith: nextStartWith(key) });
+  trialStartedAt = sessionTSec();
+  trialPrevSec = null;
+  renderTrialsLink();
+  setStatus(`${proto.label} \u00b7 ${Math.round(Trials.durationSec(key) / 60)} min`
+    + ` \u00b7 ${proto.expectation}`);
+  statusLockUntil = Date.now() + 9000;
+  if (recSession) {
+    await recSession.addNote({ kind: 'trial-start', trialKey: key,
+      startWith: trialRun.startWith, text: proto.label, anchored: true });
+  }
+  // Show the first instruction NOW rather than on the next tick. A quarter-second of
+  // blank screen after pressing start reads as "did that work?", and the first block's
+  // settling period is already running.
+  updateTrial();
+}
+
+async function stopTrial({ completed = false } = {}) {
+  if (!trialRun) return;
+  const key = trialRun.protocol.key;
+  trialRun = null; trialStartedAt = null; trialPrevSec = null;
+  trialHudEl.hidden = true;
+  renderTrialsLink();
+  if (recSession) {
+    await recSession.addNote({ kind: 'trial-end', trialKey: key, completed, anchored: true });
+  }
+  setStatus(completed ? 'trial complete' : 'trial stopped');
+  statusLockUntil = Date.now() + 3000;
+  // A completed trial ends the sit, since the protocol defines its length.
+  if (completed && recArmed) stopRecording();
+}
+
+/*
+ * Advance the trial. Called from the tick, and — importantly — from ABOVE the tick's
+ * early return, because a block boundary is a wall-clock event: a headband dropout
+ * must not silently stall a protocol mid-run.
+ */
+function updateTrial() {
+  if (!trialRun) return;
+  const t = sessionTSec() - trialStartedAt;
+  const crossed = Trials.crossedBoundary(trialRun, trialPrevSec, t);
+  const at = Trials.blockAt(trialRun, t);
+  trialPrevSec = t;
+
+  if (crossed) {
+    // A distinct pitch per condition, so the block is identifiable with eyes shut.
+    const idx = trialRun.protocol.conditions.findIndex((c) => c.key === crossed.condition);
+    tone(idx === 0 ? 660 : 440);
+    if (recSession) {
+      recSession.addNote({
+        kind: 'block', trialKey: trialRun.protocol.key, condition: crossed.condition,
+        blockIndex: crossed.index, text: crossed.label, anchored: true,
+      });
+    }
+  }
+
+  if (!at) {
+    // Past the end: three notes to say so, then wrap up.
+    tone(880, 120); setTimeout(() => tone(660, 120), 160); setTimeout(() => tone(550, 220), 320);
+    stopTrial({ completed: true });
+    return;
+  }
+  trialHudEl.hidden = false;
+  trialHudEl.classList.toggle('settling', at.phase === 'settling');
+  trialCondEl.textContent = at.block.label;
+  trialInstrEl.textContent = at.block.instruction;
+  trialMetaEl.textContent = `block ${at.block.index + 1}/${trialRun.blocks.length}`
+    + ` \u00b7 ${Math.ceil(at.remainingSec)}s`;
+}
+
+function renderTrialsLink() {
+  if (!trialsLinkEl.isConnected) return;
+  trialsLinkEl.classList.toggle('active', !!trialRun);
+  trialsLinkEl.textContent = trialRun ? `Trial: ${trialRun.protocol.label}` : 'Trials';
+}
+
+trialsLinkEl.addEventListener('click', () => {
+  const open = trialPickerEl.hidden;
+  if (open) {
+    renderTrialPicker();
+    devicesOpen = false; renderDevToggle();
+    timerPickerEl.hidden = true;
+  }
+  trialPickerEl.hidden = !open;
+});
+renderTrialsLink();
+
 // --- Saved sessions panel ---------------------------------------------------
 async function openSessions() {
   summaryTitleEl.textContent = 'Saved sessions';
@@ -2662,6 +2850,9 @@ setInterval(() => {
    * must happen on a wall clock belongs above that return, not below it.
    */
   checkTimerDone();
+  // Also above the early return: a trial block boundary is a wall-clock event, and a
+  // headband dropout must not silently stall a protocol halfway through.
+  updateTrial();
 
   if (!result) {
     // Strap-only operation is a legitimate state: the strap alone gives heart

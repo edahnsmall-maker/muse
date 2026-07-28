@@ -350,6 +350,11 @@
         seconds: n.seconds == null ? '' : n.seconds.toFixed(1),
         audioFile: noteFiles[n.id] || '',
         transition: n.transition || '',
+        // Trial bookkeeping. Without these the block structure — and therefore the
+        // label for every trial observation — cannot be reconstructed at all.
+        trialKey: n.trialKey || '',
+        condition: n.condition || '',
+        blockIndex: n.blockIndex == null ? '' : n.blockIndex,
         // The self-reported dimensions, one column each, blank when not reported.
         // Blank rather than a midpoint: "not reported" is a real and different value.
         focus: dimOf(n, 'focus'), effort: dimOf(n, 'effort'),
@@ -362,7 +367,8 @@
         text: n.text || '',
         transcript: '',
       })), ['offsetSec', 'clock', 'epochMs', 'absoluteTime', 'anchored', 'kind',
-        'markKind', 'transition', 'focus', 'effort', 'pull', 'tone', 'quadrant',
+        'markKind', 'transition', 'trialKey', 'condition', 'blockIndex',
+        'focus', 'effort', 'pull', 'tone', 'quadrant',
         'seconds', 'audioFile', 'text', 'transcript'])),
     });
     for (let ch = 0; ch < 4; ch++) {

@@ -1298,6 +1298,100 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log('✓ the closing screen records all four dimensions, in words, and clears on re-click');
   }
 
+  // 24) A WHOLE TRIAL PROTOCOL, driven through the real tick. Blocks must be cued at
+  //     their boundaries and recorded with their condition, or the labels the whole
+  //     validation effort depends on are simply absent.
+  {
+    const out = await page.evaluate(async () => {
+      // A short synthetic protocol, so the test runs in seconds rather than minutes.
+      // Injected rather than shortening the real ones, which have to stay long enough
+      // to be usable — a 2-second meditation block is not a meditation block.
+      Trials.BY_KEY['test-proto'] = {
+        key: 'test-proto', label: 'Test', purpose: 'test', blurb: '', expectation: 'x',
+        blockSec: 1, settleSec: 0.3, repeats: 2,
+        conditions: [
+          { key: 'a', label: 'Aye', instruction: 'do A' },
+          { key: 'b', label: 'Bee', instruction: 'do B' },
+        ],
+      };
+      const tones = [];
+      const realTone = window.tone;
+      window.tone = (hz) => tones.push(hz);
+
+      await startRecording();
+      const id = recSession && recSession.id;
+      await startTrial('test-proto');
+      const started = { hud: !document.getElementById('trialHud').hidden,
+        link: document.getElementById('trialsLink').textContent };
+
+      // Let the real tick drive it to completion: 2 repeats x 2 conditions x 1s.
+      const seen = [];
+      const deadline = Date.now() + 8000;
+      while (trialRun && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 100));
+        const instr = document.getElementById('trialInstr').textContent;
+        const settling = document.getElementById('trialHud').classList.contains('settling');
+        if (instr && (!seen.length || seen[seen.length - 1].instr !== instr)) {
+          seen.push({ instr, settling });
+        }
+      }
+      const finished = { run: trialRun, hud: document.getElementById('trialHud').hidden,
+        link: document.getElementById('trialsLink').textContent };
+
+      const notes = id ? await Recorder.listNotes(recDb, id) : [];
+      window.tone = realTone;
+      if (id) await Recorder.deleteSession(recDb, id);
+      delete Trials.BY_KEY['test-proto'];
+      summaryEl.classList.remove('show');
+      selfRating = null;
+      return {
+        started, finished, seen, tones,
+        blocks: notes.filter((n) => n.kind === 'block')
+          .sort((a, b) => a.blockIndex - b.blockIndex)
+          .map((n) => ({ c: n.condition, i: n.blockIndex, t: n.offsetSec })),
+        trialStart: notes.find((n) => n.kind === 'trial-start') || null,
+        trialEnd: notes.find((n) => n.kind === 'trial-end') || null,
+      };
+    });
+
+    assert.ok(out.started.hud, 'starting a trial must show the instruction');
+    assert.match(out.started.link, /^Trial: /, 'and the pill must say a trial is running');
+
+    // Every block recorded, in order, with its condition — this is the label.
+    assert.strictEqual(out.blocks.length, 4, `four blocks must be recorded (got ${out.blocks.length})`);
+    assert.deepStrictEqual(out.blocks.map((b) => b.i), [0, 1, 2, 3], 'indexed in order');
+    const conds = out.blocks.map((b) => b.c);
+    for (let i = 1; i < conds.length; i++) {
+      assert.notStrictEqual(conds[i], conds[i - 1],
+        `conditions must alternate in the RECORD too (got ${conds.join(',')})`);
+    }
+    // Boundaries must be stamped on the session clock, increasing.
+    for (let i = 1; i < out.blocks.length; i++) {
+      assert.ok(out.blocks[i].t > out.blocks[i - 1].t, 'block times must increase');
+    }
+
+    // One audible cue per boundary, at two distinct pitches — the protocol is meant to
+    // be followed with the eyes closed, so a screen-only boundary would be missed.
+    const boundaryTones = out.tones.slice(0, 4);
+    assert.strictEqual(boundaryTones.length, 4, `one cue per block (got ${out.tones.length} total)`);
+    assert.strictEqual(new Set(boundaryTones).size, 2,
+      `each condition needs its own pitch so it is identifiable unseen (got ${boundaryTones.join(',')})`);
+    assert.ok(out.tones.length > 4, 'and a distinct chime at the end of the protocol');
+
+    // The settling phase must have been visible at least once, or the meditator is
+    // never told which stretch does not count.
+    assert.ok(out.seen.some((v) => v.settling),
+      'the settling phase must be shown, so it is clear that stretch is not measured');
+
+    assert.strictEqual(out.finished.run, null, 'the trial must end itself when the blocks run out');
+    assert.ok(out.finished.hud, 'and hide the instruction');
+    assert.strictEqual(out.finished.link, 'Trials', 'and reset the pill');
+    assert.ok(out.trialStart && out.trialEnd, 'the run must be bracketed in the record');
+    assert.strictEqual(out.trialEnd.completed, true, 'and marked as completed rather than abandoned');
+    console.log(`✓ a full trial runs, cues each boundary audibly, and records`
+      + ` ${out.blocks.length} labelled blocks: ${conds.join(' ')}`);
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');

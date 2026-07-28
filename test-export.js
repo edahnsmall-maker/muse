@@ -137,7 +137,7 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
     'the summary must report what the app claimed at the time, so it can be audited');
 
   const notesCsv = Buffer.from(files.find((f) => f.name === 'notes.csv').bytes).toString('utf8');
-  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,transition,focus,effort,pull,tone,quadrant,seconds,audioFile,text,transcript$/m,
+  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,transition,trialKey,condition,blockIndex,focus,effort,pull,tone,quadrant,seconds,audioFile,text,transcript$/m,
     'notes.csv must expose the label columns and an empty transcript column');
   assert.match(notesCsv, /2026-07-27T13:12:30\.000Z|2026-07-27T06:12:30/,
     'and an absolute timestamp, so notes can be aligned to an external recording');
