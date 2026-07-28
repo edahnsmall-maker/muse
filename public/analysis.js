@@ -350,9 +350,199 @@
     return units;
   }
 
+  /*
+   * EVENT-LOCKED AVERAGING: what does the signal do around a marked moment?
+   *
+   * This is the analysis that makes self-caught taps worth taking, and the reason is
+   * arithmetic. A single instance of "coming back" is buried in noise — if returning
+   * shifts a band power by a few percent, no one instance will show it. But align
+   * forty instances on their marks and average, and anything CONSISTENTLY timed to the
+   * event adds while the noise cancels as sqrt(n). That is how a small reliable effect
+   * becomes visible, and it is the standard trick of event-related EEG analysis.
+   *
+   * Two things it needs to be honest:
+   *
+   *   A BASELINE, subtracted per event. Slow drift across a sit — settling, drying
+   *   electrodes, posture — would otherwise dominate the average and produce a
+   *   confident-looking shape that is really just "the sit went on".
+   *
+   *   A SURROGATE NULL. The average around 40 real events must be compared against the
+   *   average around 40 RANDOM times in the same sessions. Averaging enough windows of
+   *   anything produces a smooth curve that looks like a result, so the smooth curve is
+   *   not the finding — the difference from the surrogate is.
+   */
+  function eventLocked(events, seriesBySession, {
+    feature = 'calm', preSec = 20, postSec = 10, baselineSec = 10, stepSec = 1,
+  } = {}) {
+    const bins = [];
+    for (let t = -preSec; t <= postSec; t += stepSec) bins.push(t);
+    const stacks = bins.map(() => []);
+    let used = 0, skipped = 0;
+
+    for (const ev of events || []) {
+      const rows = seriesBySession[ev.sessionId];
+      if (!rows || ev.tSec == null) { skipped++; continue; }
+      const at = (t) => {
+        // Nearest sample within half a step. No interpolation: inventing a value at a
+        // timestamp that has none is exactly what must not happen here.
+        let best = null, bestD = stepSec / 2 + 1e-9;
+        for (const r of rows) {
+          if (r[feature] == null || !Number.isFinite(r[feature])) continue;
+          const d = Math.abs(r.t - t);
+          if (d <= bestD) { bestD = d; best = r[feature]; }
+        }
+        return best;
+      };
+      // Baseline from the EARLY part of the pre-window, before whatever the event is
+      // could plausibly have begun.
+      const baseVals = [];
+      for (let t = -preSec; t < -preSec + baselineSec; t += stepSec) {
+        const v = at(ev.tSec + t);
+        if (v != null) baseVals.push(v);
+      }
+      if (!baseVals.length) { skipped++; continue; }
+      const base = baseVals.reduce((a, b) => a + b, 0) / baseVals.length;
+      /* DETREND, not merely baseline-subtract.
+       *
+       * Subtracting a level removes the offset but leaves the SLOPE, and real EEG
+       * drifts — electrodes dry, posture settles, the sit goes on. A steady upward
+       * drift then shows up in every window as a rise after the mark, which looks
+       * exactly like a response and is not one. Fitting and removing a line through
+       * each window kills that.
+       */
+      const pts = [];
+      bins.forEach((t, i) => {
+        const v = at(ev.tSec + t);
+        if (v != null) pts.push([t, v]);
+      });
+      if (pts.length < 3) { skipped++; continue; }
+      const mt = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+      const mv = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+      let num = 0, den = 0;
+      for (const [t, v] of pts) { num += (t - mt) * (v - mv); den += (t - mt) ** 2; }
+      const slope = den > 1e-12 ? num / den : 0;
+      let any = false;
+      bins.forEach((t, i) => {
+        const v = at(ev.tSec + t);
+        if (v == null) return;
+        stacks[i].push((v - base) - slope * (t - (-preSec)));
+        any = true;
+      });
+      if (any) used++; else skipped++;
+    }
+
+    return {
+      feature, bins,
+      mean: stacks.map((xs) => (xs.length ? mean(xs) : null)),
+      // Standard error, so a bump can be judged against how much the events disagreed
+      // rather than taken at face value.
+      sem: stacks.map((xs) => {
+        const s = sd(xs);
+        return s == null || xs.length < 2 ? null : s / Math.sqrt(xs.length);
+      }),
+      n: stacks.map((xs) => xs.length),
+      events: used, skipped,
+    };
+  }
+
+  /*
+   * The same average around random times, as the null.
+   *
+   * Surrogate times are drawn from the same sessions with the same count per session,
+   * so the null inherits the real events' exposure to each sit's peculiarities. Drawing
+   * them from a uniform pool across all sessions would make the comparison partly about
+   * which sessions contributed.
+   */
+  function eventLockedNull(events, seriesBySession, opts = {}) {
+    const { seed = 5 } = opts;
+    const rnd = seededRandom(seed);
+    const perSession = {};
+    for (const ev of events || []) {
+      perSession[ev.sessionId] = (perSession[ev.sessionId] || 0) + 1;
+    }
+    const surrogate = [];
+    for (const [sid, count] of Object.entries(perSession)) {
+      const rows = seriesBySession[sid];
+      if (!rows || !rows.length) continue;
+      const tMax = rows[rows.length - 1].t;
+      const pre = opts.preSec == null ? 20 : opts.preSec;
+      const post = opts.postSec == null ? 10 : opts.postSec;
+      for (let i = 0; i < count; i++) {
+        const span = tMax - pre - post;
+        if (span <= 0) continue;
+        surrogate.push({ sessionId: sid, tSec: pre + rnd() * span });
+      }
+    }
+    return eventLocked(surrogate, seriesBySession, opts);
+  }
+
+  /*
+   * Real events against a MAX-STATISTIC null.
+   *
+   * The obvious version of this test is wrong, and my first attempt at it was: find the
+   * peak bin in the real average, then read the surrogate average at that same bin. The
+   * peak was CHOSEN partly for its noise, so the real value carries a selection
+   * advantage the surrogate never had — and a set of marks with no response at all
+   * cleared the null on the first run because of it. That is circular analysis: the
+   * same mistake as searching and confirming on one dataset, in miniature.
+   *
+   * The honest null has to include the selection step. So: build many surrogate event
+   * sets, take EACH ONE'S OWN largest deviation, and ask how often that beats the real
+   * one. The null distribution is then of maxima, exactly like the statistic being
+   * tested, and drift or autocorrelation in the data affects both sides equally.
+   */
+  function eventLockedTest(events, seriesBySession, opts = {}) {
+    const { surrogates = 200, seed = 5 } = opts;
+    const real = eventLocked(events, seriesBySession, opts);
+    const peakOf = (res) => {
+      let bestI = null;
+      res.mean.forEach((v, i) => {
+        if (v == null) return;
+        if (bestI == null || Math.abs(v) > Math.abs(res.mean[bestI])) bestI = i;
+      });
+      return bestI;
+    };
+    const bestI = peakOf(real);
+    if (bestI == null || real.events < MIN_N) {
+      return { real, peak: null, p: null, surrogates: 0,
+        verdict: `Only ${real.events} usable events (need at least ${MIN_N}).`
+          + ' Mark more before reading anything into this.' };
+    }
+    const realPeak = Math.abs(real.mean[bestI]);
+
+    let atLeastAsExtreme = 0;
+    let exampleNull = null;
+    for (let k = 0; k < surrogates; k++) {
+      const nul = eventLockedNull(events, seriesBySession,
+        Object.assign({}, opts, { seed: seed + k * 7919 }));
+      const i = peakOf(nul);
+      if (i == null) continue;
+      if (Math.abs(nul.mean[i]) >= realPeak) atLeastAsExtreme++;
+      if (k === 0) exampleNull = nul;
+    }
+    // (k+1)/(n+1), so a finite number of surrogates never reports p = 0.
+    const p = (atLeastAsExtreme + 1) / (surrogates + 1);
+    const clear = p < 0.05;
+    const peakT = real.bins[bestI];
+    return {
+      real, null: exampleNull, surrogates,
+      peak: { atSec: peakT, real: real.mean[bestI], sem: real.sem[bestI], clear },
+      p,
+      verdict: clear
+        ? `${real.events} events: ${opts.feature || 'calm'} deviates by`
+          + ` ${real.mean[bestI].toFixed(3)} at ${peakT >= 0 ? '+' : ''}${peakT}s from the mark,`
+          + ` which only ${atLeastAsExtreme} of ${surrogates} random-time sets matched`
+          + ` (p = ${p.toFixed(3)}). Worth testing on sits recorded after today —`
+          + ' this was found and measured on the same data.'
+        : `${real.events} events: nothing rises clear of random times`
+          + ` (p = ${p.toFixed(3)}). With this many marks, that is the expected result.`,
+    };
+  }
+
   return {
     MIN_N, mean, sd, correlate, rank, spearman, permutationP,
     adjustForMultiplicity, splitSessions, search, unitsFromSpans,
+    eventLocked, eventLockedNull, eventLockedTest,
     seededRandom, shuffle,
   };
 });
