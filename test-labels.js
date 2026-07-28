@@ -118,7 +118,27 @@ const Labels = require('./public/labels.js');
   for (const taken of ['M', 'T', 'N', 'V', 'F']) {
     assert.ok(!kbds.includes(taken), `${taken} is already bound elsewhere in the app`);
   }
-  console.log(`✓ ${Labels.TRANSITIONS.length} one-key transitions, no collisions: ${kbds.join(' ')}`);
+  /* THE TWO MODULES MUST AGREE.
+   *
+   * probes.js TAP_CATEGORIES is the authority on what each key does; labels.js
+   * TRANSITIONS exists only to name an event in words for the export. An earlier
+   * version had them disagreeing about R, D and K — two names for one event, so the
+   * analysis had to guess whether they were the same thing. Asserted here so they
+   * cannot drift apart again.
+   */
+  const Probes = require('./public/probes.js');
+  for (const t of Labels.TRANSITIONS) {
+    const tap = Probes.TAP_BY_KEY[t.key];
+    assert.ok(tap, `labels.js knows "${t.key}" but probes.js does not — they must agree`);
+    assert.strictEqual(tap.kbd, t.kbd,
+      `"${t.key}" is ${t.kbd} in labels.js and ${tap.kbd} in probes.js`);
+  }
+  for (const tap of Probes.TAP_CATEGORIES) {
+    assert.ok(Labels.TRANSITION_BY_KEY[tap.key],
+      `probes.js offers "${tap.key}" but labels.js cannot name it for the export`);
+  }
+  console.log(`✓ ${Labels.TRANSITIONS.length} one-key transitions, no collisions,`
+    + ` and probes.js agrees: ${kbds.join(' ')}`);
 }
 
 // 6) SPANS. A dimensional label describes the stretch just sat through, backwards to

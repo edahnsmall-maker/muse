@@ -1238,8 +1238,10 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         anchored: transitions.every((n) => n.anchored !== false),
       };
     });
-    assert.deepStrictEqual(out.kinds, ['returned', 'lost', 'dropped'],
-      `R G D must record returned/lost/dropped (got ${out.kinds.join(', ')})`);
+    // probes.js TAP_CATEGORIES is the single authority on these keys now; an earlier
+    // version had labels.js disagreeing with it about what R, D and K meant.
+    assert.deepStrictEqual(out.kinds, ['returned', 'lost', 'opening'],
+      `R G D must record returned/lost/opening (got ${out.kinds.join(', ')})`);
     // Case-insensitive: nobody checks caps lock mid-sit.
     assert.strictEqual(out.kinds.length, 3, 'a held key must not repeat into extra marks');
     assert.ok(out.offsets.every((o) => o >= 40 && o <= 60),
@@ -1390,6 +1392,110 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(out.trialEnd.completed, true, 'and marked as completed rather than abandoned');
     console.log(`✓ a full trial runs, cues each boundary audibly, and records`
       + ` ${out.blocks.length} labelled blocks: ${conds.join(' ')}`);
+  }
+
+  // 25) PROBES: the unbiased half of the labelling, and the only way to sample states
+  //     that went unnoticed. Tied to Training mode, because being interrupted
+  //     unpredictably is the last thing anyone wants in an ordinary sit.
+  {
+    const out = await page.evaluate(async () => {
+      const tones = [];
+      const realTone = window.tone;
+      window.tone = (hz) => tones.push(hz);
+
+      setTrainingMode(false);
+      sessionStartedAt = Date.now() - 300000;   // 5 minutes into a sit
+      recArmed = false; recSession = null;
+      await ensureRecordingForTest();
+      const id = recSession && recSession.id;
+
+      // OFF by default: with training off, no probe may fire however overdue.
+      probeTimes = [10]; probeAnswers = [];
+      updateProbes();
+      const whileOff = { fired: !!probePending, hud: probeHudEl.hidden };
+
+      setTrainingMode(true);
+      const armedVisible = !document.getElementById('armedBar').hidden;
+      updateProbes();
+      // The cue is two notes, the second on a short delay so they read as a pair
+      // rather than a chord — so wait for it before counting.
+      await new Promise((r) => setTimeout(r, 300));
+      const fired = {
+        pending: !!probePending,
+        hud: !probeHudEl.hidden,
+        options: probeOptsEl.querySelectorAll('[data-resp]').length,
+        // The question must be about the moment BEFORE the cue, since the cue itself
+        // redirects attention.
+        question: document.getElementById('probeQ').textContent,
+        meta: probeMetaEl.textContent,
+        tones: tones.slice(),
+      };
+
+      // Answer by keyboard, which is the path that must work with eyes barely open.
+      await new Promise((r) => setTimeout(r, 700));   // a measurable latency
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '3', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+      const answered = { pending: !!probePending, hud: probeHudEl.hidden,
+        count: probeAnswers.length, response: probeAnswers[0] && probeAnswers[0].response,
+        latency: probeAnswers[0] && probeAnswers[0].latencySec };
+
+      // A MISS is data too — it usually means gone, or asleep — so it must be recorded
+      // rather than left hanging.
+      probeTimes = [10, 20]; 
+      updateProbes();
+      const secondFired = !!probePending;
+      if (probePending) probePending.cuedAt = Date.now() - 60000;   // force the timeout
+      updateProbes();
+      await new Promise((r) => setTimeout(r, 200));
+      const missed = probeAnswers.find((a) => a.missed);
+
+      const notes = id ? await Recorder.listNotes(recDb, id) : [];
+      window.tone = realTone;
+      setTrainingMode(false);
+      await stopRecording({ summary: false });
+      if (id) await Recorder.deleteSession(recDb, id);
+      probeTimes = []; probeAnswers = []; probePending = null;
+      return { whileOff, armedVisible, fired, answered, missed: !!missed,
+        stored: notes.filter((n) => n.kind === 'probe').map((n) => ({
+          r: n.response, l: n.latencySec, missed: n.missed, at: n.probeAtSec })) };
+    });
+
+    assert.strictEqual(out.whileOff.fired, false,
+      'with Training off, no probe may fire — probes must be opt-in');
+    assert.ok(out.armedVisible, 'Training on must show which key records what');
+    assert.ok(out.fired.pending && out.fired.hud, 'an overdue probe must fire and show');
+    assert.strictEqual(out.fired.options, 5, 'five one-tap options');
+    assert.match(out.fired.question, /just before/,
+      'the question must ask about the moment BEFORE the cue, not the moment of it');
+    assert.match(out.fired.meta, /BEFORE the sound/, 'and say so again by the buttons');
+    /* Audible, and a PAIR of pitches rather than one — so a probe is never mistaken for
+     * a trial block boundary, which is a single tone.
+     *
+     * Not an exact count: the page's own 250ms tick calls updateProbes() concurrently
+     * with the test, so how many cue pairs land inside the sampling window is timing
+     * dependent. The property that matters is two distinct pitches, not how many times
+     * they played. */
+    assert.ok(out.fired.tones.length >= 2,
+      `a probe must be audible (got ${out.fired.tones.length} tones)`);
+    assert.ok(new Set(out.fired.tones).size >= 2,
+      `and use two distinct pitches so it cannot be confused with a trial boundary's`
+      + ` single tone (got ${Array.from(new Set(out.fired.tones)).join(', ')})`);
+
+    assert.strictEqual(out.answered.pending, false, 'answering must clear the probe');
+    assert.ok(out.answered.hud, 'and hide it');
+    assert.strictEqual(out.answered.response, 'unaware-off',
+      'key 3 must record "off, just realised" — the state self-catching cannot see');
+    assert.ok(out.answered.latency >= 0.8,
+      `latency must be measured from the cue (got ${out.answered.latency})`);
+
+    assert.ok(out.missed, 'an unanswered probe must be recorded as missed, not dropped');
+    const storedMiss = out.stored.find((n) => n.missed);
+    assert.ok(storedMiss, 'and the miss must reach storage');
+    const storedAnswer = out.stored.find((n) => n.r === 'unaware-off');
+    assert.ok(storedAnswer && storedAnswer.l >= 0.8, 'the answer and its latency must persist');
+    assert.ok(storedAnswer.at != null, 'with the SCHEDULED time, not the answer time —'
+      + ' the labelled window is measured from when the cue fired');
+    console.log('✓ probes are opt-in, audible, one-tap, latency-timed, and misses are recorded');
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);

@@ -353,6 +353,13 @@
         // Trial bookkeeping. Without these the block structure — and therefore the
         // label for every trial observation — cannot be reconstructed at all.
         trialKey: n.trialKey || '',
+        // Probe answers and armed taps. `missed` is kept as its own value: a probe
+        // nobody answered is data — it usually means gone, or asleep — and blanking it
+        // would make it indistinguishable from one never scheduled.
+        response: n.response || (n.missed ? 'missed' : ''),
+        latencySec: n.latencySec == null ? '' : n.latencySec.toFixed(2),
+        tapCategory: n.tapCategory || '',
+        grade: n.grade == null ? '' : n.grade,
         condition: n.condition || '',
         blockIndex: n.blockIndex == null ? '' : n.blockIndex,
         // The self-reported dimensions, one column each, blank when not reported.
@@ -368,6 +375,7 @@
         transcript: '',
       })), ['offsetSec', 'clock', 'epochMs', 'absoluteTime', 'anchored', 'kind',
         'markKind', 'transition', 'trialKey', 'condition', 'blockIndex',
+        'response', 'latencySec', 'tapCategory', 'grade',
         'focus', 'effort', 'pull', 'tone', 'quadrant',
         'seconds', 'audioFile', 'text', 'transcript'])),
     });

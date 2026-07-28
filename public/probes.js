@@ -88,9 +88,22 @@
    * distinction and a rare event worth being able to mark as rare.
    */
   const TAP_CATEGORIES = [
+    /*
+     * ONE canonical set of keys. An earlier version had two overlapping vocabularies —
+     * these categories and labels.js's TRANSITIONS — which shared R, D and K between
+     * them and silently disagreed about what those keys meant. Two names for the same
+     * event is worse than either name alone, because the analysis then has to guess
+     * whether they are the same thing. `transition` names the event for the export;
+     * these definitions are the authority on what the keys do.
+     */
     {
       key: 'returned', kbd: 'R', label: 'Noticed I was thinking',
       hint: 'the moment of catching it — tap as soon as you realise',
+      grades: null,
+    },
+    {
+      key: 'lost', kbd: 'G', label: 'Gone, only now realised',
+      hint: 'the moment of realising you had been away, as distinct from re-establishing',
       grades: null,
     },
     {

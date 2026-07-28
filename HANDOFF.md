@@ -286,6 +286,63 @@ the numbers themselves want a session of deliberate holds to confirm.
 
 ---
 
+## 8. THE VALIDATION PATH (built)
+
+Every score here is unvalidated, and the bottleneck was never analysis — it was labels.
+Four pieces now close that loop. Read them in this order.
+
+**`public/labels.js`** — the phenomenological schema, in the practitioner's own words.
+Four dimensions (focus, effort, pull, tone), each 1-5 with every point named, because an
+unnamed middle drifts between sits. Focus and effort are recorded SEPARATELY, and that
+is the whole point: "focused because nothing needed holding" and "focused because I was
+holding it by force" are different experiences that a single score cannot tell apart.
+`quadrant()` names all four states. Nothing in the app may generate or default these.
+
+**`public/probes.js`** — two kinds of label, with different biases, and both are needed.
+Self-caught taps are precise in time but can only sample what you NOTICED, so they are
+blind to being gone without knowing it. Probe-caught answers are decided by a clock, so
+they sample the unnoticed states and give a proportion rather than a count. Together
+they yield `metaAwarenessGap()`, which is a measure of awareness rather than of
+concentration. Probe intervals are random (a fixed interval becomes one you wait for),
+the question asks about the moment BEFORE the cue, and the seconds after are excluded.
+
+**`public/trials.js`** — protocols where the instruction IS the label, decided in
+advance so it cannot be coloured by what the screen shows. **Run `alpha-control`
+first.** It is eyes-closed versus eyes-open, six minutes, and it is not a meditation
+trial at all: alpha rises when the eyes close, textbook since the 1920s. If this
+pipeline cannot recover that, the electrodes or filtering or export is broken and every
+subtle finding from the same pipeline is worthless. Same principle as gravity for the
+accelerometer — find the ground truth you do not control.
+
+**`public/analysis.js`** — exists to be SUSPICIOUS. Held-out validation split by
+SESSION (splitting by sample leaks the answer, because consecutive seconds are
+near-duplicates), FDR correction with the comparison count reported, seeded permutation
+nulls. `eventLocked()` averages the signal around marks; its null is a MAX-STATISTIC,
+because reading a surrogate at the real data's peak bin is circular — the peak was
+chosen partly for its noise. 160 comparisons on pure noise confirm zero.
+
+**`public/findings.js` + `public/lab.html`** — the lab reads session zips offline and
+reports in sentences, with the numbers behind a toggle. "Copy findings for an AI"
+produces ~4kB of prose that LEADS with what the data cannot support, because handing
+over a table produces confident confabulation in any reader.
+
+### The rule that holds all of it together
+
+A finding is a CANDIDATE. It becomes a result by being predicted in advance and then
+observed in sits recorded afterwards — which means a trial, not more searching on the
+same data. Nothing gets wired into the live app's scores or visuals before that.
+
+### Mistakes already made here, so they are not made again
+
+- A test built from the same notes as the code passes while the code is wrong. Four
+  separate times. Use ground truth you do not control: gravity, the system `unzip`, the
+  Berger effect, a planted frequency the implementation is never told.
+- FDR controls the expected PROPORTION of false discoveries, not their absence. A test
+  demanding zero spurious survivors asserts a guarantee the statistics do not give.
+- Anything driven by a wall clock must sit ABOVE the tick's `if (!result) return`.
+  Three bugs so far from that one: a stuck status message, a timer that never fired
+  when the headband dropped, and a trial that would have stalled mid-run.
+
 ## 8. Backlog, in priority order
 
 1. **Calibration trials.** The single most valuable thing left, and the only route to

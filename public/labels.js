@@ -158,15 +158,23 @@
    * moments, sometimes seconds apart, and which one a signal tracks is a real
    * question rather than a labelling detail.
    */
+  /*
+   * SUPERSEDED BY probes.js TAP_CATEGORIES, which is the authority on keys and adds
+   * grades. Kept only so the export and the markdown can name a transition in words,
+   * and kept in sync with that file by test-labels.js — two vocabularies for one event
+   * silently disagreed about what R, D and K meant, which is worse than either alone.
+   */
   const TRANSITIONS = [
-    { key: 'returned', label: 'Came back', kbd: 'R',
+    { key: 'returned', label: 'Noticed I was thinking', kbd: 'R',
       hint: 'attention re-established on the object' },
-    { key: 'lost', label: 'Noticed I was gone', kbd: 'G',
+    { key: 'lost', label: 'Gone, only now realised', kbd: 'G',
       hint: 'the moment of realising, not the leaving' },
-    { key: 'dropped', label: 'Dropped in', kbd: 'D',
+    { key: 'opening', label: 'Opening / dropping in', kbd: 'D',
       hint: 'a sudden opening or deepening' },
-    { key: 'tightened', label: 'Tightened', kbd: 'K',
+    { key: 'tightening', label: 'Tightening', kbd: 'K',
       hint: 'closed down, effort spiked, contraction' },
+    { key: 'letting-go', label: 'Effort dropping', kbd: 'E',
+      hint: 'the grip loosening, or letting go entirely' },
   ];
 
   const TRANSITION_BY_KEY = TRANSITIONS.reduce((m, t) => { m[t.key] = t; return m; }, {});

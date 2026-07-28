@@ -148,6 +148,34 @@
      not being measured and there is time to actually change what you are doing. */
   #trialHud.settling #trialInstr { opacity: .5; }
   #trialHud.settling #trialMeta::after { content: ' · settling, not counted'; }
+  /* The probe overlay DOES take clicks, unlike the trial instruction — it is the one
+     thing on screen that must be answered. */
+  #probeHud { position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+    z-index: 70; text-align: center; max-width: min(620px, 92vw);
+    background: rgba(10,12,20,.93); border: 1px solid rgba(255,255,255,.18);
+    border-radius: 18px; padding: 22px 24px; backdrop-filter: blur(14px); }
+  #probeHud[hidden] { display: none; }
+  #probeQ { font: 400 18px/1.4 Inter, system-ui, sans-serif; color: #f2f4f8; }
+  #probeQ em { font-style: normal; text-decoration: underline; text-decoration-color: rgba(255,255,255,.35); }
+  #probeOpts { display: flex; flex-direction: column; gap: 7px; margin-top: 16px; }
+  #probeOpts button { display: flex; gap: 10px; align-items: baseline; text-align: left;
+    font: inherit; font-size: 14px; padding: 9px 13px; border-radius: 10px; cursor: pointer;
+    background: rgba(255,255,255,.07); color: inherit; border: 1px solid rgba(255,255,255,.14); }
+  #probeOpts button:hover { background: rgba(255,255,255,.14); }
+  #probeOpts b { font: 600 12px/1.4 ui-monospace, monospace; opacity: .5; min-width: 12px; }
+  #probeOpts span.h { font-size: 11.5px; opacity: .5; margin-left: 4px; }
+  #probeMeta { margin-top: 12px; font: 11px/1.5 ui-monospace, monospace;
+    color: rgba(255,255,255,.38); }
+  /* The armed tap category, always visible while training so it is never a guess
+     which key does what. */
+  #armedBar { position: fixed; left: 16px; bottom: 92px; z-index: 45; display: flex;
+    flex-direction: column; gap: 5px; font: 11px/1.4 Inter, system-ui, sans-serif; }
+  #armedBar[hidden] { display: none; }
+  #armedBar .a { padding: 4px 9px; border-radius: 7px; border: 1px solid rgba(255,255,255,.12);
+    background: rgba(10,12,20,.6); color: rgba(255,255,255,.5); cursor: pointer;
+    white-space: nowrap; }
+  #armedBar .a b { font-family: ui-monospace, monospace; opacity: .8; margin-right: 6px; }
+  #armedBar .a.hot { color: #dfe6ff; border-color: rgba(255,255,255,.3); }
   #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
     padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
     color: inherit; border: 1px solid rgba(255,255,255,.16); }
@@ -391,6 +419,15 @@
 <!-- The current instruction, large and central. A trial is only as good as the
      meditator's ability to actually follow it, and small grey text at the edge of a
      dark screen is not something you can read with barely-open eyes. -->
+<!-- Probe response. Five options, one tap, digits 1-5 — it must be answerable
+     without reading, because a probe that takes twenty seconds destroys the sit it is
+     measuring. -->
+<div id="armedBar" hidden></div>
+<div id="probeHud" hidden>
+  <div id="probeQ">Where was attention <em>just before</em> that sound?</div>
+  <div id="probeOpts"></div>
+  <div id="probeMeta"></div>
+</div>
 <div id="trialHud" hidden>
   <div id="trialCond"></div>
   <div id="trialInstr"></div>
@@ -490,6 +527,7 @@
 <script src="export.js"></script>
 <script src="labels.js"></script>
 <script src="trials.js"></script>
+<script src="probes.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -609,11 +647,23 @@ addEventListener('keydown', (e) => {
   if (e.key === 'm' || e.key === 'M') { e.preventDefault(); openMarkPrompt(); }
   if ((e.key === 'v' || e.key === 'V') && !e.repeat) { startVoiceNote(); return; }
   if (e.key === 'n' || e.key === 'N') { openNotes(); return; }
-  // Transition marks: R came back, G noticed I was gone, D dropped in, K tightened.
-  // Checked before the other single-letter shortcuts so a transition key can never
-  // be shadowed by a later branch.
-  const trans = Labels.TRANSITION_BY_KBD[e.key.toUpperCase()];
-  if (trans && !e.repeat) { markTransition(trans.key); return; }
+  /* A PENDING PROBE OWNS THE KEYBOARD. Digits answer it, and nothing else may run —
+   * otherwise a stray key both answers the probe and triggers a shortcut. */
+  if (probePending) {
+    const r = Probes.RESPONSE_BY_KBD[e.key];
+    if (r) { answerProbe(r.key); return; }
+  }
+  /* A GRADE, if one was just offered. Pressing 1 or 2 within a few seconds of a graded
+   * tap adds the detail. The tap itself is ALREADY recorded — the grade is an
+   * amendment, never a condition of the mark being kept, because a mark lost to an
+   * unfinished two-key sequence is the worst outcome here. */
+  if (pendingGrade && /^[12]$/.test(e.key)) { applyGrade(Number(e.key)); return; }
+
+  // Armed taps and transitions. Checked before the other single-letter shortcuts so a
+  // labelling key can never be shadowed by a later branch.
+  const tap = Probes.TAP_BY_KBD[e.key.toUpperCase()];
+  if (tap && !e.repeat) { markTap(tap); return; }
+  // No second lookup: Probes.TAP_BY_KBD above is the only key table for labelling.
   if (e.key === 't' || e.key === 'T') setTrainingMode(!trainingMode);
   if (e.key === 'Escape') closeSummary();
 });
@@ -1263,6 +1313,7 @@ function renderMarkCount() {
 function setTrainingMode(on) {
   trainingMode = !!on;
   trainClockEl.classList.toggle('show', trainingMode);
+  renderArmedBar();
   renderMarkCount();
   const el = document.getElementById('trainToggle');
   if (el) el.innerHTML = `Training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
@@ -2305,6 +2356,7 @@ async function startRecording() {
   selfRating = null;
   timerDone = false;
   markerLog.clear();
+  resetProbes(timerEndAt ? (timerEndAt - Date.now()) / 1000 : 1800);
   await ensureRecording();
   renderRecBtn();
   if (recSession) { setStatus('recording'); statusLockUntil = Date.now() + 1500; }
@@ -2337,22 +2389,60 @@ async function stopRecording({ summary = true } = {}) {
  * cost more attention than the mark is worth, and a mark you decide against can be
  * deleted from the Notes panel afterwards.
  */
+// Kept as a named entry point for tests and for any programmatic marking, delegating
+// to markTap so there is exactly one implementation.
 async function markTransition(key) {
-  const t = Labels.TRANSITION_BY_KEY[key];
+  const t = Probes.TAP_BY_KEY[key];
   if (!t) return;
+  return markTap(t);
+}
+
+
+/* --- Armed taps, with an optional grade -------------------------------------
+ * The mark is written IMMEDIATELY. A grade can be added by pressing 1 or 2 within a few
+ * seconds, which amends the note that already exists — so an interrupted two-key
+ * sequence costs the detail, never the mark.
+ */
+let pendingGrade = null;   // { noteId, category, until }
+
+async function markTap(tap) {
   const tSec = sessionTSec();
-  // Into the marker log for the in-sit count and the summary...
-  markerLog.add(tSec, { kind: t.key, note: null });
+  markerLog.add(tSec, { kind: tap.key, note: null });
   renderMarkCount();
-  // ...and into storage, where the analysis will actually read it from.
-  await ensureRecording();
-  if (recSession) {
-    await recSession.addNote({ kind: 'transition', transition: t.key, text: null });
-  }
   markFlashEl.classList.add('on');
   setTimeout(() => markFlashEl.classList.remove('on'), 60);
-  setStatus(`${t.label} \u00b7 ${Exporter.clock(tSec)}${recSession ? '' : ' (not recording)'}`);
-  statusLockUntil = Date.now() + 1400;
+  await ensureRecording();
+  let noteId = null;
+  if (recSession) {
+    // `transition` as well as `tapCategory`: one event, one name downstream. The
+    // export, the markdown and the analysis all key off `transition`, and duplicating
+    // the value here is cheaper than two vocabularies that can disagree.
+    noteId = await recSession.addNote({ kind: 'transition', transition: tap.key,
+      tapCategory: tap.key, text: tap.label, anchored: true });
+  }
+  if (tap.grades && noteId != null) {
+    pendingGrade = { noteId, category: tap.key, until: Date.now() + 4000 };
+    setStatus(`${tap.label} \u00b7 ${tap.grades.map((g) => `${g.value}=${g.label}`).join(' ')}`);
+  } else {
+    setStatus(`${tap.label} \u00b7 ${Exporter.clock(tSec)}`);
+  }
+  statusLockUntil = Date.now() + 3200;
+}
+
+async function applyGrade(value) {
+  if (!pendingGrade || Date.now() > pendingGrade.until) { pendingGrade = null; return; }
+  const g = pendingGrade;
+  pendingGrade = null;
+  const cat = Probes.TAP_BY_KEY[g.category];
+  const grade = cat && cat.grades.find((x) => x.value === value);
+  if (!grade || !recSession) return;
+  // A second note carrying the grade, rather than rewriting the first: the original
+  // mark's timestamp is the datum, and an update path that could fail would put that
+  // at risk for the sake of an annotation.
+  await recSession.addNote({ kind: 'tap-grade', tapCategory: g.category,
+    grade: value, amends: g.noteId, text: grade.label, anchored: true });
+  setStatus(`\u2192 ${grade.label}`);
+  statusLockUntil = Date.now() + 1600;
 }
 
 // The timer running out ends the sit: stopRecording() flushes, closes the session
@@ -2483,6 +2573,7 @@ async function startTrial(key) {
   // blank screen after pressing start reads as "did that work?", and the first block's
   // settling period is already running.
   updateTrial();
+  updateProbes();
 }
 
 async function stopTrial({ completed = false } = {}) {
@@ -2554,6 +2645,116 @@ trialsLinkEl.addEventListener('click', () => {
   trialPickerEl.hidden = !open;
 });
 renderTrialsLink();
+
+/* --- Probes: the unbiased half of the labelling ------------------------------
+ * See probes.js for why both label types are needed. In short: self-caught marks can
+ * only ever sample what you NOTICED, so they are blind to being gone without knowing
+ * it — and probes, decided by a clock, are not.
+ *
+ * Tied to Training mode, because that is where the practice instrumentation lives and
+ * because probes must be opt-in: being interrupted unpredictably is the last thing
+ * anyone wants in an ordinary sit.
+ */
+const probeHudEl = document.getElementById('probeHud');
+const probeOptsEl = document.getElementById('probeOpts');
+const probeMetaEl = document.getElementById('probeMeta');
+const armedBarEl = document.getElementById('armedBar');
+
+let probeTimes = [];
+let probeAnswers = [];
+let probePending = null;     // { index, atSec, cuedAt }
+// The armed tap category: chosen once, then every press of its key records it with no
+// further decision. Choosing per tap is deliberative and costs the sit more than it
+// gains.
+let armedTap = 'returned';
+
+function resetProbes(durationSec) {
+  // Scheduled up front from the intended length, so the schedule is a property of the
+  // session and appears in the export. An analysis can then tell a MISSED probe from
+  // one that was never scheduled, which are different facts.
+  probeTimes = Probes.schedule(durationSec || 1800, { seed: (Date.now() / 60000) | 0 });
+  probeAnswers = [];
+  probePending = null;
+  probeHudEl.hidden = true;
+}
+
+function renderArmedBar() {
+  if (!armedBarEl.isConnected) return;
+  armedBarEl.hidden = !trainingMode;
+  if (!trainingMode) return;
+  armedBarEl.innerHTML = Probes.TAP_CATEGORIES.map((t) =>
+    `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
+    + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}</b>${escapeHtml(t.label)}`
+    + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('');
+  armedBarEl.querySelectorAll('[data-arm]').forEach((el) => {
+    el.addEventListener('click', () => { armedTap = el.dataset.arm; renderArmedBar(); });
+  });
+}
+
+function fireProbe(due) {
+  probePending = { index: due.index, atSec: due.atSec, cuedAt: Date.now() };
+  // Two rising notes — distinct from the trial's single tone, so a probe is never
+  // mistaken for a block boundary.
+  tone(520, 130); setTimeout(() => tone(780, 200), 150);
+  probeOptsEl.innerHTML = Probes.RESPONSES.map((r) =>
+    `<button data-resp="${r.key}"><b>${r.kbd}</b><span>${escapeHtml(r.label)}`
+    + `<span class="h">${escapeHtml(r.hint)}</span></span></button>`).join('');
+  probeOptsEl.querySelectorAll('[data-resp]').forEach((b) => {
+    b.addEventListener('click', () => answerProbe(b.dataset.resp));
+  });
+  probeMetaEl.textContent = `probe ${due.index + 1} of ${probeTimes.length}`
+    + ' \u00b7 answer for the moment BEFORE the sound';
+  probeHudEl.hidden = false;
+}
+
+async function answerProbe(key) {
+  if (!probePending || !Probes.RESPONSE_BY_KEY[key]) return;
+  const p = probePending;
+  probePending = null;
+  probeHudEl.hidden = true;
+  // Latency is a MEASUREMENT, not a self-report: how long somebody takes to answer
+  // suggests how far they had to come back from. It goes in as a feature.
+  const latencySec = (Date.now() - p.cuedAt) / 1000;
+  probeAnswers.push({ atSec: p.atSec, response: key, latencySec });
+  await ensureRecording();
+  if (recSession) {
+    await recSession.addNote({ kind: 'probe', response: key, latencySec,
+      probeIndex: p.index, probeAtSec: p.atSec, anchored: true });
+  }
+  const r = Probes.RESPONSE_BY_KEY[key];
+  setStatus(`${r.label} \u00b7 ${latencySec.toFixed(1)}s`);
+  statusLockUntil = Date.now() + 1600;
+}
+
+/*
+ * Called from the tick, ABOVE the early return — a probe is a wall-clock event and a
+ * headband dropout must not stall the schedule.
+ */
+function updateProbes() {
+  if (!trainingMode || !recArmed) {
+    if (!probeHudEl.hidden && !probePending) probeHudEl.hidden = true;
+    return;
+  }
+  if (probePending) {
+    // An unanswered probe is recorded as a MISS rather than left hanging. A probe
+    // nobody answered is data too: it usually means gone, or asleep.
+    if ((Date.now() - probePending.cuedAt) / 1000 > Probes.DEFAULTS.responseTimeoutSec) {
+      const p = probePending;
+      probePending = null;
+      probeHudEl.hidden = true;
+      probeAnswers.push({ atSec: p.atSec, response: null, missed: true });
+      if (recSession) {
+        recSession.addNote({ kind: 'probe', response: null, missed: true,
+          probeIndex: p.index, probeAtSec: p.atSec, anchored: true });
+      }
+      setStatus('probe missed \u2014 recorded as unanswered');
+      statusLockUntil = Date.now() + 2500;
+    }
+    return;
+  }
+  const due = Probes.dueProbe(probeTimes, probeAnswers.length, sessionTSec());
+  if (due) fireProbe(due);
+}
 
 // --- Saved sessions panel ---------------------------------------------------
 async function openSessions() {
@@ -2853,6 +3054,7 @@ setInterval(() => {
   // Also above the early return: a trial block boundary is a wall-clock event, and a
   // headband dropout must not silently stall a protocol halfway through.
   updateTrial();
+  updateProbes();
 
   if (!result) {
     // Strap-only operation is a legitimate state: the strap alone gives heart
