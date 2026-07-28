@@ -65,6 +65,21 @@
     margin-right: 5px; border-radius: 2px; }
   .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
   .note { font-size: 12.5px; color: var(--muted); }
+  /* Findings read as prose; the numbers hide behind a toggle. A table of correlations
+     invites reading the biggest number as the answer, which is the mistake the whole
+     analysis layer exists to prevent. */
+  .finding { border-left: 2px solid var(--good); padding: 2px 0 2px 14px; margin: 16px 0; }
+  .finding.weak { border-left-color: var(--warn); }
+  .finding h4 { margin: 0 0 6px; font-size: 15px; font-weight: 600; line-height: 1.5; }
+  .finding .meta { font-size: 12px; color: var(--dim); margin-top: 6px;
+    font-family: ui-monospace, monospace; }
+  .finding .step { font-size: 13px; color: var(--muted); margin-top: 8px; }
+  .finding .warnNote { font-size: 12.5px; color: var(--warn); margin-top: 6px; }
+  details > summary { cursor: pointer; color: var(--muted); font-size: 12px;
+    letter-spacing: .04em; margin-top: 6px; }
+  .headline { font-size: 16px; line-height: 1.6; font-weight: 500; }
+  #handoffBar { position: sticky; bottom: 0; padding: 12px 0; margin-top: 24px;
+    background: linear-gradient(transparent, var(--bg) 40%); }
   code { font: 12px ui-monospace, monospace; background: rgba(255,255,255,.07);
     padding: 1px 5px; border-radius: 4px; }
 </style>
@@ -87,6 +102,7 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 <script src="trials.js"></script>
 <script src="import.js"></script>
 <script src="analysis.js"></script>
+<script src="findings.js"></script>
 <script>
 /*
  * Sessions are held in memory only. Reloading loses them, which is deliberate: the
@@ -433,41 +449,108 @@ function renderSearch() {
   }
 
   const res = Analysis.search(units, { iterations: 1500 });
-  const verdictClass = res.confirmed.length ? 'good' : 'warn';
-  const rows = res.tests.slice(0, 40).map((t) => `<tr>
-    <td>${esc(t.feature)}</td><td>${esc(t.label)}</td>
-    <td class="num">${f2(t.trainRho)}</td>
-    <td class="num">${t.p == null ? '—' : t.p.toFixed(4)}</td>
-    <td class="num">${t.q == null ? '—' : t.q.toFixed(3)}</td>
-    <td class="num">${f2(t.testRho)}</td>
-    <td>${t.heldUp === true ? '<span class="good">held</span>'
-      : t.heldUp === false ? '<span class="bad">did not hold</span>'
-      : '<span class="dim">—</span>'}</td>
-    <td class="num dim">${t.trainN}/${t.testN}</td>
-  </tr>`).join('');
+  const rep = Findings.report(res, { label: 'labelled spans' });
+  lastReports = [{ title: 'Hand-labelled spans', report: rep }];
+  outEl.innerHTML = '<h2>Patterns</h2>' + reportHtml(rep, res) + handoffBarHtml();
+  wireHandoff();
+}
 
-  outEl.innerHTML = `<h2>Patterns</h2>
-    <div class="card verdict ${verdictClass}">${esc(res.verdict)}</div>
-    <div class="card">
-      <div class="row" style="justify-content:space-between;margin-bottom:10px">
-        <span class="note">${res.units} labelled observations ·
-          ${res.comparisons} comparisons ·
-          trained on ${res.split.train.length} session(s),
-          held out ${res.split.test.length}</span>
-        <span class="tag">sorted by p · top 40</span>
-      </div>
-      <div class="scroll"><table>
-        <tr><th>Feature</th><th>Label</th><th>rho (train)</th><th>p</th><th>q</th>
-            <th>rho (held out)</th><th>Held out</th><th>n</th></tr>
-        ${rows}</table></div>
-      <p class="note" style="margin-top:12px">
-        <strong>q</strong> is the p-value corrected for having made
-        ${res.comparisons} comparisons. <strong>Held out</strong> is the only column
-        that matters: it asks whether the direction survived on sessions the pattern
-        was never fitted on. A sign flip there is a refutation, not a weak result.
-        Nothing here is a finding until it also reproduces on sits recorded after you
-        read this table — searching and confirming on the same data is how false
-        results get believed.</p>
-    </div>`;
+/*
+ * A report, prose first.
+ *
+ * The headline is a sentence; each finding is a sentence. The numbers live behind a
+ * toggle, because they are for CHECKING a claim rather than forming one — and a reader
+ * who is not a statistician cannot form one from them anyway.
+ */
+function reportHtml(rep, res) {
+  const cls = { found: 'good', nothing: 'warn', 'not-enough': 'warn', unvalidatable: 'warn' };
+  const findings = rep.confirmed.map((f) => `<div class="finding${f.strength === 'weak' ? ' weak' : ''}">
+      <h4>${esc(f.sentence)}</h4>
+      ${f.caveat ? `<div class="warnNote">${esc(f.caveat)}</div>` : ''}
+      <div class="step"><strong>Next:</strong> ${esc(f.nextStep)}</div>
+      <div class="meta">${esc(f.evidence)}</div>
+    </div>`).join('');
+
+  const collapsed = rep.collapsed.length ? `<details><summary>
+      ${rep.collapsed.length} looked promising and then failed the held-out check —
+      show them</summary><div class="note" style="margin-top:10px">
+      ${rep.collapsed.map((c) => `<div style="margin:8px 0">${esc(c.sentence)}</div>`).join('')}
+      </div></details>` : '';
+
+  const table = res ? `<details><summary>Show all ${res.comparisons} comparisons
+      (for checking, not for reading)</summary><div class="scroll" style="margin-top:10px">
+      <table><tr><th>Feature</th><th>Label</th><th>rho fit</th><th>p</th><th>q</th>
+        <th>rho held out</th><th>Held out</th><th>n</th></tr>
+      ${res.tests.slice(0, 40).map((t) => `<tr><td>${esc(t.feature)}</td><td>${esc(t.label)}</td>
+        <td class="num">${f2(t.trainRho)}</td>
+        <td class="num">${t.p == null ? '—' : t.p.toFixed(4)}</td>
+        <td class="num">${t.q == null ? '—' : t.q.toFixed(3)}</td>
+        <td class="num">${f2(t.testRho)}</td>
+        <td>${t.heldUp === true ? '<span class="good">held</span>'
+          : t.heldUp === false ? '<span class="bad">no</span>' : '<span class="dim">—</span>'}</td>
+        <td class="num dim">${t.trainN}/${t.testN}</td></tr>`).join('')}
+      </table></div></details>` : '';
+
+  return `<div class="card verdict ${cls[rep.headline.status] || ''}">
+      <div class="headline">${esc(rep.headline.text)}</div></div>
+    ${findings ? `<div class="card">${findings}</div>` : ''}
+    <div class="card">${collapsed}${table}
+      <p class="note" style="margin-top:10px">Nothing here is a result until it shows up
+      again in sits recorded <em>after</em> today. Searching and confirming on the same
+      data is how false findings get believed.</p></div>`;
+}
+
+/*
+ * The handoff. Small, prose, and carrying its own guardrails — see findings.js for why
+ * those matter more than the findings do.
+ */
+let lastReports = [];
+
+function handoffBarHtml() {
+  return `<div id="handoffBar"><div class="row">
+    <button class="primary" id="copyHandoff">Copy findings for an AI</button>
+    <button id="downloadHandoff">Download as .md</button>
+    <span class="note">Findings and sample sizes only — no raw signal, and it leads with
+    what the data cannot support.</span></div></div>`;
+}
+
+function buildHandoff() {
+  const sessionRows = sessions.filter((s) => !s.error).map((s) => ({
+    name: s.file,
+    minutes: s.durationSec == null ? null : Math.round(s.durationSec / 60),
+    spans: (s.spans || []).filter((x) => x.dims).length,
+    transitions: (s.notes || []).filter((n) => n.kind === 'transition').length,
+    blocks: (s.trialBlocks || []).length,
+  }));
+  return Findings.handoff(lastReports, { sessions: sessionRows });
+}
+
+function wireHandoff() {
+  const copy = document.getElementById('copyHandoff');
+  const dl = document.getElementById('downloadHandoff');
+  if (copy) {
+    copy.addEventListener('click', async () => {
+      const md = buildHandoff();
+      try {
+        await navigator.clipboard.writeText(md);
+        copy.textContent = `Copied (${(md.length / 1024).toFixed(1)}kB)`;
+      } catch (e) {
+        // A refused clipboard must not look like a successful copy.
+        console.log(md);
+        copy.textContent = 'In the console';
+      }
+      setTimeout(() => { copy.textContent = 'Copy findings for an AI'; }, 3000);
+    });
+  }
+  if (dl) {
+    dl.addEventListener('click', () => {
+      const url = URL.createObjectURL(new Blob([buildHandoff()], { type: 'text/markdown' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'findings-handoff.md';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 20000);
+    });
+  }
 }
 </script>

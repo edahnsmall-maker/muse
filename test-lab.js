@@ -207,13 +207,13 @@ async function drop(page, archives) {
     });
     await drop(page, [makeArchive({ id: 'solo', seedOffset: 3 })]);
     const single = await page.evaluate(() => ({
-      verdict: document.querySelector('#out .verdict').textContent,
+      verdict: document.querySelector('#out .headline').textContent,
       confirmed: Analysis.search(Analysis.unitsFromSpans(sessions.map((s) => ({
         sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans,
       })))).confirmed.length,
     }));
-    assert.match(single.verdict, /Not enough labelled observations|nothing could be held out/,
-      `one session must be reported as unvalidatable (got "${single.verdict}")`);
+    assert.match(single.verdict, /Not enough data yet|nothing could be held back/,
+      `one session must be reported as unvalidatable, in plain words (got "${single.verdict}")`);
     console.log('✓ a single session is reported as unvalidatable, not as a result');
   }
 
@@ -224,13 +224,15 @@ async function drop(page, archives) {
     for (let i = 0; i < 8; i++) noisy.push(makeArchive({ id: `n${i}`, seedOffset: 10 + i, planted: false }));
     await drop(page, noisy);
     const st = await page.evaluate(() => ({
-      verdict: document.querySelector('#out .verdict').textContent,
+      verdict: document.querySelector('#out .headline').textContent,
       body: document.getElementById('out').textContent,
       loaded: sessions.length,
     }));
     assert.strictEqual(st.loaded, 8);
-    assert.match(st.verdict, /No pattern survived|Not enough labelled/,
+    assert.match(st.verdict, /No pattern found|Not enough data yet/,
       `unrelated data must produce a null verdict (got "${st.verdict}")`);
+    assert.match(st.verdict, /expected outcome|cannot mean anything/,
+      'and frame it as the expected result rather than as a failure');
     // The size of the search must be on screen next to the result. A correlation
     // without the number of comparisons behind it is not evidence.
     assert.match(st.body, /comparisons/,
@@ -251,7 +253,7 @@ async function drop(page, archives) {
         sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans,
       }))), { iterations: 800 });
       return {
-        verdict: document.querySelector('#out .verdict').textContent,
+        verdict: document.querySelector('#out .headline').textContent,
         confirmed: res.confirmed.map((c) => c.key),
         calmFocus: res.tests.find((t) => t.key === 'calm~focus') || null,
         units: res.units,
@@ -264,8 +266,8 @@ async function drop(page, archives) {
     assert.ok(st.confirmed.includes('calm~focus'),
       `and be confirmed (confirmed: ${st.confirmed.join(', ') || 'none'})`);
     // The verdict must also carry the warning, so a survivor is not read as a result.
-    assert.match(st.verdict, /shortlist/,
-      'a positive verdict must still describe its output as a shortlist to test');
+    assert.match(st.verdict, /candidates, not/,
+      'a positive verdict must refuse the word "conclusion"');
     console.log(`✓ a planted relationship is found across sessions and held out`
       + ` (train ${st.calmFocus.trainRho.toFixed(2)}, held-out ${st.calmFocus.testRho.toFixed(2)})`);
   }
@@ -339,6 +341,47 @@ async function drop(page, archives) {
     assert.match(st.text, /electrode contact/, 'and name the first thing to check');
     assert.ok(st.bad, 'and be styled as a failure, not as a neutral result');
     console.log('✓ a broken apparatus reports CONTROL FAILED and voids the rest');
+  }
+
+  // 9) THE HANDOFF FILE — the thing actually pasted into a conversation. It has to
+  //    carry its own guardrails, or handing a table to an AI just relocates the
+  //    credulity problem to a different reader.
+  {
+    await page.evaluate(() => { sessions.length = 0; render(); });
+    const planted = [];
+    for (let i = 0; i < 10; i++) planted.push(makeArchive({ id: `h${i}`, seedOffset: 90 + i, planted: true }));
+    await drop(page, planted);
+
+    const md = await page.evaluate(() => {
+      // Intercept the clipboard so the real button path is exercised rather than
+      // buildHandoff() being called directly.
+      let copied = null;
+      navigator.clipboard.writeText = (t) => { copied = t; return Promise.resolve(); };
+      document.getElementById('copyHandoff').click();
+      return new Promise((r) => setTimeout(() => r(copied), 120));
+    });
+
+    assert.ok(md, 'the copy button must produce a document');
+    // The limits must come before any finding, or the reader meets numbers first.
+    const limits = md.indexOf('cannot support');
+    const firstFinding = md.indexOf('### Candidates');
+    assert.ok(limits > 0, 'the handoff must state what the data cannot support');
+    assert.ok(firstFinding === -1 || limits < firstFinding,
+      'and state it BEFORE the findings');
+    for (const must of ['Causal claims', 'Clinical', 'by session, never by sample',
+      'too weak to be worth interpreting']) {
+      assert.ok(md.includes(must), `the handoff must include "${must}"`);
+    }
+    // The session table gives exposure at a glance.
+    assert.match(md, /\| trial-|\| session-h0\.zip \|/, 'sessions must be listed with their sizes');
+    // Findings must appear in ENGLISH, not as coefficients.
+    assert.match(md, /was (higher|lower) when you were closer to/,
+      'a finding must be a sentence, not a row of numbers');
+    // And small enough to paste anywhere — findings only, never the signal.
+    assert.ok(md.length < 20000, `the handoff must stay small (got ${md.length} bytes)`);
+    assert.ok(!md.includes('eeg-ch'), 'no raw data references');
+    console.log(`✓ the handoff copies as ${(md.length / 1024).toFixed(1)}kB of prose,`
+      + ' limits first, no raw signal');
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);
