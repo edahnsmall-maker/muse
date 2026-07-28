@@ -59,6 +59,17 @@
     border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(10px);
     z-index: 40; flex-wrap: wrap; max-width: min(560px, 90vw); }
   .popover[hidden] { display: none; }
+  /* A popover with nothing in it must not paint.
+     This was the "mysterious black dot": #timerPicker is empty until the first time
+     it is opened (renderTimerPicker fills it on demand), so an empty 22x22 box —
+     padding plus border, dark background, 12px radius — sat at the popover origin
+     looking exactly like a stray dot on the devices panel.
+     Note `:empty` is whitespace-sensitive and so does NOT cover #devices, whose
+     markup has indentation between the buttons — that case is handled in JS by
+     never leaving the panel without content. */
+  .popover:empty { display: none; }
+  .popoverNote { font-size: 12px; line-height: 1.45; max-width: 240px;
+    color: rgba(255,255,255,.7); }
   #timerPicker { display: flex; gap: 8px; }
   #timerPicker button { font-size: 13px; padding: 8px 16px;
     background: rgba(255,255,255,.12); color: rgba(255,255,255,.85); }
@@ -80,6 +91,15 @@
      you need two devices, they can be connected in either order, and either can
      drop out and need reconnecting mid-sit. */
   #statusStack { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  /* `hidden` MUST WIN, always.
+     The attribute works only through the UA's `[hidden] { display: none }`, which any
+     author rule setting `display` overrides — and `#devices { display: flex }` is an ID
+     selector, so it beat `.popover[hidden] { display: none }` outright. The device panel
+     was therefore never hideable: `hidden` was set correctly and had no effect, which is
+     why clicking Connect a second time appeared to do nothing.
+     Declared once, globally, because the next element to grow a `display` rule would
+     have reintroduced this silently. */
+  [hidden] { display: none !important; }
   #devices { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; justify-content: center; }
   #devices button.linked { font-size: 12px; padding: 8px 14px; letter-spacing: .06em;
     background: rgba(255,255,255,.05); border-color: var(--glass-line); box-shadow: none;
@@ -1146,8 +1166,17 @@ summaryEl.addEventListener('click', (e) => { if (e.target === summaryEl) closeSu
 
 if (!navigator.bluetooth) {
   setStatus('Web Bluetooth isn’t available in this browser.<br>Use Chrome or Edge (desktop, Android, or ChromeOS).');
+  /* Say WHY inside the panel rather than emptying it.
+     Removing both buttons left #devices as a 10px-padded, dark, 12px-radius box with
+     nothing in it — a small black blob above the Connect pill, with no explanation of
+     where the buttons went. This is the browser a phone hits (Safari has no Web
+     Bluetooth), so it is a real path, not a test artefact. */
   connectBtn.remove();
   strapBtn.remove();
+  const why = document.createElement('div');
+  why.className = 'popoverNote';
+  why.textContent = 'This browser can’t reach Bluetooth devices. Open the page in Chrome or Edge.';
+  devicesEl.appendChild(why);
 }
 
 // Two frontal channels only (AF7, AF8) drive the calm score — the same
@@ -2452,6 +2481,14 @@ async function markTap(tap) {
   if (tap.grades && noteId != null) {
     pendingGrade = { noteId, category: tap.key, until: Date.now() + 4000 };
     setStatus(`${tap.label} \u00b7 ${tap.grades.map((g) => `${g.value}=${g.label}`).join(' ')}`);
+  } else if (!recSession) {
+    /* SAY SO when the mark is not being kept.
+       markerLog.add above always succeeds, so the flash fires, the count goes up and
+       the mark appears in the on-screen tally whether or not anything is recording.
+       A whole sit was tapped through under the impression it was saved. The mark is
+       still worth having in the session's own display, but the confirmation must not
+       be indistinguishable from the confirmation of a saved one. */
+    setStatus(`${tap.label} \u00b7 ${Exporter.clock(tSec)} \u2014 not recording, this won\u2019t be saved`);
   } else {
     setStatus(`${tap.label} \u00b7 ${Exporter.clock(tSec)}`);
   }

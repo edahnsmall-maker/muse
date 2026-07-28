@@ -1286,6 +1286,51 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ one-key transitions record on the session clock: ${out.kinds.join(' ')}`);
   }
 
+  // 22b) A MARK MADE WHILE NOTHING IS RECORDING MUST SAY SO.
+  //      markerLog.add() always succeeds, so the screen flash fires and the on-screen
+  //      count goes up whether or not a session exists. A whole sit was tapped through
+  //      under the impression it was being saved, and the confirmation looked identical
+  //      to a saved one. The mark still belongs in the live display; the wording is
+  //      what has to differ.
+  {
+    const out = await page.evaluate(async () => {
+      recArmed = false; recSession = null; recError = null;
+      markerLog.clear();
+      const before = markerLog.length;
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 80));
+      const unsaved = { status: document.getElementById('status').textContent,
+        counted: markerLog.length - before, session: !!recSession };
+
+      // Now with a session, the same key must NOT carry the warning.
+      sessionStartedAt = Date.now() - 20000;
+      recArmed = false; recSession = null;
+      await ensureRecordingForTest();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 80));
+      const saved = { status: document.getElementById('status').textContent,
+        session: !!recSession };
+
+      const id = recSession && recSession.id;
+      await stopRecording({ summary: false });
+      if (id) await Recorder.deleteSession(recDb, id);
+      markerLog.clear();
+      return { unsaved, saved };
+    });
+
+    assert.strictEqual(out.unsaved.session, false, 'precondition: nothing recording');
+    assert.strictEqual(out.unsaved.counted, 1,
+      'the mark still counts on screen — it is the confirmation wording that changes');
+    assert.match(out.unsaved.status, /won.t be saved|not recording/i,
+      'a mark made with no recording running must say it is not being saved, got: '
+      + JSON.stringify(out.unsaved.status));
+    assert.ok(out.saved.session, 'precondition: a session exists for the second half');
+    assert.doesNotMatch(out.saved.status, /won.t be saved|not recording/i,
+      'and it must NOT cry wolf once a recording IS running, got: '
+      + JSON.stringify(out.saved.status));
+    console.log('✓ a mark made while nothing is recording says so, and only then');
+  }
+
   // 23) The closing screen's dimension grid. Optional, clearable, and it shows the
   //     ANCHOR TEXT — a digit alone drifts in meaning between sits.
   {
@@ -1594,6 +1639,81 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log('✓ one popover at a time, toggling off, and dismissed by an outside click');
   }
 
+  // 26b) POPOVERS ACTUALLY DISAPPEAR — asserted on computed style and painted size,
+  //      not on the `hidden` property.
+  //
+  //      The test above passed while the Connect panel stayed on screen. `hidden` is
+  //      only an attribute; it takes effect through the UA sheet's
+  //      `[hidden] { display: none }`, which ANY author rule setting `display`
+  //      overrides — and `#devices { display: flex }` is an ID selector, so it won
+  //      outright. The panel was never hideable: `dev.hidden === true` the whole time.
+  //      So the assertion has to be something the eye could also check.
+  //
+  //      Same rule for `#timerPicker { display: flex }`, and that one produced the
+  //      "mysterious black dot": empty until renderTimerPicker fills it on first open,
+  //      it painted a 22x22 box (10px padding + 1px border, dark, 12px radius) at the
+  //      popover origin, overlapping the devices panel's lower edge.
+  {
+    const out = await page.evaluate(async () => {
+      const ids = ['devices', 'timerPicker', 'trialPicker'];
+      const paint = () => ids.map((id) => {
+        const el = document.getElementById(id);
+        const r = el.getBoundingClientRect();
+        return { id, display: getComputedStyle(el).display,
+          w: Math.round(r.width), h: Math.round(r.height) };
+      });
+      setPopover(null);
+      const atRest = paint();
+
+      document.getElementById('devToggle').click();
+      const opened = paint();
+      document.getElementById('devToggle').click();
+      const closed = paint();
+
+      /* And nothing anywhere on the page paints a small filled SQUARE with nothing in
+         it — the generalised form of the dot, since the next empty container to grow a
+         `display` rule would look identical.
+         The bounds are deliberate and both are needed. Square-ish excludes bar fills
+         (`<i style="width:37%">` is legitimately empty, and is a long thin sliver).
+         The 14px floor excludes the intentional indicator dots — .tierLight and
+         .legendItem .swatch are 7-8px squares that are supposed to be empty. An empty
+         container collapses to its padding plus border, which in this stylesheet is
+         22px, comfortably above the floor. */
+      const blobs = [];
+      for (const el of document.querySelectorAll('*')) {
+        const cs = getComputedStyle(el);
+        if (cs.display === 'none' || cs.visibility === 'hidden' || Number(cs.opacity) === 0) continue;
+        const r = el.getBoundingClientRect();
+        if (r.width < 14 || r.width > 40 || r.height < 14 || r.height > 40) continue;
+        const aspect = r.width / r.height;
+        if (aspect < 0.6 || aspect > 1.7) continue;
+        const solid = cs.backgroundColor && cs.backgroundColor !== 'rgba(0, 0, 0, 0)';
+        const empty = !(el.textContent || '').trim() && el.children.length === 0;
+        if (solid && empty) blobs.push({ sel: el.id ? '#' + el.id : el.tagName,
+          x: Math.round(r.x), y: Math.round(r.y),
+          w: Math.round(r.width), h: Math.round(r.height) });
+      }
+      return { atRest, opened, closed, blobs };
+    });
+
+    for (const p of out.atRest) {
+      assert.strictEqual(p.display, 'none',
+        `#${p.id} must not be painted before it is opened — it was ${p.display} at`
+        + ` ${p.w}x${p.h}px. An empty popover ${p.w}px square IS the black dot.`);
+    }
+    const devOpen = out.opened.find((p) => p.id === 'devices');
+    assert.ok(devOpen.display !== 'none' && devOpen.w > 100,
+      `Connect must open a real panel (got ${devOpen.display} at ${devOpen.w}px)`);
+    const devClosed = out.closed.find((p) => p.id === 'devices');
+    assert.strictEqual(devClosed.display, 'none',
+      'a second press on Connect must make the panel GONE, not merely set hidden —'
+      + ` computed display was ${devClosed.display} at ${devClosed.w}x${devClosed.h}px`);
+    assert.strictEqual(devClosed.w, 0, 'and it must occupy no space');
+    assert.deepStrictEqual(out.blobs, [],
+      `no element may paint a small filled box with nothing in it: ${JSON.stringify(out.blobs)}`);
+    console.log('✓ popovers vanish by computed style, and nothing paints an empty dot');
+  }
+
   // 27) The bar is three LABELLED groups, in the order the practice uses them.
   {
     const groups = await page.evaluate(() => Array.from(
@@ -1618,6 +1738,63 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       assert.ok(all.some((p) => p.startsWith(must)), `${must} must not be lost in the regroup`);
     }
     console.log(`✓ the bar is 3 labelled groups: ${groups.map((g) => `${g.label} (${g.pills.length})`).join(', ')}`);
+  }
+
+  // 28) THE TIMER RUNNING OUT MUST STOP THE RECORDING. Reported: it did not, and the
+  //     sit had to be stopped by hand. Driven through the REAL tick and the REAL timer
+  //     pill, because the previous claim that this worked was an inference from a
+  //     screenshot rather than a check.
+  {
+    const out = await page.evaluate(async () => {
+      const chimes = [];
+      const realTone = window.tone;
+      window.tone = (hz) => chimes.push(hz);
+
+      // Start recording, THEN set a timer — the order a person actually uses.
+      await startRecording();
+      const id = recSession && recSession.id;
+      const armedBefore = recArmed;
+      document.getElementById('summary').classList.remove('show');
+
+      // A timer already in the past, so the very next tick must fire it.
+      timerEndAt = Date.now() - 5;
+      timerDone = false;
+
+      // Wait for the page's own 250ms tick rather than calling checkTimerDone().
+      const deadline = Date.now() + 4000;
+      while (recArmed && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
+      await new Promise((r) => setTimeout(r, 400));
+
+      const stored = id ? await Recorder.loadSession(recDb, id) : null;
+      const after = {
+        armed: recArmed, session: !!recSession,
+        button: document.getElementById('recBtn').textContent,
+        summaryOpen: document.getElementById('summary').classList.contains('show'),
+        timerDone,
+        ended: stored && stored.meta.ended,
+        chimes: chimes.slice(),
+      };
+      window.tone = realTone;
+      if (id) await Recorder.deleteSession(recDb, id);
+      timerEndAt = null; timerDone = false;
+      document.getElementById('summary').classList.remove('show');
+      selfRating = null; lastRecSession = null;
+      return { armedBefore, after };
+    });
+
+    assert.ok(out.armedBefore, 'the test must actually be recording before the timer fires');
+    assert.strictEqual(out.after.timerDone, true, 'the timer must have fired');
+    assert.strictEqual(out.after.armed, false,
+      'the timer running out MUST stop the recording — it should not need stopping by hand');
+    assert.strictEqual(out.after.session, false, 'and release the session');
+    assert.strictEqual(out.after.button, 'Record', 'and the button must offer a new one');
+    assert.strictEqual(out.after.ended, true,
+      'the stored session must be marked ended, not left looking interrupted');
+    assert.ok(out.after.summaryOpen, 'and the summary must open, since the sit is over');
+    // Audible, because your eyes are probably shut when the timer runs out.
+    assert.ok(out.after.chimes.length >= 3,
+      `stopping must chime (got ${out.after.chimes.join(',')})`);
+    console.log('✓ the timer running out stops the recording, chimes, and opens the summary');
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
