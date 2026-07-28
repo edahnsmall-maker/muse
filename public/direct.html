@@ -369,7 +369,20 @@
     </div>
   </div>
   <div id="timerPicker"></div>
-  <div id="readout"></div>
+  <!-- The header and the Sensors/Composites switch are STATIC. They used to be part
+     of the string assigned to #readout.innerHTML on every 250ms tick, which
+     destroyed and recreated these two pills four times a second: hover flickered,
+     and a click whose mousedown and mouseup straddled a rebuild landed on two
+     different nodes and fired no click event at all. Only #readoutRows is
+     regenerated now. -->
+<div id="readout">
+  <div id="readoutHead"><div id="readoutTitle">Metrics</div></div>
+  <div id="viewSwitch">
+    <span class="pill active" data-view="sensors">Sensors</span>
+    <span class="pill" data-view="composites">Composites</span>
+  </div>
+  <div id="readoutRows"></div>
+</div>
   <div id="dataPanel" class="panelClosed">
     <div id="dataToggle">Live feed</div>
     <div id="dataBody">
@@ -420,6 +433,27 @@
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
 const readoutEl = document.getElementById('readout');
+const readoutRowsEl = document.getElementById('readoutRows');
+const viewSwitchEl = document.getElementById('viewSwitch');
+
+// Only the `active` class changes on tick. Rewriting the markup would replace the
+// nodes and take their listeners with it.
+function renderViewSwitch() {
+  viewSwitchEl.querySelectorAll('[data-view]').forEach((el) => {
+    el.classList.toggle('active', el.dataset.view === viewMode);
+  });
+}
+
+// Bound once, at startup, to nodes that live for the life of the page. Delegated
+// from the container so it holds even if the pills are ever re-templated.
+viewSwitchEl.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-view]');
+  if (!el) return;
+  viewMode = el.dataset.view;
+  visual.setSeries(viewMode);
+  renderViewSwitch();
+  renderLegend(); renderChart();
+});
 const timerPickerEl = document.getElementById('timerPicker');
 const connectBtn = document.getElementById('connect');
 const strapBtn = document.getElementById('connectStrap');
@@ -2426,7 +2460,10 @@ function renderStrapOnlyReadout() {
       ? 'no skin contact' : `${Math.round(rrBuffer.rejectRate() * 100)}% rejected`));
   }
   rows.push(line('Headband', 'not connected'));
-  readoutEl.innerHTML = rows.join('');
+  // Into the rows container, NOT into #readout: assigning to #readout here would
+  // delete the static header and the view switch, reintroducing the same bug by a
+  // different route.
+  readoutRowsEl.innerHTML = rows.join('');
   readoutEl.classList.add('show');
 }
 
@@ -2600,21 +2637,10 @@ setInterval(() => {
   }
   if (markerLog.length) tail.push(row('Marks', null, { text: String(markerLog.length) }));
 
-  const viewSwitchHtml = `<div id="viewSwitch">`
-    + `<span class="pill${viewMode === 'sensors' ? ' active' : ''}" data-view="sensors">Sensors</span>`
-    + `<span class="pill${viewMode === 'composites' ? ' active' : ''}" data-view="composites">Composites</span>`
-    + `</div>`;
-  readoutEl.innerHTML = `<div id="readoutHead"><div id="readoutTitle">Metrics</div></div>`
-    + viewSwitchHtml
-    + topRows.join('') + '<div style="height:12px"></div>' + tail.join('');
-
-  readoutEl.querySelectorAll('[data-view]').forEach((el) => {
-    el.addEventListener('click', () => {
-      viewMode = el.dataset.view;
-      visual.setSeries(viewMode);
-      renderLegend(); renderChart();
-    });
-  });
+  // Rows only. Touching the pills' markup here is what broke them.
+  readoutRowsEl.innerHTML =
+    topRows.join('') + '<div style="height:12px"></div>' + tail.join('');
+  renderViewSwitch();
   if (trainingMode) {
     const t = sessionSeconds();
     clockTimeEl.textContent = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;

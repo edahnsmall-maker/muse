@@ -917,6 +917,111 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ ${out.visuals.length} visuals, ${out.groups} control groups, devices collapse, no stuck message`);
   }
 
+  // 19) THE SENSORS/COMPOSITES SWITCH must survive the 250ms tick.
+  //
+  //     Reported as "it flickers and takes ten clicks". The cause: the whole readout,
+  //     including these two pills, was assigned to #readout.innerHTML on every tick.
+  //     The nodes were destroyed and rebuilt four times a second, so hover restarted
+  //     constantly, and a click whose mousedown and mouseup straddled a rebuild
+  //     landed on two different elements and fired no click event at all.
+  {
+    /* Feed REAL EEG so the full readout path runs.
+     *
+     * The first version of this test set up a strap-only readout, which takes the
+     * tick's early-return branch and never reaches the view switch at all — so it
+     * passed even with the bug deliberately reintroduced. A regression test that
+     * does not enter the code path it guards is worse than none: it reports safety.
+     * Verified by injection after this change.
+     */
+    await page.evaluate(async () => {
+      strapDevice = null;
+      viewMode = 'sensors';
+      // ~20uV of alpha-ish signal on the frontal pair: enough for computeCalm() to
+      // return a result, small enough not to trip the artifact rejector.
+      for (let ch = 0; ch < 4; ch++) {
+        const block = [];
+        for (let i = 0; i < 600; i++) {
+          block.push(18 * Math.sin((2 * Math.PI * 10 * i) / 256) + 4 * Math.sin((2 * Math.PI * 6 * i) / 256));
+        }
+        pushSamples(ch, block);
+      }
+      lastDataAt = Date.now();
+      await new Promise((r) => setTimeout(r, 700));
+    });
+    // Prove the full path is actually running, or everything below is vacuous.
+    const live = await page.evaluate(() => ({
+      rows: document.getElementById('readoutRows').children.length,
+      switchVisible: !!document.querySelector('#viewSwitch [data-view="composites"]').offsetParent,
+    }));
+    assert.ok(live.rows > 3,
+      `the FULL readout must be rendering, or this test guards nothing (got ${live.rows} rows)`);
+    assert.ok(live.switchVisible, 'and the switch must be on screen');
+
+    // ROOT CAUSE: the node must be the SAME object after several ticks. Everything
+    // else follows from this, and it is the assertion that cannot pass by luck.
+    const identity = await page.evaluate(async () => {
+      const before = document.querySelector('#viewSwitch [data-view="composites"]');
+      before.dataset.probe = 'marked';               // survives only if the node does
+      const headBefore = document.getElementById('readoutHead');
+      await new Promise((r) => setTimeout(r, 900));  // ~4 ticks
+      const after = document.querySelector('#viewSwitch [data-view="composites"]');
+      return {
+        same: before === after,
+        probeSurvived: after.dataset.probe === 'marked',
+        headSame: headBefore === document.getElementById('readoutHead'),
+        rowsStillRender: document.getElementById('readoutRows').children.length > 0,
+      };
+    });
+    assert.ok(identity.same,
+      'the Composites pill must be the SAME node after several ticks — rebuilding it is what swallowed clicks');
+    assert.ok(identity.probeSurvived, 'and must not be replaced by an identical copy');
+    assert.ok(identity.headSame, 'the readout header must be stable too');
+    assert.ok(identity.rowsStillRender,
+      'while the ROWS must still update — the fix must not freeze the readout');
+
+    // THE REPRODUCTION: a real mouse press with a tick deliberately in the middle.
+    // This is what a slow human click looks like, and it is what used to fail.
+    await page.evaluate(() => { viewMode = 'sensors'; renderViewSwitch(); });
+    const box = await page.evaluate(() => {
+      const r = document.querySelector('#viewSwitch [data-view="composites"]').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height };
+    });
+    assert.ok(box.w > 0 && box.h > 0, 'the pill must actually be laid out and clickable');
+    await page.mouse.move(box.x, box.y);
+    await page.mouse.down();
+    await page.waitForTimeout(400);            // a tick (or two) lands mid-click
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+
+    const after = await page.evaluate(() => ({
+      viewMode,
+      activeLabel: document.querySelector('#viewSwitch .pill.active').textContent,
+    }));
+    assert.strictEqual(after.viewMode, 'composites',
+      'a slow click spanning a tick must still switch view — this is the reported bug');
+    assert.strictEqual(after.activeLabel, 'Composites',
+      'and the active pill must reflect it');
+
+    // And back again via the OTHER pill, so the toggle is not one-way.
+    const sBox = await page.evaluate(() => {
+      const r = document.querySelector('#viewSwitch [data-view="sensors"]').getBoundingClientRect();
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    });
+    await page.mouse.move(sBox.x, sBox.y);
+    await page.mouse.down();
+    await page.waitForTimeout(300);
+    await page.mouse.up();
+    await page.waitForTimeout(150);
+    const back = await page.evaluate(() => {
+      const v = viewMode;
+      for (const b of buffers) b.length = 0;
+      viewMode = 'sensors'; renderViewSwitch();
+      return v;
+    });
+    assert.strictEqual(back, 'sensors', 'clicking Sensors must switch back');
+    console.log('✓ the Sensors/Composites switch survives the tick: stable nodes, slow clicks register');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll UI tests passed.');
