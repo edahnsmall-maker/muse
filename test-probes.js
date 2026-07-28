@@ -49,12 +49,34 @@ const A = require('./public/analysis.js');
       }
     }
   }
-  // The graded distinction the user asked for specifically.
-  const letting = P.TAP_BY_KEY['letting-go'];
-  assert.ok(letting && letting.grades.length === 2,
-    'effort dropping must distinguish loosening from complete effortlessness');
-  assert.match(letting.grades[1].hint, /rare/,
-    'and mark the full version as rare, so it is not over-reported');
+  /* THE PAIR THAT EARNS THE VOCABULARY ITS KEEP: the same degree of focus with and
+   * without effort. A single focus score cannot separate these, which is the whole
+   * reason effort is a distinct axis — and having both as one-key marks means the
+   * moment of crossing between them is recordable. */
+  assert.ok(P.TAP_BY_KEY.concentrating && P.TAP_BY_KEY.absorbed,
+    'effortful and effortless concentration must both be markable, and separately');
+  assert.match(P.TAP_BY_KEY.absorbed.hint, /holding itself|no work/,
+    'and the effortless one must say what makes it different');
+
+  // Two different returns: to the object, and to not-working-at-it.
+  assert.ok(P.TAP_BY_KEY.returned && P.TAP_BY_KEY['returned-effortless'],
+    'returning to the breath and returning to effortlessness are different acts');
+  assert.notStrictEqual(P.TAP_BY_KEY.returned.kbd, P.TAP_BY_KEY['returned-effortless'].kbd);
+
+  /* KENSHO AND SATORI must be recordable and must NOT be presented as detectable.
+   * They will be far too rare to analyse for years, and the hint has to say that the
+   * mark is a report rather than a measurement — otherwise the rarest, most
+   * over-interpretable label in the set arrives with no warning attached. */
+  for (const k of ['kensho', 'satori']) {
+    const t = P.TAP_BY_KEY[k];
+    assert.ok(t, `${k} must be markable`);
+    assert.match(t.hint, /never inferred|not a measurement|rare/i,
+      `${k}'s hint must make clear it is a report, not something the app detects`);
+  }
+  // The graded one, where the grade is a real distinction rather than decoration.
+  const restless = P.TAP_BY_KEY.restless;
+  assert.ok(restless.grades && restless.grades.length === 2,
+    'restlessness has degrees worth telling apart');
   // Keys must not collide with the app's existing bindings.
   for (const taken of ['M', 'T', 'N', 'V', 'F']) {
     assert.ok(!kbds.includes(taken), `${taken} is already bound elsewhere`);

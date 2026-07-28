@@ -87,50 +87,84 @@
    * between beginning to loosen and complete effortlessness, which is a real
    * distinction and a rare event worth being able to mark as rare.
    */
+  /*
+   * The practitioner's own vocabulary, in their own words. This is the set that gets
+   * pressed with the eyes shut, so it is the one that has to fit the practice rather
+   * than the software.
+   *
+   * TWO THINGS WORTH NOTING ABOUT ITS SHAPE:
+   *
+   * `concentrating` and `absorbed` are the SAME degree of focus with and without
+   * effort — the distinction a single focus score cannot make, and the reason effort is
+   * a separate axis in labels.js. Having both as one-key marks means the moment of
+   * crossing between them is recordable, which is the transition worth detecting.
+   *
+   * `returned` and `returned-effortless` are two different returns. Coming back to the
+   * breath and coming back to not-working-at-it are different acts, and a detector that
+   * fired on one would not necessarily fire on the other.
+   *
+   * ON KENSHO AND SATORI. These are here because they cost nothing to record and
+   * because if a handful ever accumulate they are the most interesting data in the
+   * project. But they will be far too rare to analyse for a very long time — an
+   * event-locked average of three marks is noise with a shape — and NOTHING in this app
+   * may ever claim to detect them. They are a record of what the practitioner reports,
+   * full stop. The analysis will say "not enough events" for years, and that is
+   * correct.
+   *
+   * Keys avoid M, T, N, V and F, which the app already binds, and avoid digits, which
+   * belong to probe answers and grades.
+   */
   const TAP_CATEGORIES = [
-    /*
-     * ONE canonical set of keys. An earlier version had two overlapping vocabularies —
-     * these categories and labels.js's TRANSITIONS — which shared R, D and K between
-     * them and silently disagreed about what those keys meant. Two names for the same
-     * event is worse than either name alone, because the analysis then has to guess
-     * whether they are the same thing. `transition` names the event for the export;
-     * these definitions are the authority on what the keys do.
-     */
     {
-      key: 'returned', kbd: 'R', label: 'Noticed I was thinking',
-      hint: 'the moment of catching it — tap as soon as you realise',
+      key: 'concentrating', kbd: 'C', label: 'Concentrating',
+      hint: 'gathering attention, with effort — starting to focus',
       grades: null,
     },
     {
-      key: 'lost', kbd: 'G', label: 'Gone, only now realised',
-      hint: 'the moment of realising you had been away, as distinct from re-establishing',
+      key: 'absorbed', kbd: 'A', label: 'Naturally concentrated',
+      hint: 'still gathered, but it is holding itself — no work needed',
       grades: null,
     },
     {
-      key: 'letting-go', kbd: 'E', label: 'Effort dropping',
-      hint: 'the grip loosening, or letting go entirely',
+      key: 'just-sitting', kbd: 'J', label: 'Just sitting',
+      hint: 'effortless, nothing being done, no object being held',
+      grades: null,
+    },
+    {
+      key: 'lost', kbd: 'L', label: 'Lost in thought',
+      hint: 'gone — press when you notice, the mark is the noticing',
+      grades: null,
+    },
+    {
+      key: 'returned', kbd: 'R', label: 'Returned to the object',
+      hint: 'back on the breath or whatever you are holding',
+      grades: null,
+    },
+    {
+      key: 'returned-effortless', kbd: 'E', label: 'Returned to effortlessness',
+      hint: 'stopped working at it again — a different return from the one above',
+      grades: null,
+    },
+    {
+      key: 'restless', kbd: 'U', label: 'Restless',
+      hint: 'unsettled, fidgety, agitated — body or mind',
       grades: [
-        { value: 1, label: 'loosening', hint: 'still working, but less' },
-        { value: 2, label: 'effortless', hint: 'nothing being held at all — rare' },
+        { value: 1, label: 'a bit', hint: 'noticeable but sittable' },
+        { value: 2, label: 'badly', hint: 'hard to stay' },
       ],
     },
     {
-      key: 'tightening', kbd: 'K', label: 'Tightening',
-      hint: 'closing down, straining, contraction',
-      grades: [
-        { value: 1, label: 'a little', hint: 'a touch of strain' },
-        { value: 2, label: 'gripping', hint: 'clamped down' },
-      ],
+      key: 'kensho', kbd: 'K', label: 'Kenshō',
+      hint: 'a glimpse. Rare — recorded, never inferred, and never claimed by the app',
+      grades: null,
     },
     {
-      key: 'opening', kbd: 'D', label: 'Opening / dropping in',
-      hint: 'a sudden widening or deepening',
-      grades: [
-        { value: 1, label: 'a shift', hint: 'something changed' },
-        { value: 2, label: 'dropped right in', hint: 'unmistakable — rare' },
-      ],
+      key: 'satori', kbd: 'S', label: 'Satori',
+      hint: 'rarer still. Same rule: this is your report, not a measurement',
+      grades: null,
     },
   ];
+
   const TAP_BY_KEY = TAP_CATEGORIES.reduce((m, t) => { m[t.key] = t; return m; }, {});
   const TAP_BY_KBD = TAP_CATEGORIES.reduce((m, t) => { m[t.kbd] = t; return m; }, {});
 

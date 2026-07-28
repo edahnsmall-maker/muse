@@ -1250,7 +1250,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       await ensureRecordingForTest();
       const before = markerLog.length;
       // Real keyboard events, not direct calls: the binding is the thing under test.
-      for (const k of ['r', 'G', 'd']) {
+      for (const k of ['r', 'L', 'c']) {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
         await new Promise((r) => setTimeout(r, 60));
       }
@@ -1274,8 +1274,10 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     });
     // probes.js TAP_CATEGORIES is the single authority on these keys now; an earlier
     // version had labels.js disagreeing with it about what R, D and K meant.
-    assert.deepStrictEqual(out.kinds, ['returned', 'lost', 'opening'],
-      `R G D must record returned/lost/opening (got ${out.kinds.join(', ')})`);
+    // The practitioner's own vocabulary; probes.js TAP_CATEGORIES is its single
+    // authority, and labels.js mirrors it for naming in the export.
+    assert.deepStrictEqual(out.kinds, ['returned', 'lost', 'concentrating'],
+      `R L C must record returned/lost/concentrating (got ${out.kinds.join(', ')})`);
     // Case-insensitive: nobody checks caps lock mid-sit.
     assert.strictEqual(out.kinds.length, 3, 'a held key must not repeat into extra marks');
     assert.ok(out.offsets.every((o) => o >= 40 && o <= 60),
@@ -1406,13 +1408,20 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       assert.ok(out.blocks[i].t > out.blocks[i - 1].t, 'block times must increase');
     }
 
-    // One audible cue per boundary, at two distinct pitches — the protocol is meant to
-    // be followed with the eyes closed, so a screen-only boundary would be missed.
-    const boundaryTones = out.tones.slice(0, 4);
-    assert.strictEqual(boundaryTones.length, 4, `one cue per block (got ${out.tones.length} total)`);
+    /* One audible cue per boundary, at two distinct pitches — the protocol is meant to
+     * be followed with the eyes closed, so a screen-only boundary would be missed.
+     *
+     * Filtered to the two BOUNDARY pitches rather than taking the first four sounds:
+     * the app also chimes at the end of the protocol and again when a recording stops,
+     * and an assertion that counts every sound breaks whenever another one is added
+     * for a good reason. */
+    const boundaryTones = out.tones.filter((hz) => hz === 660 || hz === 440);
+    assert.strictEqual(boundaryTones.length, 4,
+      `one cue per block (got ${boundaryTones.length} of ${out.tones.join(',')})`);
     assert.strictEqual(new Set(boundaryTones).size, 2,
       `each condition needs its own pitch so it is identifiable unseen (got ${boundaryTones.join(',')})`);
-    assert.ok(out.tones.length > 4, 'and a distinct chime at the end of the protocol');
+    assert.ok(out.tones.some((hz) => hz !== 660 && hz !== 440),
+      'and a distinct chime at the end, not just more boundary tones');
 
     // The settling phase must have been visible at least once, or the meditator is
     // never told which stretch does not count.
@@ -1530,6 +1539,85 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(storedAnswer.at != null, 'with the SCHEDULED time, not the answer time —'
       + ' the labelled window is measured from when the cue fired');
     console.log('✓ probes are opt-in, audible, one-tap, latency-timed, and misses are recorded');
+  }
+
+  // 26) POPOVERS: exactly one open, toggling off on a second press, and dismissed by an
+  //     outside click. Reported live: the Timer panel would not close, and it covered
+  //     the Connect panel underneath so neither could be dismissed.
+  {
+    const out = await page.evaluate(async () => {
+      const dev = document.getElementById('devices');
+      const timer = document.getElementById('timerPicker');
+      const trials = document.getElementById('trialPicker');
+      const hidden = () => ({ dev: dev.hidden, timer: timer.hidden, trials: trials.hidden });
+      setPopover(null);
+
+      document.getElementById('devToggle').click();
+      const afterDev = hidden();
+      // THE BUG: opening the timer left the devices panel open behind it.
+      document.getElementById('timerLink').click();
+      const afterTimer = hidden();
+      // AND THE OTHER HALF: a second press must close it.
+      document.getElementById('timerLink').click();
+      const afterSecond = hidden();
+
+      document.getElementById('trialsLink').click();
+      const afterTrials = hidden();
+      // An outside click dismisses.
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+      const afterOutside = hidden();
+
+      // Choosing a duration must close the panel too, not leave it open over the bar.
+      document.getElementById('timerLink').click();
+      const opts = timer.querySelectorAll('button').length;
+      timer.querySelector('[data-min="10"]').click();
+      const afterChoice = { hidden: hidden(), endSet: timerEndAt != null };
+      timerEndAt = null; timerDone = false; setPopover(null);
+      return { afterDev, afterTimer, afterSecond, afterTrials, afterOutside, afterChoice, opts };
+    });
+
+    assert.deepStrictEqual(out.afterDev, { dev: false, timer: true, trials: true },
+      'Connect opens only the device panel');
+    assert.deepStrictEqual(out.afterTimer, { dev: true, timer: false, trials: true },
+      'opening the Timer must CLOSE the device panel — two open at once is what buried'
+      + ' Connect underneath and made both undismissable');
+    assert.deepStrictEqual(out.afterSecond, { dev: true, timer: true, trials: true },
+      'a second press on Timer must close it');
+    assert.deepStrictEqual(out.afterTrials, { dev: true, timer: true, trials: false },
+      'and Trials replaces whatever was open');
+    assert.deepStrictEqual(out.afterOutside, { dev: true, timer: true, trials: true },
+      'an outside click must dismiss the open popover');
+    assert.ok(out.opts >= 4, `the timer must offer its durations (got ${out.opts})`);
+    assert.ok(out.afterChoice.hidden.timer && out.afterChoice.endSet,
+      'choosing a duration sets the timer and closes the panel');
+    console.log('✓ one popover at a time, toggling off, and dismissed by an outside click');
+  }
+
+  // 27) The bar is three LABELLED groups, in the order the practice uses them.
+  {
+    const groups = await page.evaluate(() => Array.from(
+      document.querySelectorAll('#controls .pillGroup')).map((g) => ({
+        label: g.querySelector('.groupLabel').textContent,
+        pills: Array.from(g.querySelectorAll('.pills .pill')).map((p) => p.textContent.trim()),
+      })));
+    assert.strictEqual(groups.length, 3, `three groups (got ${groups.length})`);
+    assert.deepStrictEqual(groups.map((g) => g.label), ['View', 'Practice', 'Session']);
+    // The arrangement asked for: settings live with what they affect, and Connect sits
+    // with the session controls rather than in a group of its own.
+    assert.ok(groups[0].pills.some((p) => /^Cues/.test(p)), 'Cues belongs with the view controls');
+    assert.ok(groups[0].pills.some((p) => /^Response/.test(p)), 'and so does Response');
+    assert.ok(groups[1].pills.some((p) => /^Trials$/.test(p)), 'Trials belongs with Practice');
+    assert.ok(groups[1].pills.some((p) => /^Timer/.test(p)), 'and Timer');
+    assert.ok(groups[2].pills.some((p) => /^Connect$/.test(p)), 'Connect belongs with Session');
+    assert.ok(groups[2].pills.some((p) => /^Saved sessions$/.test(p)));
+    // Every pill must still be somewhere: a reorganisation that loses a control is worse
+    // than a messy bar.
+    const all = groups.flatMap((g) => g.pills);
+    for (const must of ['Metrics', 'Live feed', 'Visuals', 'Summarize session']) {
+      assert.ok(all.some((p) => p.startsWith(must)), `${must} must not be lost in the regroup`);
+    }
+    console.log(`✓ the bar is 3 labelled groups: ${groups.map((g) => `${g.label} (${g.pills.length})`).join(', ')}`);
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);

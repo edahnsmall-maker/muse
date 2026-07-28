@@ -165,16 +165,24 @@
    * silently disagreed about what R, D and K meant, which is worse than either alone.
    */
   const TRANSITIONS = [
-    { key: 'returned', label: 'Noticed I was thinking', kbd: 'R',
-      hint: 'attention re-established on the object' },
-    { key: 'lost', label: 'Gone, only now realised', kbd: 'G',
-      hint: 'the moment of realising, not the leaving' },
-    { key: 'opening', label: 'Opening / dropping in', kbd: 'D',
-      hint: 'a sudden opening or deepening' },
-    { key: 'tightening', label: 'Tightening', kbd: 'K',
-      hint: 'closed down, effort spiked, contraction' },
-    { key: 'letting-go', label: 'Effort dropping', kbd: 'E',
-      hint: 'the grip loosening, or letting go entirely' },
+    { key: 'concentrating', label: 'Concentrating', kbd: 'C',
+      hint: 'gathering attention, with effort' },
+    { key: 'absorbed', label: 'Naturally concentrated', kbd: 'A',
+      hint: 'still gathered, but holding itself' },
+    { key: 'just-sitting', label: 'Just sitting', kbd: 'J',
+      hint: 'effortless, no object being held' },
+    { key: 'lost', label: 'Lost in thought', kbd: 'L',
+      hint: 'the moment of noticing you were gone' },
+    { key: 'returned', label: 'Returned to the object', kbd: 'R',
+      hint: 'back on the breath' },
+    { key: 'returned-effortless', label: 'Returned to effortlessness', kbd: 'E',
+      hint: 'stopped working at it again' },
+    { key: 'restless', label: 'Restless', kbd: 'U',
+      hint: 'unsettled, fidgety, agitated' },
+    { key: 'kensho', label: 'Kenshō', kbd: 'K',
+      hint: 'a glimpse — recorded, never inferred' },
+    { key: 'satori', label: 'Satori', kbd: 'S',
+      hint: 'rarer still — a report, not a measurement' },
   ];
 
   const TRANSITION_BY_KEY = TRANSITIONS.reduce((m, t) => { m[t.key] = t; return m; }, {});

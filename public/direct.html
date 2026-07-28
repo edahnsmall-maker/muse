@@ -34,7 +34,14 @@
   .status.hidden { opacity: 0; }
   /* One understated readout — small, translucent, no card/pill chrome.
      Plain-English content (calm, brainwaves, breathing, noise, timer). */
-  #readout { position: absolute; right: 4vmin; bottom: calc(5vmin + 70px); width: 250px; padding: 15px 16px;
+  /* TOP-anchored, not bottom-anchored. Bottom anchoring with a content-driven height
+     meant the panel's top — and the Sensors/Composites tabs on it — moved whenever the
+     row count changed. Anchoring the top fixes the tabs in place AND lets the panel
+     grow downward, so it needs no inner scrollbar for the row counts that actually
+     occur. The max-height is only a backstop against a short window. */
+  #readout { position: absolute; right: 4vmin; top: 11vmin;
+    max-height: calc(100vh - 11vmin - 96px); overflow-y: auto;
+    width: 250px; padding: 15px 16px;
     text-align: right; color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums;
     line-height: 1.9; text-shadow: 0 1px 8px rgba(0,0,0,.7);
     background: linear-gradient(180deg, var(--glass), rgba(5, 8, 18, .34));
@@ -106,7 +113,11 @@
      started without expanding it: "Connect" vs "2 linked". */
   #devToggle { align-self: center; }
   #devToggle.linked { color: #bfe9c9; border-color: rgba(150,230,180,.4); }
-  .pillGroup { display: inline-flex; gap: 6px; align-items: center; }
+  .pillGroup { display: inline-flex; flex-direction: column; gap: 5px; align-items: flex-start; }
+  .pillGroup .pills { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  /* Quiet, because a group label is orientation rather than a control. */
+  .groupLabel { font-size: 9px; letter-spacing: .18em; text-transform: uppercase;
+    color: rgba(255,255,255,.3); padding-left: 3px; }
   .pillGroup + .pillGroup { margin-left: 6px; padding-left: 12px;
     border-left: 1px solid rgba(255,255,255,.12); }
   #recBtn { position: fixed; top: 14px; right: 16px; z-index: 60; cursor: pointer;
@@ -239,8 +250,10 @@
      under the cursor, and the click landed on nothing. A strap connecting mid-sit
      did the same thing to whatever you were reaching for. Constant height, scroll
      when it overflows, and the header never moves. */
-  #readoutRows { height: min(320px, 40vh); overflow-y: auto; overflow-x: hidden;
-    scrollbar-width: thin; }
+  /* No fixed height any more: the panel is top-anchored, so the rows can grow
+     downward without moving the header, and a scrollbar at ordinary row counts was
+     the visible cost of the previous approach. */
+  #readoutRows { overflow: visible; }
   #viewSwitch .pill { min-height: 27px; font-size: 10px; padding: 0 10px; border-radius: 10px; }
   #whatsThis { text-decoration: underline; cursor: pointer; }
 
@@ -321,6 +334,13 @@
     color: rgba(255,255,255,.92); }
   .markRow input { flex: 1; }
   .markRow select { background: rgba(255,255,255,.10); }
+  /* THE OPEN LIST of a native <select> is drawn by the platform, not by this page's
+     styles, so a light inherited `color` produces white text on the OS's white menu —
+     which is what made the trial prompts unreadable. Every option needs an explicit
+     dark-on-light pair, and `color-scheme: dark` asks the platform for a dark menu
+     where it supports one. */
+  select { color-scheme: dark; }
+  select option { background: #16181f; color: #eef1f6; }
 
   /* Inline marker prompt — appears the instant M is pressed, so the note is
      written at the moment rather than recalled later. Kept visually quiet:
@@ -382,7 +402,7 @@
 
   /* A real, clickable control bar. Keyboard shortcuts still work, but nothing
      is keyboard-ONLY — shortcuts you have to remember are not discoverable. */
-  #controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center;
+  #controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: flex-start;
     opacity: 0; transition: opacity .6s; margin-bottom: 10px; padding: 8px;
     border: 1px solid rgba(255,255,255,.09); border-radius: 18px;
     background: rgba(5,8,18,.58); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
@@ -473,33 +493,38 @@
     </div>
   </div>
   <div style="display:flex;flex-direction:column;align-items:center">
-    <!-- Grouped rather than a flat row of twelve. Four clusters: what you're
-         looking at, how you annotate it, what you do with the sit afterwards, and
-         settings. "Mark this moment" is gone because training mode already tells
-         you to press M, and Fullscreen because F still works without a pill. -->
+    <!-- Three labelled groups, in the order the practice uses them: what you are
+         looking at, what you are doing, and what happens to the sit afterwards. The
+         labels earn their space — twelve unlabelled pills in a row is a list to be
+         scanned every time rather than a place you learn. -->
     <div id="controls">
       <span class="pillGroup">
-        <span class="pill panelToggle active" id="btnMetrics">Metrics</span>
-        <span class="pill panelToggle" id="btnFeed">Live feed</span>
-        <span class="pill panelToggle" id="btnVisuals">Visuals</span>
+        <span class="groupLabel">View</span>
+        <span class="pills">
+          <span class="pill panelToggle active" id="btnMetrics">Metrics</span>
+          <span class="pill panelToggle" id="btnFeed">Live feed</span>
+          <span class="pill panelToggle" id="btnVisuals">Visuals</span>
+          <span class="pill" id="responseToggle">Response: sensitive</span>
+          <span class="pill" id="cueToggle">Cues: on</span>
+        </span>
       </span>
       <span class="pillGroup">
-        <span class="pill" id="trainToggle">Training: off<kbd>T</kbd></span>
-        <span class="pill" id="trialsLink">Trials</span>
-        <span class="pill" id="notesLink">Notes<kbd>N</kbd></span>
-        <span class="pill" id="voiceNote">Hold to speak<kbd>V</kbd></span>
+        <span class="groupLabel">Practice</span>
+        <span class="pills">
+          <span class="pill" id="trainToggle">Training: off<kbd>T</kbd></span>
+          <span class="pill" id="trialsLink">Trials</span>
+          <span class="pill" id="timerLink">Timer</span>
+          <span class="pill" id="notesLink">Notes<kbd>N</kbd></span>
+          <span class="pill" id="voiceNote">Hold to speak<kbd>V</kbd></span>
+        </span>
       </span>
       <span class="pillGroup">
-        <span class="pill" id="timerLink">Timer</span>
-        <span class="pill" id="summaryLink">Summarize session</span>
-        <span class="pill" id="sessionsLink">Saved sessions</span>
-      </span>
-      <span class="pillGroup">
-        <span class="pill" id="devToggle">Connect</span>
-      </span>
-      <span class="pillGroup">
-        <span class="pill" id="responseToggle">Response: sensitive</span>
-        <span class="pill" id="cueToggle">Cues: on</span>
+        <span class="groupLabel">Session</span>
+        <span class="pills">
+          <span class="pill" id="summaryLink">Summarize session</span>
+          <span class="pill" id="sessionsLink">Saved sessions</span>
+          <span class="pill" id="devToggle">Connect</span>
+        </span>
       </span>
     <!-- Both popovers open from their pill in the bar, so nothing floats over the
            visualisation. The device buttons used to sit in the middle of the screen for
@@ -707,19 +732,13 @@ function renderTimerPicker() {
       // 0 clears rather than setting a zero-length timer that fires immediately.
       timerEndAt = min > 0 ? Date.now() + min * 60000 : null;
       timerDone = false;
-      timerPickerEl.hidden = true;
-      renderTimerPill();
+      setPopover(null);
     });
   });
 }
 
 const timerLinkEl = document.getElementById('timerLink');
-timerLinkEl.addEventListener('click', () => {
-  const open = timerPickerEl.hidden;
-  if (open) { renderTimerPicker(); devicesOpen = false; renderDevToggle(); }
-  timerPickerEl.hidden = !open;
-  renderTimerPill();
-});
+timerLinkEl.addEventListener('click', () => setPopover('timer'));
 
 function setStatus(html, opts = {}) {
   statusEl.innerHTML = html;
@@ -2223,14 +2242,9 @@ function renderDevToggle() {
   devToggleEl.classList.toggle('linked', n > 0);
   devToggleEl.classList.toggle('active', devicesOpen);
   devToggleEl.textContent = (museConnecting || strapConnecting) ? 'Connecting\u2026' : 'Connect';
-  devicesEl.hidden = !devicesOpen;
 }
 
-devToggleEl.addEventListener('click', () => {
-  devicesOpen = !devicesOpen;
-  if (devicesOpen) timerPickerEl.hidden = true;   // one popover at a time
-  renderDevToggle();
-});
+devToggleEl.addEventListener('click', () => setPopover('devices'));
 
 // Not `once`: a failed connection must be retryable, and either device can drop
 // out mid-session and need reconnecting. renderDevices() disables each button
@@ -2381,6 +2395,13 @@ async function stopRecording({ summary = true } = {}) {
   // end() flushes what is still in memory before marking the session complete, so
   // the last few seconds of the sit are not the ones that go missing.
   await sess.end();
+  /* AUDIBLE END. You may well have your eyes shut when the timer runs out, and a sit
+   * that has silently stopped recording is indistinguishable from one still running.
+   * Three descending notes — the inverse of the trial's rising completion chime, so
+   * "finished" and "started" cannot be confused. */
+  tone(587, 160);
+  setTimeout(() => tone(494, 160), 180);
+  setTimeout(() => tone(392, 320), 380);
   setStatus(`session saved \u00b7 ${(sess.bytes / 1e6).toFixed(1)}MB`);
   statusLockUntil = Date.now() + 4000;
   // Stopping is when the sit gets summarised — that is the point at which it has an
@@ -2501,6 +2522,37 @@ addEventListener('beforeunload', (e) => {
  * and spent doing another, which is worse than no data. Each condition gets its own
  * pitch, so you know which block you are in without looking.
  */
+/* --- Popovers: exactly one, and it closes on an outside click -----------------
+ * There were three independent toggles, each trying to close the other two, and the
+ * result was two open at once with one hidden behind the other — and a Connect panel
+ * that could not be dismissed because its own pill was underneath the timer's.
+ *
+ * One owner, one open name, one place that hides the rest.
+ */
+let openPopover = null;   // 'devices' | 'timer' | 'trials' | null
+
+function setPopover(name) {
+  openPopover = openPopover === name ? null : name;
+  devicesOpen = openPopover === 'devices';
+  devicesEl.hidden = !devicesOpen;
+  timerPickerEl.hidden = openPopover !== 'timer';
+  trialPickerEl.hidden = openPopover !== 'trials';
+  if (openPopover === 'timer') renderTimerPicker();
+  if (openPopover === 'trials') renderTrialPicker();
+  renderDevToggle();
+  renderTimerPill();
+  renderTrialsLink();
+}
+
+// An outside click dismisses. Checked against the pills too, or the pill's own click
+// would close and immediately reopen.
+document.addEventListener('pointerdown', (e) => {
+  if (!openPopover) return;
+  const inside = e.target.closest('#devices, #timerPicker, #trialPicker,'
+    + ' #devToggle, #timerLink, #trialsLink');
+  if (!inside) setPopover(null);
+}, true);
+
 const trialHudEl = document.getElementById('trialHud');
 const trialCondEl = document.getElementById('trialCond');
 const trialInstrEl = document.getElementById('trialInstr');
@@ -2553,7 +2605,7 @@ function renderTrialPicker() {
     + '</div>';
   trialPickerEl.querySelectorAll('[data-trial]').forEach((b) => {
     b.addEventListener('click', () => {
-      trialPickerEl.hidden = true;
+      setPopover(null);
       if (!b.dataset.trial) stopTrial();
       else startTrial(b.dataset.trial);
     });
@@ -2625,7 +2677,12 @@ function updateTrial() {
 
   if (!at) {
     // Past the end: three notes to say so, then wrap up.
-    tone(880, 120); setTimeout(() => tone(660, 120), 160); setTimeout(() => tone(550, 220), 320);
+    /* DISTINCT PITCHES PER EVENT. These cues are meant to be told apart by ear with the
+     * eyes shut, so no two events may share a note: block boundaries are 660 and 440,
+     * a probe is 520 then 780, this completion is 880-740-620 rising-then-settling, and
+     * a stopped recording is 587-494-392 descending. Sharing 660 between "next block"
+     * and "protocol finished" defeated the entire purpose. */
+    tone(880, 120); setTimeout(() => tone(740, 120), 160); setTimeout(() => tone(620, 240), 320);
     stopTrial({ completed: true });
     return;
   }
@@ -2643,15 +2700,7 @@ function renderTrialsLink() {
   trialsLinkEl.textContent = trialRun ? `Trial: ${trialRun.protocol.label}` : 'Trials';
 }
 
-trialsLinkEl.addEventListener('click', () => {
-  const open = trialPickerEl.hidden;
-  if (open) {
-    renderTrialPicker();
-    devicesOpen = false; renderDevToggle();
-    timerPickerEl.hidden = true;
-  }
-  trialPickerEl.hidden = !open;
-});
+trialsLinkEl.addEventListener('click', () => setPopover('trials'));
 renderTrialsLink();
 
 /* --- Probes: the unbiased half of the labelling ------------------------------
