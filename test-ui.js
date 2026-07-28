@@ -979,6 +979,32 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(identity.rowsStillRender,
       'while the ROWS must still update — the fix must not freeze the readout');
 
+    /* THE SWITCH MUST NOT MOVE when the view changes.
+     *
+     * #readout is anchored by its bottom with a content-driven height, so a change
+     * in row count moves its TOP — and the tabs live at the top. Sensors renders 9
+     * rows and Composites 11, which moved the tabs 54px, twice their own height. So
+     * clicking Composites shifted the tabs out from under the cursor and the next
+     * click hit nothing. This made the test below flaky, which is how it was found.
+     */
+    const geometry = await page.evaluate(async () => {
+      const at = async (mode) => {
+        viewMode = mode; renderViewSwitch();
+        await new Promise((r) => setTimeout(r, 600));
+        const r = document.querySelector('#viewSwitch [data-view="composites"]').getBoundingClientRect();
+        return { top: Math.round(r.top), left: Math.round(r.left), h: Math.round(r.height) };
+      };
+      const sensors = await at('sensors');
+      const composites = await at('composites');
+      viewMode = 'sensors'; renderViewSwitch();
+      await new Promise((r) => setTimeout(r, 300));
+      return { sensors, composites };
+    });
+    assert.strictEqual(geometry.sensors.top, geometry.composites.top,
+      `the switch must not move when the view changes (${geometry.sensors.top} -> ${geometry.composites.top}px);`
+      + ' a target that moves out from under the cursor cannot be clicked');
+    assert.strictEqual(geometry.sensors.left, geometry.composites.left, 'nor sideways');
+
     // THE REPRODUCTION: a real mouse press with a tick deliberately in the middle.
     // This is what a slow human click looks like, and it is what used to fail.
     await page.evaluate(() => { viewMode = 'sensors'; renderViewSwitch(); });
@@ -1020,6 +1046,147 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     });
     assert.strictEqual(back, 'sensors', 'clicking Sensors must switch back');
     console.log('✓ the Sensors/Composites switch survives the tick: stable nodes, slow clicks register');
+  }
+
+  // 20) Connect and Timer live in the BAR, and open upward from it. The device
+  //     buttons were still floating in the middle of the screen before this.
+  {
+    const out = await page.evaluate(async () => {
+      const bar = document.getElementById('controls');
+      const devices = document.getElementById('devices');
+      const picker = document.getElementById('timerPicker');
+      const devPill = document.getElementById('devToggle');
+      const timerPill = document.getElementById('timerLink');
+
+      const inBar = { connect: bar.contains(devPill), timer: bar.contains(timerPill) };
+      // Both panels must be anchored to the bar, not to the middle of the screen.
+      const anchored = { devices: bar.contains(devices), picker: bar.contains(picker) };
+
+      devPill.click();
+      const devOpen = !devices.hidden;
+      const devLabel = devPill.textContent;
+      const connectReachable = !!document.getElementById('connect').offsetParent;
+      // A device panel that opens BELOW the fold is the bug being fixed.
+      const r = document.getElementById('connect').getBoundingClientRect();
+      const onScreen = r.top >= 0 && r.bottom <= window.innerHeight && r.height > 0;
+
+      // Opening the timer must close the devices — two popovers over each other in
+      // the same corner is unusable.
+      timerPill.click();
+      const afterTimer = { devicesHidden: devices.hidden, pickerOpen: !picker.hidden,
+        choices: picker.querySelectorAll('button').length };
+
+      // Choosing a duration sets the timer, closes the popover, and the pill shows
+      // the countdown without needing to be opened.
+      picker.querySelector('[data-min="10"]').click();
+      renderTimerPill();
+      const afterChoice = { pickerHidden: picker.hidden, label: timerPill.textContent,
+        endSet: timerEndAt != null };
+
+      // And Clear must remove it rather than set a zero-length timer.
+      timerPill.click();
+      const hasClear = !!picker.querySelector('[data-min="0"]');
+      picker.querySelector('[data-min="0"]').click();
+      renderTimerPill();
+      const afterClear = { endSet: timerEndAt != null, label: timerPill.textContent };
+
+      devices.hidden = true; devicesOpen = false; picker.hidden = true;
+      return { inBar, anchored, devOpen, devLabel, connectReachable, onScreen,
+        afterTimer, afterChoice, hasClear, afterClear };
+    });
+
+    assert.ok(out.inBar.connect && out.inBar.timer,
+      'Connect and Timer must be pills in the bottom bar, not floating elsewhere');
+    assert.ok(out.anchored.devices && out.anchored.picker,
+      'both panels must be anchored to the bar so they cannot cover the visual');
+    assert.ok(out.devOpen, 'the Connect pill must open the device panel');
+    assert.strictEqual(out.devLabel, 'Connect',
+      'the pill just says Connect — the buttons inside already report what is linked');
+    assert.ok(out.connectReachable && out.onScreen,
+      'and the device buttons must be fully on screen, which is the reported bug');
+    assert.ok(out.afterTimer.devicesHidden,
+      'opening the timer must close the device panel — one popover at a time');
+    assert.ok(out.afterTimer.pickerOpen && out.afterTimer.choices >= 4,
+      `the timer popover must offer its durations (got ${out.afterTimer.choices})`);
+    assert.ok(out.afterChoice.pickerHidden && out.afterChoice.endSet,
+      'choosing a duration must set the timer and close the popover');
+    assert.match(out.afterChoice.label, /^Timer \d+:\d\d$/,
+      `the pill must carry the countdown (got "${out.afterChoice.label}")`);
+    assert.ok(out.hasClear, 'a running timer must offer Clear');
+    assert.strictEqual(out.afterClear.endSet, false, 'Clear must remove the timer');
+    assert.strictEqual(out.afterClear.label, 'Timer', 'and the pill must go back to resting');
+    console.log('✓ Connect and Timer are bar pills opening upward, and the timer clears');
+  }
+
+  // 21) THE RATING SCREEN, and why it stopped appearing: selfRating was set once and
+  //     never reset, so the second summary in one page load skipped straight past it.
+  {
+    const out = await page.evaluate(async () => {
+      // NOT a private database here: startRecording() -> ensureRecording() opens the
+      // real one by name and reassigns recDb, so a handle set up front would be
+      // replaced and this test would look for its notes in the wrong place. The
+      // sessions it creates are deleted at the end.
+      const runSit = async () => {
+        await startRecording();
+        // Enough of a log for summarize() to return stats.
+        for (let i = 0; i < 6; i++) sessionLog.push({ t: i, calm: 0.4 + i * 0.05, noise: 0 });
+        if (recSession) recSession.pushRow({ t: 0, calm: 0.5 });
+        await stopRecording();
+        await new Promise((r) => setTimeout(r, 120));
+      };
+
+      await runSit();
+      const first = {
+        title: summaryTitleEl.textContent,
+        hasRating: !!document.querySelector('[data-rate]'),
+        hasNoteBox: !!document.getElementById('sumNote'),
+      };
+      // Rate it AND write words. Both before any number is shown.
+      document.querySelector('[data-rate="4"]').click();
+      const stillOpen = !!document.getElementById('sumNote');
+      document.getElementById('sumNote').value = 'scattered, but in a new way';
+      const id1 = lastRecSession && lastRecSession.id;
+      document.getElementById('sumDone').click();
+      await new Promise((r) => setTimeout(r, 180));
+      const afterSave = { title: summaryTitleEl.textContent, rating: selfRating };
+      const notes1 = id1 ? await Recorder.listNotes(recDb, id1) : [];
+
+      // SECOND sit, same page load. The rating screen must come back.
+      summaryEl.classList.remove('show');
+      await runSit();
+      const second = {
+        title: summaryTitleEl.textContent,
+        hasRating: !!document.querySelector('[data-rate]'),
+        rating: selfRating,
+      };
+      const id2 = lastRecSession && lastRecSession.id;
+      document.getElementById('sumSkip').click();
+      await new Promise((r) => setTimeout(r, 150));
+      summaryEl.classList.remove('show');
+      for (const id of [id1, id2]) if (id) await Recorder.deleteSession(recDb, id);
+      lastRecSession = null; selfRating = null;
+      return { first, stillOpen, afterSave, second,
+        closingNote: notes1.find((n) => n.closing) || null };
+    });
+
+    assert.ok(out.first.hasRating, 'stopping must offer the 1-5 rating');
+    assert.ok(out.first.hasNoteBox,
+      'and a place to write what it was like — a digit cannot say "scattered in a new way"');
+    assert.ok(out.stillOpen,
+      'picking a number must NOT close the screen, or the note can never be written');
+    assert.strictEqual(out.afterSave.rating, 4, 'the rating must be kept');
+    assert.match(out.afterSave.title, /shape of your sit/, 'and then the numbers are revealed');
+    assert.ok(out.closingNote, 'the written note must be saved against the session');
+    assert.strictEqual(out.closingNote.text, 'scattered, but in a new way');
+    assert.strictEqual(out.closingNote.anchored, false,
+      'a closing reflection is about the whole sit, not a moment in it');
+
+    // The actual bug.
+    assert.strictEqual(out.second.rating, null,
+      'a new recording must clear the previous rating');
+    assert.ok(out.second.hasRating,
+      'the rating screen must appear again for a second sit in the same page load — it did not, because selfRating was never reset');
+    console.log('✓ the rating screen returns each sit, and takes words as well as a number');
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);

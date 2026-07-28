@@ -34,6 +34,11 @@
   class MarkerLog {
     constructor() { this.markers = []; this.nextId = 1; }
 
+    // Starting a new recording starts a new sit. Ids keep counting rather than
+    // restarting at 1, so a marker id is unique for the life of the page and two
+    // sits' markers can never be confused if they end up side by side.
+    clear() { this.markers.length = 0; return this; }
+
     // tSec = seconds since session start. Returns the created marker.
     // durationSec is optional and describes how long the thing being marked
     // lasted, which the meditator supplies — it is not inferred from data.

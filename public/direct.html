@@ -45,6 +45,13 @@
   #readout.show { opacity: 1; }
   #readout.panelClosed { opacity: 0; transform: translateY(10px); pointer-events: none; visibility: hidden; }
   #readout b { color: rgba(255,255,255,.92); font-weight: 500; }
+  /* Opens upward from its pill. Absolute inside the bar's stacking context so it
+     never overlaps the visual, which is the whole reason these moved. */
+  .popover { position: absolute; bottom: 100%; margin-bottom: 10px; display: flex;
+    gap: 8px; padding: 10px; border-radius: 12px; background: rgba(16,18,26,.94);
+    border: 1px solid rgba(255,255,255,.14); backdrop-filter: blur(10px);
+    z-index: 40; flex-wrap: wrap; max-width: min(560px, 90vw); }
+  .popover[hidden] { display: none; }
   #timerPicker { display: flex; gap: 8px; }
   #timerPicker button { font-size: 13px; padding: 8px 16px;
     background: rgba(255,255,255,.12); color: rgba(255,255,255,.85); }
@@ -117,6 +124,9 @@
   #recBtn.warn { border-color: rgba(255,200,110,.6); color: #ffe2ac; }
   @keyframes recPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
   /* Note composer, inside the overlay panel. */
+  #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
+    padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
+    color: inherit; border: 1px solid rgba(255,255,255,.16); }
   #noteBox { width: 100%; min-height: 78px; resize: vertical; font: inherit; font-size: 13px;
     padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
     color: inherit; border: 1px solid rgba(255,255,255,.16); }
@@ -169,6 +179,16 @@
   .tierMark, #tierKey { display: none; }
   #viewSwitch { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 11px; padding-bottom: 10px;
     border-bottom: 1px solid rgba(255,255,255,.07); }
+  /* FIXED HEIGHT, and this is load-bearing rather than cosmetic.
+     #readout is anchored by its BOTTOM with a content-driven height, so any change
+     in row count moved the panel's top — and with it the Sensors/Composites switch.
+     Sensors renders 9 rows and Composites 11, which moved the tabs 54px vertically:
+     twice the pill's own height. So clicking Composites shifted the tabs out from
+     under the cursor, and the click landed on nothing. A strap connecting mid-sit
+     did the same thing to whatever you were reaching for. Constant height, scroll
+     when it overflows, and the header never moves. */
+  #readoutRows { height: min(320px, 40vh); overflow-y: auto; overflow-x: hidden;
+    scrollbar-width: thin; }
   #viewSwitch .pill { min-height: 27px; font-size: 10px; padding: 0 10px; border-radius: 10px; }
   #whatsThis { text-decoration: underline; cursor: pointer; }
 
@@ -314,7 +334,7 @@
     opacity: 0; transition: opacity .6s; margin-bottom: 10px; padding: 8px;
     border: 1px solid rgba(255,255,255,.09); border-radius: 18px;
     background: rgba(5,8,18,.58); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px);
-    box-shadow: 0 18px 70px rgba(0,0,0,.42); }
+    box-shadow: 0 18px 70px rgba(0,0,0,.42);; position: relative; }
   #controls.show { opacity: 1; }
   #controls .pill kbd { margin-left: 5px; opacity: .5; font-size: 9px; }
   #controls .pill { text-transform: none; letter-spacing: .08em; }
@@ -352,23 +372,8 @@
   <div></div>
   <div id="statusStack">
     <div class="status hidden" id="status"></div>
-    <!-- The device buttons must NOT live inside #status: setStatus() overwrites
-         statusEl.innerHTML, so anything in there is destroyed by the first
-         status message. That is exactly what made "Connect to Muse"
-         unpressable, and then unreachable. -->
-    <!-- Collapsed by default: these sat in the middle of the screen covering the
-         visualisation for the whole sit, when they are only needed at the start. -->
-    <button id="devToggle" class="secondary">Connect</button>
-    <div id="devices" hidden>
-      <button id="connect">Connect headband</button>
-      <button id="connectStrap" class="secondary">+ heart strap</button>
-      <!-- Hidden until the strap's accelerometer negotiation actually fails.
-           It is a debugging affordance, not part of sitting down to meditate. -->
-      <button id="copyStrapLog" class="secondary" hidden>copy strap log</button>
-
-    </div>
   </div>
-  <div id="timerPicker"></div>
+
   <!-- The header and the Sensors/Composites switch are STATIC. They used to be part
      of the string assigned to #readout.innerHTML on every 250ms tick, which
      destroyed and recreated these two pills four times a second: hover flickered,
@@ -407,13 +412,33 @@
         <span class="pill" id="voiceNote">Hold to speak<kbd>V</kbd></span>
       </span>
       <span class="pillGroup">
+        <span class="pill" id="timerLink">Timer</span>
         <span class="pill" id="summaryLink">Summarize session</span>
         <span class="pill" id="sessionsLink">Saved sessions</span>
+      </span>
+      <span class="pillGroup">
+        <span class="pill" id="devToggle">Connect</span>
       </span>
       <span class="pillGroup">
         <span class="pill" id="responseToggle">Response: sensitive</span>
         <span class="pill" id="cueToggle">Cues: on</span>
       </span>
+    <!-- Both popovers open from their pill in the bar, so nothing floats over the
+           visualisation. The device buttons used to sit in the middle of the screen for
+           the whole sit, when they are needed for ten seconds.
+
+           They must stay OUT of #status: setStatus() overwrites that element's
+           innerHTML, which is what once deleted these buttons from the DOM and made
+           "Connect to Muse" unpressable. -->
+      <div id="devices" class="popover" hidden>
+        <button id="connect">Connect headband</button>
+        <button id="connectStrap" class="secondary">+ heart strap</button>
+        <!-- Hidden until the strap's accelerometer negotiation actually fails.
+             It is a debugging affordance, not part of sitting down to meditate. -->
+        <button id="copyStrapLog" class="secondary" hidden>copy strap log</button>
+
+      </div>
+      <div id="timerPicker" class="popover" hidden></div>
     </div>
     <div id="hint"></div>
   </div>
@@ -557,17 +582,45 @@ addEventListener('keydown', (e) => {
 const TIMER_OPTIONS_MIN = [5, 10, 20, 30];
 let timerEndAt = null, timerDone = false;
 
+/*
+ * The timer choices used to sit permanently under the status area. They are now a
+ * popover from the Timer pill, which also carries the countdown so the remaining
+ * time is readable without opening anything.
+ */
+function renderTimerPill() {
+  if (!timerLinkEl.isConnected) return;
+  timerLinkEl.classList.toggle('active', !timerPickerEl.hidden);
+  if (!timerEndAt) { timerLinkEl.textContent = 'Timer'; return; }
+  if (timerDone) { timerLinkEl.textContent = 'Timer: done'; return; }
+  const left = Math.max(0, timerEndAt - Date.now());
+  timerLinkEl.textContent = `Timer ${Math.floor(left / 60000)}:`
+    + `${String(Math.floor((left % 60000) / 1000)).padStart(2, '0')}`;
+}
+setInterval(renderTimerPill, 1000);
+
 function renderTimerPicker() {
   timerPickerEl.innerHTML = TIMER_OPTIONS_MIN
-    .map((min) => `<button data-min="${min}">${min} min</button>`).join('');
+    .map((min) => `<button data-min="${min}">${min} min</button>`).join('')
+    + (timerEndAt ? '<button data-min="0">Clear</button>' : '');
   timerPickerEl.querySelectorAll('button').forEach((btn) => {
     btn.addEventListener('click', () => {
-      timerEndAt = Date.now() + Number(btn.dataset.min) * 60000;
+      const min = Number(btn.dataset.min);
+      // 0 clears rather than setting a zero-length timer that fires immediately.
+      timerEndAt = min > 0 ? Date.now() + min * 60000 : null;
       timerDone = false;
-      timerPickerEl.innerHTML = '';
+      timerPickerEl.hidden = true;
+      renderTimerPill();
     });
   });
 }
+
+const timerLinkEl = document.getElementById('timerLink');
+timerLinkEl.addEventListener('click', () => {
+  const open = timerPickerEl.hidden;
+  if (open) { renderTimerPicker(); devicesOpen = false; renderDevToggle(); }
+  timerPickerEl.hidden = !open;
+  renderTimerPill();
+});
 
 function setStatus(html, opts = {}) {
   statusEl.innerHTML = html;
@@ -664,6 +717,10 @@ let recError = null;
  * becomes a thing with a beginning, an end, and its notes attached.
  */
 let recArmed = false;
+// The session that just ended. stopRecording() clears recSession before opening the
+// summary, so without this the closing note would have nothing to attach to.
+// addNote() still works on an ended session — it writes straight to the note store.
+let lastRecSession = null;
 
 async function ensureRecording() {
   if (!recArmed) return null;             // nothing records unless armed
@@ -735,18 +792,43 @@ function openSummary() {
   }
   if (selfRating == null) {
     summaryTitleEl.textContent = 'Before the numbers';
+    /* A number AND words. A 1-5 rating is comparable across sits, which is what
+     * makes it useful for validation; but "scattered but in a new way" is the part
+     * that actually explains a sit, and it cannot be a digit. Both are captured
+     * before any score is shown, so neither is coloured by the numbers.
+     */
     summaryBodyEl.innerHTML =
       '<div class="subtle">How settled did that feel to you?<br>Your own sense first — the data comes after.</div>'
       + '<div id="ratingRow" style="margin-top:20px">'
       + [1, 2, 3, 4, 5].map((n) => `<span class="pill" data-rate="${n}">${n}</span>`).join('')
       + '</div>'
       + '<div class="subtle" style="margin-top:14px;font-size:11px">1 = scattered · 5 = deeply settled</div>'
-      + '<div style="margin-top:18px"><span class="pill" id="sumSkip">skip</span></div>';
+      + '<textarea id="sumNote" style="margin-top:16px" placeholder="What was it like? (optional)"></textarea>'
+      + '<div style="margin-top:16px"><span class="pill" id="sumDone">Save and show me</span>'
+      + '<span class="pill" id="sumSkip" style="margin-left:8px">Skip</span></div>';
     summaryEl.classList.add('show');
+    const finish = async (rating) => {
+      selfRating = rating;
+      const box = document.getElementById('sumNote');
+      const text = box ? box.value.trim() : '';
+      // Filed against the session that just ended, as a note about the whole sit
+      // rather than a moment in it.
+      if (text && lastRecSession) {
+        await lastRecSession.addNote({ kind: 'text', text, anchored: false, closing: true });
+      }
+      showSummaryStats(stats);
+    };
     summaryBodyEl.querySelectorAll('[data-rate]').forEach((el) => {
-      el.addEventListener('click', () => { selfRating = Number(el.dataset.rate); showSummaryStats(stats); });
+      el.addEventListener('click', () => {
+        selfRating = Number(el.dataset.rate);
+        // Selecting a number no longer leaves the screen: the note comes next.
+        summaryBodyEl.querySelectorAll('[data-rate]').forEach((o) => {
+          o.classList.toggle('active', o === el);
+        });
+      });
     });
-    document.getElementById('sumSkip').addEventListener('click', () => { selfRating = 0; showSummaryStats(stats); });
+    document.getElementById('sumDone').addEventListener('click', () => finish(selfRating || 0));
+    document.getElementById('sumSkip').addEventListener('click', () => finish(0));
     return;
   }
   showSummaryStats(stats);
@@ -1965,7 +2047,6 @@ async function connect() {
     }
 
     setStatus('gathering signal— sit still for a moment…');
-    renderTimerPicker();
     readoutEl.classList.add('show');
     dataPanelEl.classList.add('show');
     modeBarEl.classList.add('show');
@@ -1988,8 +2069,9 @@ function onDisconnected() {
   statusLockUntil = Date.now() + 5000;
   readoutEl.classList.remove('show');
   dataPanelEl.classList.remove('show');
-  timerPickerEl.innerHTML = '';
+  timerPickerEl.hidden = true;
   timerEndAt = null; timerDone = false;
+  renderTimerPill();
   museConnecting = false;
   renderDevices();
 }
@@ -2001,17 +2083,25 @@ function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<'
  * visualisation for the remaining forty minutes. Collapsed behind one control that
  * reports how many devices are linked, so the state is still visible at a glance.
  */
+/*
+ * Just "Connect". The device buttons themselves already say what is linked
+ * ("headband · linked", "+ heart strap"), so counting them on the pill as well was
+ * saying the same thing twice in less detail.
+ */
 function renderDevToggle() {
   if (!devToggleEl.isConnected) return;
   const n = (museConnected() ? 1 : 0) + (strapConnected() ? 1 : 0);
-  const busy = museConnecting || strapConnecting;
   devToggleEl.classList.toggle('linked', n > 0);
-  devToggleEl.textContent = devicesOpen ? 'Hide devices'
-    : (busy ? 'Connecting\u2026' : n === 0 ? 'Connect' : n === 1 ? '1 device linked' : '2 devices linked');
+  devToggleEl.classList.toggle('active', devicesOpen);
+  devToggleEl.textContent = (museConnecting || strapConnecting) ? 'Connecting\u2026' : 'Connect';
   devicesEl.hidden = !devicesOpen;
 }
 
-devToggleEl.addEventListener('click', () => { devicesOpen = !devicesOpen; renderDevToggle(); });
+devToggleEl.addEventListener('click', () => {
+  devicesOpen = !devicesOpen;
+  if (devicesOpen) timerPickerEl.hidden = true;   // one popover at a time
+  renderDevToggle();
+});
 
 // Not `once`: a failed connection must be retryable, and either device can drop
 // out mid-session and need reconnecting. renderDevices() disables each button
@@ -2135,6 +2225,16 @@ async function startRecording() {
   // would be stamped against the first one's start and every offset would be wrong.
   sessionStartedAt = Date.now();
   sessionLog.length = 0;
+  /* A new recording is a NEW SIT, so everything scoped to a sit resets here.
+   *
+   * selfRating in particular: it was set once and never cleared, so the second time
+   * a summary opened in one page load the "before the numbers" screen was skipped
+   * entirely — which is why the rating screen appeared to vanish. Same for
+   * timerDone, which would otherwise report a previous sit's timer as complete.
+   */
+  selfRating = null;
+  timerDone = false;
+  markerLog.clear();
   await ensureRecording();
   renderRecBtn();
   if (recSession) { setStatus('recording'); statusLockUntil = Date.now() + 1500; }
@@ -2145,6 +2245,7 @@ async function stopRecording({ summary = true } = {}) {
   recArmed = false;
   const sess = recSession;
   recSession = null;
+  lastRecSession = sess;
   renderRecBtn();
   if (!sess) return;
   // end() flushes what is still in memory before marking the session complete, so
