@@ -216,6 +216,14 @@
           // Left EMPTY on purpose. Transcription happens later with a real tool;
           // anything written here by the app would be a guess about what was said.
           L.push('- Transcript: ');
+        } else if (n.kind === 'transition') {
+          const lib = labelsLib();
+          const t = lib && lib.TRANSITION_BY_KEY[n.transition];
+          // Words, not the key: "Came back" is what a person reads six months later.
+          L.push(`### ${when} — ${t ? t.label : n.transition || 'transition'}`);
+          L.push('');
+          if (t) L.push(`_${t.hint}_`);
+          L.push('');
         } else {
           const label = n.kind === 'text' ? 'note' : (n.markKind || 'mark');
           L.push(`### ${n.anchored === false ? at.toLocaleTimeString() : when} — ${label}`);
@@ -261,6 +269,31 @@
     if (notes.some((n) => n.kind === 'voice')) L.push('| `notes/*` | voice note audio |');
     L.push('');
     return L.join('\n');
+  }
+
+  /*
+   * Labels is optional here on purpose. export.js is also loaded by test-export.js in
+   * node, where there is no page and no globals — and an export that throws because a
+   * schema file is absent would lose a session rather than lose a column.
+   */
+  function labelsLib() {
+    if (typeof module !== 'undefined' && module.exports) {
+      try { return require('./labels.js'); } catch (e) { return null; }
+    }
+    return (typeof globalThis !== 'undefined' && globalThis.Labels) || null;
+  }
+  function dimOf(note, key) {
+    const L = labelsLib();
+    const dims = note && note.dims;
+    if (!dims) return '';
+    const v = dims[key];
+    if (L) return L.validRating(v) ? v : '';
+    return Number.isInteger(v) && v >= 1 && v <= 5 ? v : '';
+  }
+  function quadrantOf(note) {
+    const L = labelsLib();
+    if (!L || !note || !note.dims) return '';
+    return L.quadrant(note.dims) || '';
   }
 
   function f32Bytes(values) {
@@ -316,10 +349,21 @@
         markKind: n.markKind || '',
         seconds: n.seconds == null ? '' : n.seconds.toFixed(1),
         audioFile: noteFiles[n.id] || '',
+        transition: n.transition || '',
+        // The self-reported dimensions, one column each, blank when not reported.
+        // Blank rather than a midpoint: "not reported" is a real and different value.
+        focus: dimOf(n, 'focus'), effort: dimOf(n, 'effort'),
+        pull: dimOf(n, 'pull'), tone: dimOf(n, 'tone'),
+        // Derived from focus x effort, and only when both were given. This is the
+        // column that separates "focused because I was holding it" from "focused
+        // because nothing needed holding" — the distinction a single score cannot
+        // make, and the first real hypothesis this data can test.
+        quadrant: quadrantOf(n),
         text: n.text || '',
         transcript: '',
       })), ['offsetSec', 'clock', 'epochMs', 'absoluteTime', 'anchored', 'kind',
-        'markKind', 'seconds', 'audioFile', 'text', 'transcript'])),
+        'markKind', 'transition', 'focus', 'effort', 'pull', 'tone', 'quadrant',
+        'seconds', 'audioFile', 'text', 'transcript'])),
     });
     for (let ch = 0; ch < 4; ch++) {
       if (eeg[ch] && eeg[ch].length) files.push({ name: `eeg-ch${ch}.f32`, bytes: f32Bytes(eeg[ch]) });

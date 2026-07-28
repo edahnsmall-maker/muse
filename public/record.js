@@ -194,6 +194,10 @@
         // transaction.
         const tx = db.transaction([STORE_NOTES], 'readwrite');
         const at = Date.now();
+        // offsetSec is computed HERE, from meta.startedAt, which is the session
+        // clock. Callers must not pass their own copy: two fields for one instant,
+        // derived in two places, can only ever drift apart — which is exactly the
+        // bug that put notes and metrics.csv on different origins.
         const rec = Object.assign({
           sessionId: id, at,
           // Same origin as every metrics row: meta.startedAt IS the session clock.

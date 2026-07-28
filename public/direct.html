@@ -124,6 +124,15 @@
   #recBtn.warn { border-color: rgba(255,200,110,.6); color: #ffe2ac; }
   @keyframes recPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
   /* Note composer, inside the overlay panel. */
+  #dimGrid { margin-top: 18px; display: flex; flex-direction: column; gap: 7px; }
+  .dimRow { display: flex; align-items: center; gap: 5px; }
+  .dimLabel { width: 54px; flex: none; font-size: 12px; opacity: .75; cursor: help; }
+  .dimDot { min-height: 26px; min-width: 26px; justify-content: center; font-size: 11px;
+    padding: 0 8px; border-radius: 8px; }
+  /* The chosen anchor, in words. A digit alone drifts in meaning between sits; the
+     phrase is what keeps "4" meaning the same thing in week six. */
+  .dimWord { font-size: 11px; opacity: .5; margin-left: 8px; min-height: 14px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
     padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
     color: inherit; border: 1px solid rgba(255,255,255,.16); }
@@ -454,6 +463,7 @@
 <script src="polar.js"></script>
 <script src="record.js"></script>
 <script src="export.js"></script>
+<script src="labels.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -573,6 +583,11 @@ addEventListener('keydown', (e) => {
   if (e.key === 'm' || e.key === 'M') { e.preventDefault(); openMarkPrompt(); }
   if ((e.key === 'v' || e.key === 'V') && !e.repeat) { startVoiceNote(); return; }
   if (e.key === 'n' || e.key === 'N') { openNotes(); return; }
+  // Transition marks: R came back, G noticed I was gone, D dropped in, K tightened.
+  // Checked before the other single-letter shortcuts so a transition key can never
+  // be shadowed by a later branch.
+  const trans = Labels.TRANSITION_BY_KBD[e.key.toUpperCase()];
+  if (trans && !e.repeat) { markTransition(trans.key); return; }
   if (e.key === 't' || e.key === 'T') setTrainingMode(!trainingMode);
   if (e.key === 'Escape') closeSummary();
 });
@@ -803,18 +818,47 @@ function openSummary() {
       + [1, 2, 3, 4, 5].map((n) => `<span class="pill" data-rate="${n}">${n}</span>`).join('')
       + '</div>'
       + '<div class="subtle" style="margin-top:14px;font-size:11px">1 = scattered · 5 = deeply settled</div>'
+      /* And the four dimensions, which are the labels the analysis actually needs.
+       * All optional: a partial report is a report, and requiring four answers
+       * would produce four guesses instead of one observation. */
+      + '<div id="dimGrid">' + Labels.DIMENSIONS.map((d) =>
+        `<div class="dimRow"><span class="dimLabel" title="${escapeHtml(d.question)}">${d.label}</span>`
+        + [1, 2, 3, 4, 5].map((n) =>
+          `<span class="pill dimDot" data-dim="${d.key}" data-val="${n}"`
+          + ` title="${escapeHtml(d.anchors[n - 1])}">${n}</span>`).join('')
+        + '<span class="dimWord" data-word="' + d.key + '"></span></div>').join('') + '</div>'
       + '<textarea id="sumNote" style="margin-top:16px" placeholder="What was it like? (optional)"></textarea>'
       + '<div style="margin-top:16px"><span class="pill" id="sumDone">Save and show me</span>'
       + '<span class="pill" id="sumSkip" style="margin-left:8px">Skip</span></div>';
     summaryEl.classList.add('show');
+    // Ratings collected here, not read back off the DOM at submit time — the words
+    // shown beside each row have to update as they are chosen anyway.
+    const dims = {};
+    summaryBodyEl.querySelectorAll('.dimDot').forEach((el) => {
+      el.addEventListener('click', () => {
+        const k = el.dataset.dim, v = Number(el.dataset.val);
+        // Clicking the same value again clears it. Otherwise a mis-click becomes a
+        // permanent rating, and there is no way to say "actually I don't know".
+        if (dims[k] === v) delete dims[k]; else dims[k] = v;
+        summaryBodyEl.querySelectorAll(`.dimDot[data-dim="${k}"]`).forEach((o) => {
+          o.classList.toggle('active', Number(o.dataset.val) === dims[k]);
+        });
+        const word = summaryBodyEl.querySelector(`[data-word="${k}"]`);
+        if (word) word.textContent = dims[k] ? Labels.describe(k, dims[k]) : '';
+      });
+    });
     const finish = async (rating) => {
       selfRating = rating;
       const box = document.getElementById('sumNote');
       const text = box ? box.value.trim() : '';
+      const labelled = Labels.normalise(dims);
       // Filed against the session that just ended, as a note about the whole sit
-      // rather than a moment in it.
-      if (text && lastRecSession) {
-        await lastRecSession.addNote({ kind: 'text', text, anchored: false, closing: true });
+      // rather than a moment in it. Written even with no text, if there are ratings.
+      if ((text || labelled) && lastRecSession) {
+        await lastRecSession.addNote({
+          kind: 'text', text: text || null, dims: labelled,
+          anchored: false, closing: true,
+        });
       }
       showSummaryStats(stats);
     };
@@ -1149,7 +1193,7 @@ function commitMark() {
   // against millions of samples — so it is written immediately, not at the end.
   if (recSession) {
     recSession.addNote({ kind: 'mark', markKind: m.kind, text: note,
-      durationSec: m.durationSec, tSec: m.tSec });
+      durationSec: m.durationSec });
   }
   pendingMark = null;
   markPromptEl.classList.remove('show');
@@ -2184,7 +2228,7 @@ async function startVoiceNote() {
         return;
       }
       await recSession.addNote({ kind: 'voice', audio: blob,
-        mimeType: blob.type, seconds: secs, tSec: sessionTSec() });
+        mimeType: blob.type, seconds: secs });
       setStatus(`voice note saved (${secs.toFixed(0)}s)`);
       statusLockUntil = Date.now() + 1800;
     });
@@ -2256,6 +2300,33 @@ async function stopRecording({ summary = true } = {}) {
   // Stopping is when the sit gets summarised — that is the point at which it has an
   // end, and the notes have something to be attached to.
   if (summary) openSummary();
+}
+
+/* --- One-key transition marks ----------------------------------------------
+ * "I press a key every time I notice I have come back" is a complete experimental
+ * protocol, and it is the only kind of label that can be given without damaging the
+ * sit: one keystroke, no menu, nothing to compose, eyes shut. R G D K.
+ *
+ * These are written straight through with no prompt. Asking for confirmation would
+ * cost more attention than the mark is worth, and a mark you decide against can be
+ * deleted from the Notes panel afterwards.
+ */
+async function markTransition(key) {
+  const t = Labels.TRANSITION_BY_KEY[key];
+  if (!t) return;
+  const tSec = sessionTSec();
+  // Into the marker log for the in-sit count and the summary...
+  markerLog.add(tSec, { kind: t.key, note: null });
+  renderMarkCount();
+  // ...and into storage, where the analysis will actually read it from.
+  await ensureRecording();
+  if (recSession) {
+    await recSession.addNote({ kind: 'transition', transition: t.key, text: null });
+  }
+  markFlashEl.classList.add('on');
+  setTimeout(() => markFlashEl.classList.remove('on'), 60);
+  setStatus(`${t.label} \u00b7 ${Exporter.clock(tSec)}${recSession ? '' : ' (not recording)'}`);
+  statusLockUntil = Date.now() + 1400;
 }
 
 // The timer running out ends the sit: stopRecording() flushes, closes the session
@@ -2449,7 +2520,7 @@ async function saveNote() {
     statusLockUntil = Date.now() + 6000;
     return;
   }
-  await recSession.addNote({ kind: 'text', text, anchored: noteAnchored, tSec: sessionTSec() });
+  await recSession.addNote({ kind: 'text', text, anchored: noteAnchored });
   box.value = '';
   box.focus();
   renderNoteList();

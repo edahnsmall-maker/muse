@@ -23,6 +23,20 @@ Module._initPaths();
 const { chromium } = require(path.join(GLOBAL_MODULES, 'playwright'));
 
 const PAGE = 'file://' + path.join(__dirname, 'public', 'direct.html');
+const Labels = require('./public/labels.js');
+const Labels_quadrant = (d) => Labels.quadrant(d);
+
+// startRecording() deliberately resets the session clock, which is right for the app
+// and wrong for a test that wants to sit at a known offset. This arms recording while
+// keeping the clock the test just set.
+const ARM_WITHOUT_RESET = `
+  window.ensureRecordingForTest = async () => {
+    recArmed = true; recError = null;
+    await ensureRecording();
+    renderRecBtn();
+    return !!recSession;
+  };
+`;
 
 // Poll for a condition rather than sleeping a fixed amount. The page's own tick
 // runs every 250ms, and a fixed sleep that is "obviously long enough" is exactly
@@ -55,6 +69,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   });
   await page.goto(PAGE);
   await page.waitForTimeout(600);
+  await page.evaluate(ARM_WITHOUT_RESET);
 
   assert.deepStrictEqual(errors, [], `the page must load without console errors:\n  ${errors.join('\n  ')}`);
   console.log('✓ direct.html loads without throwing');
@@ -1187,6 +1202,100 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(out.second.hasRating,
       'the rating screen must appear again for a second sit in the same page load — it did not, because selfRating was never reset');
     console.log('✓ the rating screen returns each sit, and takes words as well as a number');
+  }
+
+  // 22) ONE-KEY TRANSITIONS. The only label that can be given without damaging the
+  //     sit: one keystroke, no menu, nothing to compose, eyes shut.
+  {
+    const out = await page.evaluate(async () => {
+      // Backdate the clock BEFORE starting, so the recorder's meta.startedAt and the
+      // session clock stay the single value they are meant to be. Moving one after
+      // the fact is what exposed notes carrying two disagreeing time fields.
+      sessionStartedAt = Date.now() - 45000;      // pretend we are 45s into a sit
+      recArmed = false; recSession = null;
+      await ensureRecordingForTest();
+      const before = markerLog.length;
+      // Real keyboard events, not direct calls: the binding is the thing under test.
+      for (const k of ['r', 'G', 'd']) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
+        await new Promise((r) => setTimeout(r, 60));
+      }
+      // A key held down must not repeat into dozens of marks.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'r', repeat: true, bubbles: true }));
+      await new Promise((r) => setTimeout(r, 200));
+
+      const id = recSession && recSession.id;
+      await stopRecording({ summary: false });
+      const notes = id ? await Recorder.listNotes(recDb, id) : [];
+      const transitions = notes.filter((n) => n.kind === 'transition');
+      if (id) await Recorder.deleteSession(recDb, id);
+      markerLog.clear();
+      return {
+        added: markerLog.length === 0,
+        marksMade: before === 0,
+        kinds: transitions.map((n) => n.transition),
+        offsets: transitions.map((n) => Math.round(n.offsetSec)),
+        anchored: transitions.every((n) => n.anchored !== false),
+      };
+    });
+    assert.deepStrictEqual(out.kinds, ['returned', 'lost', 'dropped'],
+      `R G D must record returned/lost/dropped (got ${out.kinds.join(', ')})`);
+    // Case-insensitive: nobody checks caps lock mid-sit.
+    assert.strictEqual(out.kinds.length, 3, 'a held key must not repeat into extra marks');
+    assert.ok(out.offsets.every((o) => o >= 40 && o <= 60),
+      `transitions must be stamped on the session clock (got ${out.offsets.join(', ')})`);
+    assert.ok(out.anchored, 'a transition is a moment, so it must be anchored in time');
+    console.log(`✓ one-key transitions record on the session clock: ${out.kinds.join(' ')}`);
+  }
+
+  // 23) The closing screen's dimension grid. Optional, clearable, and it shows the
+  //     ANCHOR TEXT — a digit alone drifts in meaning between sits.
+  {
+    const out = await page.evaluate(async () => {
+      await startRecording();
+      for (let i = 0; i < 6; i++) sessionLog.push({ t: i, calm: 0.5, noise: 0 });
+      const id = recSession && recSession.id;
+      await stopRecording();
+      await new Promise((r) => setTimeout(r, 150));
+
+      const grid = document.getElementById('dimGrid');
+      const rows = grid ? grid.querySelectorAll('.dimRow').length : 0;
+      // Focused, effortlessly: the state a single score cannot distinguish.
+      document.querySelector('.dimDot[data-dim="focus"][data-val="5"]').click();
+      document.querySelector('.dimDot[data-dim="effort"][data-val="1"]').click();
+      const wordShown = document.querySelector('[data-word="focus"]').textContent;
+      // Clicking the same value again must clear it — a mis-click must not become a
+      // permanent rating, and "I don't know" has to remain sayable.
+      document.querySelector('.dimDot[data-dim="effort"][data-val="1"]').click();
+      const clearedWord = document.querySelector('[data-word="effort"]').textContent;
+      document.querySelector('.dimDot[data-dim="effort"][data-val="1"]').click();
+
+      document.querySelector('[data-rate="4"]').click();
+      document.getElementById('sumNote').value = 'it opened on its own';
+      document.getElementById('sumDone').click();
+      await new Promise((r) => setTimeout(r, 200));
+
+      const notes = id ? await Recorder.listNotes(recDb, id) : [];
+      const closing = notes.find((n) => n.closing);
+      if (id) await Recorder.deleteSession(recDb, id);
+      summaryEl.classList.remove('show');
+      selfRating = null; lastRecSession = null;
+      return { rows, wordShown, clearedWord, closing: closing || null };
+    });
+
+    assert.strictEqual(out.rows, 4, 'all four dimensions must be offered');
+    assert.match(out.wordShown, /one-pointed/,
+      `choosing 5 must show what 5 MEANS (got "${out.wordShown}")`);
+    assert.strictEqual(out.clearedWord, '',
+      'clicking the same value again must clear it, so a mis-click is not permanent');
+    assert.ok(out.closing, 'the closing note must be saved');
+    assert.deepStrictEqual(out.closing.dims, { focus: 5, effort: 1 },
+      'the ratings must be stored as given, with unreported dimensions absent');
+    assert.strictEqual(out.closing.text, 'it opened on its own');
+    assert.strictEqual(out.closing.anchored, false, 'a closing report covers the whole sit');
+    // And the derived state, which is the reason effort is recorded separately.
+    assert.strictEqual(Labels_quadrant(out.closing.dims), 'absorbed');
+    console.log('✓ the closing screen records all four dimensions, in words, and clears on re-click');
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);

@@ -137,8 +137,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
     'the summary must report what the app claimed at the time, so it can be audited');
 
   const notesCsv = Buffer.from(files.find((f) => f.name === 'notes.csv').bytes).toString('utf8');
-  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,seconds,audioFile,text,transcript$/m,
-    'notes.csv must expose an empty transcript column for the transcription step');
+  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,transition,focus,effort,pull,tone,quadrant,seconds,audioFile,text,transcript$/m,
+    'notes.csv must expose the label columns and an empty transcript column');
   assert.match(notesCsv, /2026-07-27T13:12:30\.000Z|2026-07-27T06:12:30/,
     'and an absolute timestamp, so notes can be aligned to an external recording');
   assert.ok(notesCsv.trim().split('\n').length === 3, 'one header plus one row per note');
@@ -228,6 +228,62 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
   assert.match(Exporter.archiveName(session.meta), /^meditation-2026-07-27-0605\.zip$/,
     'the archive name must carry the LOCAL date and time, so a 6am sit is not filed under yesterday');
   console.log('✓ a session exports to markdown + CSVs + raw binary + audio, correctly named');
+}
+
+// 4b) THE LABELS. These are the ground truth the whole project needs, so the export
+//     must carry them per-dimension and must not invent the ones that were not given.
+{
+  const Labels = require('./public/labels.js');
+  const t0 = new Date('2026-07-28T06:00:00').getTime();
+  const { files } = Exporter.buildFiles({
+    meta: { startedAt: t0, durationSec: 1200, bytes: 1e6, ended: true },
+    eeg: [[], [], [], []], acc: [], rr: [], rows: [],
+    notes: [
+      // Focused with no effort: the state a single score cannot tell from the next one.
+      { id: 1, kind: 'text', at: t0 + 600000, offsetSec: 600,
+        dims: { focus: 5, effort: 1, pull: 1 }, text: 'it opened' },
+      // Focused by force. Same focus rating, different experience.
+      { id: 2, kind: 'text', at: t0 + 900000, offsetSec: 900,
+        dims: { focus: 5, effort: 5 }, text: 'holding on hard' },
+      // A partial report, and an invalid value that must not survive.
+      { id: 3, kind: 'text', at: t0 + 1000000, offsetSec: 1000, dims: { tone: 4, focus: 99 } },
+      // A one-key transition, no dimensions at all.
+      { id: 4, kind: 'transition', at: t0 + 300000, offsetSec: 300, transition: 'returned' },
+    ],
+  }, {});
+  const csv = Buffer.from(files.find((f) => f.name === 'notes.csv').bytes).toString('utf8');
+  const lines = csv.trim().split('\n');
+  const cols = lines[0].split(',');
+  const col = (row, name) => row.split(',')[cols.indexOf(name)];
+  const rows = lines.slice(1);
+
+  const absorbed = rows.find((r) => col(r, 'text') === 'it opened');
+  const concentrating = rows.find((r) => col(r, 'text') === 'holding on hard');
+  assert.strictEqual(col(absorbed, 'focus'), '5');
+  assert.strictEqual(col(absorbed, 'effort'), '1');
+  assert.strictEqual(col(absorbed, 'quadrant'), 'absorbed');
+  assert.strictEqual(col(concentrating, 'focus'), '5');
+  assert.strictEqual(col(concentrating, 'quadrant'), 'concentrating');
+  // THE POINT: identical focus, different state. If these two ever collapse to the
+  // same label the export has stopped carrying the distinction worth testing.
+  assert.notStrictEqual(col(absorbed, 'quadrant'), col(concentrating, 'quadrant'));
+
+  const partial = rows.find((r) => col(r, 'tone') === '4');
+  assert.strictEqual(col(partial, 'focus'), '',
+    'an out-of-range rating must export as blank, never coerced to a number');
+  assert.strictEqual(col(partial, 'quadrant'), '',
+    'and no quadrant without both of its axes');
+  assert.strictEqual(col(partial, 'effort'), '', 'an unreported dimension stays blank');
+
+  const trans = rows.find((r) => col(r, 'transition') === 'returned');
+  assert.ok(trans, 'a one-key transition must appear in notes.csv');
+  assert.strictEqual(col(trans, 'focus'), '', 'a transition carries no ratings');
+
+  // The markdown must name the transition in words, since that is the readable file.
+  const md = Buffer.from(files.find((f) => f.name === 'session.md').bytes).toString('utf8');
+  assert.match(md, new RegExp(Labels.TRANSITION_BY_KEY.returned.label),
+    'the markdown must say "Came back", not "returned"');
+  console.log('✓ labels export per-dimension, with the quadrant, and blanks stay blank');
 }
 
 // 5) An interrupted session must SAY it was interrupted. Silently exporting a
