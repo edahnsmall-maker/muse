@@ -74,6 +74,40 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   assert.deepStrictEqual(errors, [], `the page must load without console errors:\n  ${errors.join('\n  ')}`);
   console.log('✓ direct.html loads without throwing');
 
+  /* 0) THE CONNECT CONTROL MUST BE VISIBLE ON A FRESH LOAD.
+   *
+   * Reported from a live page showing nothing but the Record button. The device
+   * buttons had been moved inside #controls, which sat at opacity 0 until connect()
+   * succeeded — so reaching Connect required having already connected.
+   *
+   * THE REASON THE EXISTING TESTS MISSED IT, which is the part worth remembering:
+   * `.click()` works on an opacity-0 element, and so does `offsetParent`. Both of the
+   * checks already in this file therefore passed on an invisible control. Only the
+   * COMPUTED STYLE catches this, so that is what is asserted.
+   */
+  {
+    const st = await page.evaluate(() => {
+      const bar = document.getElementById('controls');
+      const cs = getComputedStyle(bar);
+      const r = document.getElementById('devToggle').getBoundingClientRect();
+      return {
+        opacity: Number(cs.opacity),
+        visibility: cs.visibility,
+        display: cs.display,
+        onScreen: r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= window.innerHeight,
+        label: document.getElementById('devToggle').textContent,
+      };
+    });
+    assert.ok(st.opacity > 0.9,
+      `the controls bar must be VISIBLE before anything is connected (opacity ${st.opacity});`
+      + ' the device buttons live inside it, so hiding it makes connecting impossible');
+    assert.strictEqual(st.visibility, 'visible');
+    assert.notStrictEqual(st.display, 'none');
+    assert.ok(st.onScreen, 'and the Connect pill must be on screen, not below the fold');
+    assert.strictEqual(st.label, 'Connect');
+    console.log('✓ the Connect control is visible and on screen on a fresh load');
+  }
+
   // 1) Both device buttons exist, and neither starts disabled.
   {
     const st = await page.evaluate(() => ({
