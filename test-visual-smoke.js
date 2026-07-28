@@ -157,7 +157,11 @@ assert.ok(rafCb, 'createZenVisual should have scheduled a frame');
 console.log('✓ createZenVisual initialises without throwing');
 
 // ---- drive every mode through many frames with adversarial state ----------
+// EVERY mode, including the ones hidden from the picker. Hidden modes still have
+// code, and hiding one must not become a way for it to rot unnoticed — if it gets
+// un-hidden later it has to still render.
 const modeCount = sandbox.VizCore.MODES.length;
+const visibleCount = sandbox.VizCore.visibleModes().length;
 const adversarial = [
   { calm: 0, noise: 0, breathPeriod: 0, bands: [0, 1, 2, 3].map(() => ({ level: 0, spike: 0 })),
     metrics: { calm: 0, thinking: 0, focus: 0, drowsy: 0 }, breathAmount: -1 },
@@ -255,9 +259,17 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
 
 // ---- mode cycling returns real modes and wraps -----------------------------
 {
+  // Cycling reaches the VISIBLE modes only — walking the keyboard through visuals
+  // the picker does not offer would be a bug. The render loop above still exercises
+  // all of them.
   const seen = new Set();
-  for (let i = 0; i < modeCount; i++) seen.add(visual.cycleMode().key);
-  assert.strictEqual(seen.size, modeCount, 'cycleMode should reach every mode');
+  for (let i = 0; i < visibleCount; i++) seen.add(visual.cycleMode().key);
+  assert.strictEqual(seen.size, visibleCount,
+    `cycleMode should reach every visible mode (${visibleCount} of ${modeCount})`);
+  const hidden = sandbox.VizCore.MODES.filter((m) => m.hidden).map((m) => m.key);
+  for (const k of seen) {
+    assert.ok(!hidden.includes(k), `cycling must not land on hidden mode ${k}`);
+  }
   console.log('✓ cycleMode reaches every mode and reports it');
 }
 

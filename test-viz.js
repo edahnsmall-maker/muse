@@ -15,19 +15,41 @@ const VizCore = require('./public/viz-core.js');
   console.log('✓ each electrode has a distinct, saturated hue');
 }
 
-// 2) Mode cycling wraps around and never leaves the valid range.
+// 2) Mode cycling wraps around, never leaves the valid range, and SKIPS hidden
+//    modes — otherwise the keyboard walks through visuals the picker doesn't offer.
 {
-  assert.ok(VizCore.MODES.length >= 4, 'should offer at least 4 visuals to cycle');
-  let idx = 0;
-  const visited = [];
-  for (let i = 0; i < VizCore.MODES.length * 2; i++) {
-    visited.push(idx);
+  const visible = VizCore.visibleModes();
+  assert.ok(visible.length >= 4, 'should offer at least 4 visuals to cycle');
+  assert.ok(VizCore.MODES.length > visible.length,
+    'this test is only meaningful while some modes are hidden');
+  // Hidden modes keep their index: renumbering would silently repoint a stored
+  // preference at a different visual.
+  const visibleIdx = VizCore.MODES.map((m, i) => (m.hidden ? -1 : i)).filter((i) => i >= 0);
+  let idx = visibleIdx[0];
+  const seen = new Set();
+  for (let i = 0; i < visible.length; i++) {
+    seen.add(idx);
+    assert.ok(!VizCore.MODES[idx].hidden,
+      `cycling must never land on a hidden mode (landed on ${VizCore.MODES[idx].key})`);
     idx = VizCore.nextMode(idx);
     assert.ok(idx >= 0 && idx < VizCore.MODES.length, `mode index must stay in range (got ${idx})`);
   }
-  assert.strictEqual(idx, 0, 'cycling a full number of times should return to the start');
-  assert.strictEqual(new Set(visited).size, VizCore.MODES.length, 'cycling should visit every mode');
-  console.log('✓ mode cycling wraps correctly and visits every mode');
+  assert.strictEqual(seen.size, visible.length, 'cycling must reach every visible mode');
+  assert.strictEqual(idx, visibleIdx[0],
+    'a full cycle of the VISIBLE modes should return to the start');
+  // And cycling from a hidden index must escape rather than stick.
+  const hiddenIdx = VizCore.MODES.findIndex((m) => m.hidden);
+  if (hiddenIdx >= 0) {
+    assert.ok(!VizCore.MODES[VizCore.nextMode(hiddenIdx)].hidden,
+      'cycling from a hidden mode must land on a visible one');
+  }
+  let idx2 = visibleIdx[0];
+  const visited = [];
+  for (let i = 0; i < VizCore.MODES.length * 2; i++) { visited.push(idx2); idx2 = VizCore.nextMode(idx2); }
+  assert.strictEqual(new Set(visited).size, visible.length,
+    'cycling should visit every VISIBLE mode and no others');
+  console.log(`✓ mode cycling wraps correctly and visits all ${visible.length} visible modes`
+    + ` (${VizCore.MODES.length - visible.length} hidden but kept)`);
 }
 
 // 3) EventDetector: hysteresis means ordinary wobble in the middle produces

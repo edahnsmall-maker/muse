@@ -94,9 +94,28 @@
   .rLabel em { font-style: normal; opacity: .45; font-size: 9px; letter-spacing: .04em; }
   #voiceNote.rec { background: rgba(255,90,90,.22); border-color: rgba(255,120,120,.6);
     color: #ffd9d9; }
-  #recDot { font: 11px/1.5 ui-monospace, monospace; color: rgba(255,150,150,.85);
-    align-self: center; letter-spacing: .03em; white-space: nowrap; }
-  #recDot.warn { color: #ffd27a; }
+  /* A visible seam between clusters, without drawing a hard line through the bar. */
+  /* The collapsed device control. Quiet, and it reports state so the sit can be
+     started without expanding it: "Connect" vs "2 linked". */
+  #devToggle { align-self: center; }
+  #devToggle.linked { color: #bfe9c9; border-color: rgba(150,230,180,.4); }
+  .pillGroup { display: inline-flex; gap: 6px; align-items: center; }
+  .pillGroup + .pillGroup { margin-left: 6px; padding-left: 12px;
+    border-left: 1px solid rgba(255,255,255,.12); }
+  #recBtn { position: fixed; top: 14px; right: 16px; z-index: 60; cursor: pointer;
+    font: 500 12px/1 Inter, system-ui, sans-serif; letter-spacing: .04em;
+    padding: 9px 14px 9px 26px; border-radius: 999px; color: rgba(255,255,255,.82);
+    background: rgba(20,22,30,.72); border: 1px solid rgba(255,255,255,.16);
+    backdrop-filter: blur(8px); }
+  #recBtn::before { content: ''; position: absolute; left: 12px; top: 50%;
+    width: 7px; height: 7px; margin-top: -3.5px; border-radius: 50%;
+    background: rgba(255,255,255,.3); }
+  #recBtn.on { color: #ffdede; border-color: rgba(255,110,110,.5); background: rgba(52,20,24,.75); }
+  /* Only the LIVE state pulses. A pulsing dot that does not mean "recording" is
+     worse than no dot, because it trains you to ignore it. */
+  #recBtn.on::before { background: #ff5f5f; animation: recPulse 2s ease-in-out infinite; }
+  #recBtn.warn { border-color: rgba(255,200,110,.6); color: #ffe2ac; }
+  @keyframes recPulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
   /* Note composer, inside the overlay panel. */
   #noteBox { width: 100%; min-height: 78px; resize: vertical; font: inherit; font-size: 13px;
     padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
@@ -113,7 +132,6 @@
   .noteItem .noteX { flex: none; cursor: pointer; opacity: .35; padding: 0 4px;
     background: none; border: 0; color: inherit; font: inherit; }
   .noteItem .noteX:hover { opacity: .9; }
-  #recDot b { color: rgba(255,90,90,.95); }
   /* Saved-session rows inside the summary overlay. */
   .sesRow { display: flex; align-items: center; gap: 10px; padding: 8px 0;
     border-bottom: 1px solid rgba(255,255,255,.07); font-size: 13px; }
@@ -323,6 +341,9 @@
   </div>
   <div id="markHint">enter saves · esc saves without a note · 1-6 picks a kind</div>
 </div>
+<!-- Out of the way, and always in the same place. Recording is explicit now:
+     it starts and stops when you say so, and stopping is what packages the sit. -->
+<button id="recBtn" title="Start or stop recording this sit">Record</button>
 <div id="summary">
   <h2 id="summaryTitle">Session</h2>
   <div id="summaryBody"></div>
@@ -335,15 +356,16 @@
          statusEl.innerHTML, so anything in there is destroyed by the first
          status message. That is exactly what made "Connect to Muse"
          unpressable, and then unreachable. -->
-    <div id="devices">
+    <!-- Collapsed by default: these sat in the middle of the screen covering the
+         visualisation for the whole sit, when they are only needed at the start. -->
+    <button id="devToggle" class="secondary">Connect</button>
+    <div id="devices" hidden>
       <button id="connect">Connect headband</button>
       <button id="connectStrap" class="secondary">+ heart strap</button>
       <!-- Hidden until the strap's accelerometer negotiation actually fails.
            It is a debugging affordance, not part of sitting down to meditate. -->
       <button id="copyStrapLog" class="secondary" hidden>copy strap log</button>
-      <!-- Recording is AUTOMATIC. This exists so that is visible rather than
-           merely true — at 5am nobody should be wondering whether it is on. -->
-      <span id="recDot" hidden></span>
+
     </div>
   </div>
   <div id="timerPicker"></div>
@@ -356,19 +378,29 @@
     </div>
   </div>
   <div style="display:flex;flex-direction:column;align-items:center">
+    <!-- Grouped rather than a flat row of twelve. Four clusters: what you're
+         looking at, how you annotate it, what you do with the sit afterwards, and
+         settings. "Mark this moment" is gone because training mode already tells
+         you to press M, and Fullscreen because F still works without a pill. -->
     <div id="controls">
-      <span class="pill mark" id="btnMark">Mark this moment<kbd>M</kbd></span>
-      <span class="pill panelToggle active" id="btnMetrics">Metrics</span>
-      <span class="pill panelToggle" id="btnFeed">Live feed</span>
-      <span class="pill panelToggle" id="btnVisuals">Visuals</span>
-      <span class="pill" id="notesLink">Notes<kbd>N</kbd></span>
-      <span class="pill" id="voiceNote">hold to speak<kbd>V</kbd></span>
-      <span class="pill" id="trainToggle">training: off<kbd>T</kbd></span>
-      <span class="pill" id="responseToggle">response: sensitive</span>
-      <span class="pill" id="cueToggle">cues: on</span>
-      <span class="pill" id="summaryLink">Session summary</span>
-      <span class="pill" id="sessionsLink">Saved sessions</span>
-      <span class="pill" id="btnFull">Fullscreen<kbd>F</kbd></span>
+      <span class="pillGroup">
+        <span class="pill panelToggle active" id="btnMetrics">Metrics</span>
+        <span class="pill panelToggle" id="btnFeed">Live feed</span>
+        <span class="pill panelToggle" id="btnVisuals">Visuals</span>
+      </span>
+      <span class="pillGroup">
+        <span class="pill" id="trainToggle">Training: off<kbd>T</kbd></span>
+        <span class="pill" id="notesLink">Notes<kbd>N</kbd></span>
+        <span class="pill" id="voiceNote">Hold to speak<kbd>V</kbd></span>
+      </span>
+      <span class="pillGroup">
+        <span class="pill" id="summaryLink">Summarize session</span>
+        <span class="pill" id="sessionsLink">Saved sessions</span>
+      </span>
+      <span class="pillGroup">
+        <span class="pill" id="responseToggle">Response: sensitive</span>
+        <span class="pill" id="cueToggle">Cues: on</span>
+      </span>
     </div>
     <div id="hint"></div>
   </div>
@@ -392,6 +424,12 @@ const timerPickerEl = document.getElementById('timerPicker');
 const connectBtn = document.getElementById('connect');
 const strapBtn = document.getElementById('connectStrap');
 const copyLogBtn = document.getElementById('copyStrapLog');
+const devicesEl = document.getElementById('devices');
+const devToggleEl = document.getElementById('devToggle');
+// Declared up here with the other element lookups, not next to its render function:
+// renderDevices() runs on the startup paint, and a `const` further down the file
+// would still be in its temporal dead zone at that point.
+let devicesOpen = false;
 
 // When a transient message is showing (e.g. the visual-mode name), the
 // 250ms status loop must not immediately overwrite it.
@@ -406,12 +444,16 @@ function renderModeBar() {
   const modes = visual.modes();
   const row = (family, label) => {
     const pills = modes
-      .filter((m) => (m.family || 'core') === family)
+      // Hidden modes keep their code and their index, and are simply not offered.
+      // Narrowing the list to the ones actually in use beats deleting work that
+      // may be wanted again.
+      .filter((m) => !m.hidden && (m.family || 'core') === family)
       .map((m) => `<span class="pill${m.key === cur ? ' active' : ''}" data-mode="${m.key}" title="${m.blurb}">${m.label}</span>`)
       .join('');
+    if (!pills) return '';
     return `<div class="modeRow"><span class="modeRowTitle">${label}</span>${pills}</div>`;
   };
-  modeBarEl.innerHTML = row('core', 'Core') + row('glass', 'Glass Studies');
+  modeBarEl.innerHTML = row('core', 'Visuals') + row('glass', 'Glass Studies');
   modeBarEl.querySelectorAll('.pill').forEach((el) => {
     el.addEventListener('click', () => {
       const idx = visual.modes().findIndex((m) => m.key === el.dataset.mode);
@@ -530,6 +572,7 @@ function renderDevices() {
 
   // Only offered when there is actually something wrong to report.
   if (copyLogBtn.isConnected) copyLogBtn.hidden = !pmdLogWorthSending();
+  renderDevToggle();
 }
 
 // The log is worth sending when the accelerometer negotiation produced a failure
@@ -579,7 +622,17 @@ let recSession = null;
 let recStarting = false;
 let recError = null;
 
+/*
+ * RECORDING IS EXPLICIT. It used to start on the first sample and never stop, so
+ * leaving the tab open recorded the rest of the day into one session. Now it starts
+ * and stops when asked, and STOPPING is what closes the sit: it flushes, marks the
+ * session ended, and offers the summary. That makes "stop" the moment the sit
+ * becomes a thing with a beginning, an end, and its notes attached.
+ */
+let recArmed = false;
+
 async function ensureRecording() {
+  if (!recArmed) return null;             // nothing records unless armed
   if (recSession || recStarting || recError) return recSession;
   recStarting = true;
   try {
@@ -805,15 +858,13 @@ function downloadReport(stats) {
 
 document.getElementById('summaryLink').addEventListener('click', openSummary);
 document.getElementById('trainToggle').addEventListener('click', () => setTrainingMode(!trainingMode));
-document.getElementById('btnMark').addEventListener('click', () => openMarkPrompt());
-document.getElementById('btnFull').addEventListener('click', () => {
-  if (!document.fullscreenElement) document.documentElement.requestFullscreen();
-  else document.exitFullscreen();
-});
+// The "Mark this moment" and "Fullscreen" pills are gone: training mode already
+// prompts for M, and F needs no pill. Both keys still work — see the keydown
+// handler — so nothing was removed except two pills from a crowded bar.
 const cueToggleEl = document.getElementById('cueToggle');
 const responseToggleEl = document.getElementById('responseToggle');
 function renderResponseToggle() {
-  responseToggleEl.textContent = `response: ${visual.currentResponsiveness().label}`;
+  responseToggleEl.textContent = `Response: ${visual.currentResponsiveness().label}`;
 }
 responseToggleEl.addEventListener('click', () => {
   const mode = visual.cycleResponsiveness();
@@ -824,7 +875,7 @@ responseToggleEl.addEventListener('click', () => {
 renderResponseToggle();
 cueToggleEl.addEventListener('click', () => {
   const on = cueEngine.setEnabled(!cueEngine.enabled);
-  cueToggleEl.textContent = `cues: ${on ? 'on' : 'off'}`;
+  cueToggleEl.textContent = `Cues: ${on ? 'on' : 'off'}`;
   cueToggleEl.classList.toggle('active', on);
 });
 cueToggleEl.classList.add('active');
@@ -1028,7 +1079,7 @@ function setTrainingMode(on) {
   trainClockEl.classList.toggle('show', trainingMode);
   renderMarkCount();
   const el = document.getElementById('trainToggle');
-  if (el) el.innerHTML = `training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
+  if (el) el.innerHTML = `Training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
 }
 
 function markerContextFor(m) {
@@ -1911,6 +1962,23 @@ function onDisconnected() {
 
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
+/* --- Collapsible device controls -------------------------------------------
+ * Two buttons in the centre of the screen, needed for ten seconds and covering the
+ * visualisation for the remaining forty minutes. Collapsed behind one control that
+ * reports how many devices are linked, so the state is still visible at a glance.
+ */
+function renderDevToggle() {
+  if (!devToggleEl.isConnected) return;
+  const n = (museConnected() ? 1 : 0) + (strapConnected() ? 1 : 0);
+  const busy = museConnecting || strapConnecting;
+  devToggleEl.classList.toggle('linked', n > 0);
+  devToggleEl.textContent = devicesOpen ? 'Hide devices'
+    : (busy ? 'Connecting\u2026' : n === 0 ? 'Connect' : n === 1 ? '1 device linked' : '2 devices linked');
+  devicesEl.hidden = !devicesOpen;
+}
+
+devToggleEl.addEventListener('click', () => { devicesOpen = !devicesOpen; renderDevToggle(); });
+
 // Not `once`: a failed connection must be retryable, and either device can drop
 // out mid-session and need reconnecting. renderDevices() disables each button
 // while its device is connected or connecting, which is the real guard.
@@ -1982,7 +2050,7 @@ async function startVoiceNote() {
       mediaRecorder = null;
       voiceChunks = [];
       voiceBtn.classList.remove('rec');
-      voiceBtn.innerHTML = 'hold to speak<kbd>V</kbd>';
+      voiceBtn.innerHTML = 'Hold to speak<kbd>V</kbd>';
       // Under a second is a fumbled press, not a note.
       if (secs < 0.8) { setStatus('too short — hold the button while you speak'); statusLockUntil = Date.now() + 1600; return; }
       await ensureRecording();
@@ -1998,7 +2066,7 @@ async function startVoiceNote() {
     });
     mediaRecorder.start();
     voiceBtn.classList.add('rec');
-    voiceBtn.innerHTML = 'listening\u2026 release to save';
+    voiceBtn.innerHTML = 'Listening\u2026 release to save';
   } catch (err) {
     // A refused microphone is a permission problem, not a bug. Say which.
     setStatus(`microphone unavailable: ${escapeHtml((err && err.message) || 'refused')}`);
@@ -2017,47 +2085,81 @@ voiceBtn.addEventListener('pointerup', stopVoiceNote);
 voiceBtn.addEventListener('pointercancel', stopVoiceNote);
 voiceBtn.addEventListener('pointerleave', stopVoiceNote);
 
-/* --- Recording indicator + saved sessions ---------------------------------
- *
- * THE UX DECISION, stated once because it is the answer to "what do I have to
- * remember": recording is AUTOMATIC and always on. There is no record button, no
- * timer to set, and training mode has nothing to do with it — training mode is
- * about markers and cues. You sit, you get up, the sit is saved. The only manual
- * step is downloading, and that can happen days later.
- *
- * The indicator exists because "it saves automatically" is worth nothing if you
- * cannot tell whether it is working. It shows elapsed time and megabytes, and it
- * turns amber if a write failed or the browser is running out of room — the two
- * ways a multi-day retreat could quietly stop recording.
- */
-const recDotEl = document.getElementById('recDot');
+/* --- Saved sessions --------------------------------------------------------- */
 let recQuota = null;
 // Checked rarely: it is a real async call, and free space does not change fast.
 setInterval(async () => { recQuota = await Recorder.quota(); }, 60000);
 Recorder.quota().then((q) => { recQuota = q; });
 
-function renderRecDot() {
-  if (!recDotEl.isConnected) return;
-  if (recError) {
-    recDotEl.hidden = false;
-    recDotEl.className = 'warn';
-    recDotEl.textContent = `not recording — ${recError}`;
-    return;
-  }
-  if (!recSession) { recDotEl.hidden = true; return; }
-  const secs = Math.max(0, (Date.now() - recSession.meta.startedAt) / 1000);
-  const mb = recSession.bytes / 1e6;
-  const tight = recQuota && recQuota.fraction != null && recQuota.fraction > 0.9;
-  recDotEl.hidden = false;
-  recDotEl.className = (recSession.error || tight) ? 'warn' : '';
-  if (recSession.error) recDotEl.textContent = `write failed — ${recSession.error}`;
-  else if (tight) recDotEl.textContent = `storage nearly full — ${mb.toFixed(1)}MB saved`;
-  else {
-    recDotEl.innerHTML = `<b>\u25cf</b> rec ${Math.floor(secs / 60)}:`
-      + `${String(Math.floor(secs % 60)).padStart(2, '0')} \u00b7 ${mb.toFixed(1)}MB`;
-  }
+const recBtnEl = document.getElementById('recBtn');
+
+async function startRecording() {
+  if (recArmed) return;
+  recArmed = true;
+  recError = null;
+  // A fresh clock per recording. Without this, a second sit in the same page load
+  // would be stamped against the first one's start and every offset would be wrong.
+  sessionStartedAt = Date.now();
+  sessionLog.length = 0;
+  await ensureRecording();
+  renderRecBtn();
+  if (recSession) { setStatus('recording'); statusLockUntil = Date.now() + 1500; }
 }
-setInterval(renderRecDot, 1000);
+
+async function stopRecording({ summary = true } = {}) {
+  if (!recArmed) return;
+  recArmed = false;
+  const sess = recSession;
+  recSession = null;
+  renderRecBtn();
+  if (!sess) return;
+  // end() flushes what is still in memory before marking the session complete, so
+  // the last few seconds of the sit are not the ones that go missing.
+  await sess.end();
+  setStatus(`session saved \u00b7 ${(sess.bytes / 1e6).toFixed(1)}MB`);
+  statusLockUntil = Date.now() + 4000;
+  // Stopping is when the sit gets summarised — that is the point at which it has an
+  // end, and the notes have something to be attached to.
+  if (summary) openSummary();
+}
+
+// The timer running out ends the sit: stopRecording() flushes, closes the session
+// and opens the summary itself, so this must not also call openSummary or two stack.
+function checkTimerDone() {
+  if (!timerEndAt || timerDone || Date.now() < timerEndAt) return;
+  timerDone = true;
+  setStatus('session complete');
+  // A LOCK, not a permanent state. This message used to sit on screen for the rest
+  // of the page's life, because the only line that cleared the status was guarded by
+  // `!timerDone` — so once the timer fired nothing could ever clear it again.
+  statusLockUntil = Date.now() + 5000;
+  if (recArmed) stopRecording();
+  else openSummary();
+}
+
+function renderRecBtn() {
+  if (!recBtnEl.isConnected) return;
+  const live = recArmed && recSession;
+  recBtnEl.classList.toggle('on', !!live);
+  recBtnEl.classList.toggle('warn', !!(recError || (recSession && recSession.error)));
+  if (recError) { recBtnEl.textContent = 'Recording unavailable'; return; }
+  if (recArmed && !recSession) { recBtnEl.textContent = 'Waiting for data\u2026'; return; }
+  if (!live) { recBtnEl.textContent = 'Record'; return; }
+  const secs = Math.max(0, (Date.now() - recSession.meta.startedAt) / 1000);
+  recBtnEl.textContent = `Stop \u00b7 ${Math.floor(secs / 60)}:`
+    + `${String(Math.floor(secs % 60)).padStart(2, '0')}`;
+}
+setInterval(renderRecBtn, 1000);
+recBtnEl.addEventListener('click', () => (recArmed ? stopRecording() : startRecording()));
+
+// Leaving with a recording running would lose whatever has not flushed. This cannot
+// reliably await an async end(), so it flushes synchronously-ish and warns.
+addEventListener('beforeunload', (e) => {
+  if (!recArmed || !recSession) return;
+  recSession.flush();
+  e.preventDefault();
+  return (e.returnValue = 'A recording is still running. Stop it first to close the session cleanly.');
+});
 
 // --- Saved sessions panel ---------------------------------------------------
 async function openSessions() {
@@ -2344,6 +2446,14 @@ setInterval(() => {
   }
 
   const result = computeCalm();
+  /* The timer must fire even with no EEG. It used to live further down, BELOW the
+   * `if (!result) return` that requires Muse data — so a headband that dropped out
+   * meant the timer silently never completed and the sit never got packaged. Same
+   * trap that once left the strap's status message on screen forever; anything that
+   * must happen on a wall clock belongs above that return, not below it.
+   */
+  checkTimerDone();
+
   if (!result) {
     // Strap-only operation is a legitimate state: the strap alone gives heart
     // rate, HRV and a real breathing rate, none of which need the headband.
@@ -2387,14 +2497,10 @@ setInterval(() => {
 
   const stale = Date.now() - lastDataAt > 2000;
   const statusLocked = Date.now() < statusLockUntil;
-  if (timerEndAt && !timerDone && Date.now() >= timerEndAt) {
-    timerDone = true;
-    setStatus('session complete');
-    openSummary(); // the timer ending is the natural moment to reflect
-  } else if (statusLocked) {
+  if (statusLocked) {
     /* a transient message (visual mode name / a cue) owns the status line */
   } else if (stale) setStatus('signal lost — check the headband fit');
-  else if (!timerDone) setStatus('', { hide: true });
+  else setStatus('', { hide: true });
 
   // Cues: silence is the default. At most one every 5 minutes, only when
   // there is something worth saying, and never the same one twice running.

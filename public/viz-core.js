@@ -77,20 +77,33 @@
     { key: 'corona', label: 'Corona', family: 'core', blurb: 'the same sweep, overlapping and bleeding into one field' },
     { key: 'silk',   label: 'Silk',   family: 'core', blurb: 'iridescent folds settle into a line; thoughts lift slow peaks' },
     { key: 'flow',   label: 'Flow',   family: 'core', blurb: 'a live trace, dissolving as it ages' },
-    { key: 'bloom',  label: 'Bloom',  family: 'core', blurb: 'gradients that appear on real events' },
-    { key: 'field',  label: 'Field',  family: 'core', blurb: 'one soft band of colour per sensor' },
+    { key: 'bloom',  label: 'Bloom',  family: 'core', hidden: true, blurb: 'gradients that appear on real events' },
+    { key: 'field',  label: 'Field',  family: 'core', hidden: true, blurb: 'one soft band of colour per sensor' },
     { key: 'breath', label: 'Breath', family: 'core', blurb: 'just slow breathing — nothing to read' },
-    { key: 'glassbloom', label: 'Slow Bloom', family: 'glass', blurb: 'Bloom rebuilt as slow glass flowers and overlapping light' },
-    { key: 'glasssilk', label: 'Glass Silk', family: 'glass', blurb: 'Silk rebuilt as luminous panes that settle into a calm seam' },
-    { key: 'prism',  label: 'Prism', family: 'glass', blurb: 'glass-light veils cool with calm and warm with thinking' },
-    { key: 'lattice', label: 'Lattice', family: 'glass', blurb: 'sacred geometry steadies as focus returns' },
-    { key: 'horizon', label: 'Horizon', family: 'glass', blurb: 'a cinematic focus line that smooths as the mind settles' },
-    { key: 'aurora', label: 'Aurora', family: 'glass', blurb: 'slow curtains of colour ripple with thought and cool with calm' },
-    { key: 'cathedral', label: 'Cathedral', family: 'glass', blurb: 'a quiet stained-glass rose that becomes orderly with focus' },
-    { key: 'tide', label: 'Tide', family: 'glass', blurb: 'slow concentric waves flatten as calm returns' },
+    { key: 'glassbloom', label: 'Slow Bloom', family: 'glass', hidden: true, blurb: 'Bloom rebuilt as slow glass flowers and overlapping light' },
+    { key: 'glasssilk', label: 'Glass Silk', family: 'glass', hidden: true, blurb: 'Silk rebuilt as luminous panes that settle into a calm seam' },
+    { key: 'prism',  label: 'Prism', family: 'glass', hidden: true, blurb: 'glass-light veils cool with calm and warm with thinking' },
+    { key: 'lattice', label: 'Lattice', family: 'glass', hidden: true, blurb: 'sacred geometry steadies as focus returns' },
+    { key: 'horizon', label: 'Horizon', family: 'glass', hidden: true, blurb: 'a cinematic focus line that smooths as the mind settles' },
+    { key: 'aurora', label: 'Aurora', family: 'glass', hidden: true, blurb: 'slow curtains of colour ripple with thought and cool with calm' },
+    { key: 'cathedral', label: 'Cathedral', family: 'glass', hidden: true, blurb: 'a quiet stained-glass rose that becomes orderly with focus' },
+    { key: 'tide', label: 'Tide', family: 'glass', hidden: true, blurb: 'slow concentric waves flatten as calm returns' },
   ];
 
-  function nextMode(index) { return (index + 1) % MODES.length; }
+  /*
+   * Cycling must SKIP hidden modes, or the keyboard walks through visuals the
+   * picker doesn't offer. Hidden modes stay in the array — their index is their
+   * identity, and renumbering would silently repoint any stored preference — they
+   * are simply not reachable by cycling or by the picker.
+   */
+  function visibleModes() { return MODES.filter((m) => !m.hidden); }
+  function nextMode(index) {
+    for (let step = 1; step <= MODES.length; step++) {
+      const i = (index + step) % MODES.length;
+      if (!MODES[i].hidden) return i;
+    }
+    return index;
+  }
 
   // ---- Significant-event detection ---------------------------------------
   // "Gradients emerge when certain events happen in the data that amount to
@@ -421,7 +434,7 @@
   return {
     CHANNEL_COLORS, CHANNEL_LABELS, legendEntries,
     CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
+    MODES, nextMode, visibleModes, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,
   };

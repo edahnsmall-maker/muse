@@ -621,7 +621,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     });
 
     assert.ok(out.whileRecording.flagged, 'the button must show it is live — you cannot see the screen mid-sit');
-    assert.match(out.whileRecording.label, /listening/, 'and say so in words');
+    assert.match(out.whileRecording.label, /Listening/, 'and say so in words');
     assert.ok(out.whileRecording.recorderLive, 'the recorder must actually be running');
     assert.ok(out.hasNote, 'releasing the button must store a voice note');
     // The audio itself, byte for byte. A note recording that a note happened is
@@ -636,7 +636,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       'the microphone track must be stopped, or the mic indicator stays on and drains the battery all sit');
     assert.strictEqual(out.voiceNoteCount, 1,
       'a fumbled sub-second press must not create a second note');
-    assert.match(out.restoredLabel, /hold to speak/, 'and the button must return to its resting label');
+    assert.match(out.restoredLabel, /Hold to speak/, 'and the button must return to its resting label');
     console.log(`✓ a held voice note stores real audio (${out.seconds.toFixed(1)}s), releases the mic, and ignores fumbles`);
   }
 
@@ -783,6 +783,138 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(out.stored, 1, 'and from storage, not just the display');
     assert.ok(out.rememberedUnanchored, 'the stamp toggle must persist between openings');
     console.log('✓ text notes save, stamp or not, list newest-first, and delete');
+  }
+
+  // 17) RECORDING IS EXPLICIT. It used to start on the first sample and never stop,
+  //     so leaving the tab open recorded the rest of the day into one session.
+  {
+    const out = await page.evaluate(async () => {
+      recArmed = false; recSession = null; recError = null;
+      // Feed real samples with recording OFF. Nothing may be captured.
+      pushSamples(1, [1, 2, 3, 4]);
+      await new Promise((r) => setTimeout(r, 120));
+      const idleStarted = !!recSession;
+      const idleLabel = document.getElementById('recBtn').textContent;
+
+      await startRecording();
+      pushSamples(1, [5, 6, 7, 8]);
+      const armedHasSession = !!recSession;
+      const id = recSession && recSession.id;
+      const db = recDb;
+      renderRecBtn();
+      const liveLabel = document.getElementById('recBtn').textContent;
+      const liveClass = document.getElementById('recBtn').classList.contains('on');
+
+      // Stopping must close the session AND open the summary — that is the moment
+      // the sit becomes a thing with an end and its notes attached.
+      document.getElementById('summary').classList.remove('show');
+      await stopRecording();
+      await new Promise((r) => setTimeout(r, 120));
+      const afterStop = {
+        armed: recArmed, session: !!recSession,
+        label: document.getElementById('recBtn').textContent,
+        summaryOpen: document.getElementById('summary').classList.contains('show'),
+      };
+      const stored = id ? await Recorder.loadSession(db, id) : null;
+
+      // And nothing may be captured after stopping either.
+      pushSamples(1, [9, 9, 9, 9]);
+      await new Promise((r) => setTimeout(r, 120));
+      const afterStopCaptured = !!recSession;
+
+      document.getElementById('summary').classList.remove('show');
+      if (id) await Recorder.deleteSession(db, id);
+      return { idleStarted, idleLabel, armedHasSession, liveLabel, liveClass, afterStop,
+        afterStopCaptured, endedFlag: stored && stored.meta.ended,
+        capturedSamples: stored ? stored.eeg[1].length : null };
+    });
+
+    assert.strictEqual(out.idleStarted, false,
+      'samples arriving with recording OFF must not start a session — that was the bug');
+    assert.strictEqual(out.idleLabel, 'Record', 'the idle button must invite you to start');
+    assert.ok(out.armedHasSession, 'pressing Record must open a session');
+    assert.match(out.liveLabel, /^Stop · \d+:\d\d$/,
+      `a live button must offer Stop and show elapsed time (got "${out.liveLabel}")`);
+    assert.ok(out.liveClass, 'and be visually distinct while live');
+    assert.strictEqual(out.afterStop.armed, false, 'Stop must disarm');
+    assert.strictEqual(out.afterStop.session, false, 'and release the session');
+    assert.strictEqual(out.afterStop.label, 'Record', 'and return to inviting a new one');
+    assert.ok(out.afterStop.summaryOpen,
+      'stopping must open the summary — that is when the sit gets packaged');
+    assert.strictEqual(out.endedFlag, true, 'the stored session must be marked ended, not interrupted');
+    // 4 samples were pushed while armed; the 4 before and 4 after must be absent.
+    assert.strictEqual(out.capturedSamples, 4,
+      `only samples from inside the recording may be kept (got ${out.capturedSamples})`);
+    assert.strictEqual(out.afterStopCaptured, false, 'and nothing may resume capturing after Stop');
+    console.log('✓ recording starts and stops only when asked, and Stop packages the sit');
+  }
+
+  // 18) The chrome: fewer visuals, a collapsed device control, no stuck messages.
+  {
+    const out = await page.evaluate(async () => {
+      // The device buttons must be OUT of the way but still reachable — they used to
+      // sit in the middle of the screen for the whole sit.
+      const devices = document.getElementById('devices');
+      const toggle = document.getElementById('devToggle');
+      const collapsed = devices.hidden;
+      toggle.click();
+      const opened = !devices.hidden;
+      const connectReachable = !!document.getElementById('connect').offsetParent;
+      toggle.click();
+      const reclosed = devices.hidden;
+
+      // The stuck "session complete" message: once the timer fired, the only line
+      // that cleared the status was guarded by !timerDone, so it stayed forever.
+      // Deliberately with no EEG result: the timer check used to live below the
+      // `if (!result) return` in the tick, so a headband that dropped out meant the
+      // timer silently never completed and the sit never got packaged.
+      for (const b of buffers) b.length = 0;
+      timerEndAt = Date.now() - 10; timerDone = false;
+      await new Promise((r) => setTimeout(r, 400));
+      const firedWithoutEeg = timerDone;
+      const rightAfter = document.getElementById('status').textContent;
+      document.getElementById('summary').classList.remove('show');
+      statusLockUntil = Date.now() + 250;      // shorten the 5s lock for the test
+      await new Promise((r) => setTimeout(r, 900));
+      const later = document.getElementById('status').textContent;
+      timerEndAt = null; timerDone = false;
+
+      return {
+        collapsed, opened, connectReachable, reclosed, rightAfter, later, firedWithoutEeg,
+        visuals: Array.from(document.querySelectorAll('#modeBar .pill')).map((p) => p.textContent),
+        controls: Array.from(document.querySelectorAll('#controls .pill')).map((p) => p.textContent),
+        groups: document.querySelectorAll('#controls .pillGroup').length,
+      };
+    });
+
+    assert.ok(out.collapsed, 'the device buttons must start collapsed, not covering the visual');
+    assert.ok(out.opened && out.connectReachable,
+      'and must be genuinely reachable when expanded, not merely present in the DOM');
+    assert.ok(out.reclosed, 'and collapse again');
+
+    assert.ok(out.firedWithoutEeg,
+      'the timer must complete even with no EEG signal — it is a wall clock, not a data event');
+    assert.match(out.rightAfter, /session complete/, 'the timer ending must say so');
+    // It must stop SAYING it. What replaces it depends on state — with no headband
+    // streaming, "gathering signal" is the correct next message — so the assertion
+    // is that the completion notice cleared, not that the line went empty.
+    assert.ok(!/session complete/.test(out.later),
+      `"session complete" must expire like any other message (still showing "${out.later}")`);
+
+    const wanted = ['Eclipse', 'Iris', 'Pulse', 'Corona', 'Silk', 'Flow', 'Breath'];
+    assert.deepStrictEqual(out.visuals, wanted,
+      `only the seven kept visuals may be offered (got ${out.visuals.join(', ')})`);
+
+    // The two removed pills, and consistent capitalisation.
+    assert.ok(!out.controls.some((t) => /Mark this moment/.test(t)),
+      'the Mark pill is gone — training mode already prompts for M');
+    assert.ok(!out.controls.some((t) => /Fullscreen/.test(t)), 'and Fullscreen');
+    assert.ok(out.controls.some((t) => /^Summarize session$/.test(t)), 'renamed to Summarize session');
+    for (const t of out.controls) {
+      assert.match(t, /^[A-Z]/, `every control must start with a capital (got "${t}")`);
+    }
+    assert.ok(out.groups >= 3, `the bar must be grouped rather than one flat row (got ${out.groups})`);
+    console.log(`✓ ${out.visuals.length} visuals, ${out.groups} control groups, devices collapse, no stuck message`);
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
