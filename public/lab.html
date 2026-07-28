@@ -1,0 +1,337 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Lab — session analysis</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!--
+  THE LAB. Drop session .zip files in, look at them, label spans, search for patterns.
+
+  Runs entirely offline from the filesystem, like the app: no build step, no server,
+  no upload. That is not minimalism for its own sake — these files contain a
+  recording of somebody's brain during meditation, and the design principle is that
+  they never leave the machine unless their owner deliberately sends them.
+
+  WHAT THIS IS FOR, and the thing to keep in mind while reading its output:
+  every score the app displays is currently unvalidated. This is the only place that
+  can change that, and the only way it can is by comparing what the algorithms
+  claimed against what the person actually reported. So the labels are the data, and
+  the features are the hypothesis — not the other way round.
+
+  It will usually tell you there is nothing there. That is the expected result with a
+  handful of sits, and it is a real finding rather than a failure of the tool.
+-->
+<style>
+  :root {
+    --bg: #07080d; --panel: rgba(255,255,255,.045); --line: rgba(255,255,255,.11);
+    --text: #e8eaf0; --muted: rgba(232,234,240,.55); --dim: rgba(232,234,240,.35);
+    --good: #7fd8a0; --warn: #ffd27a; --bad: #ff8f8f;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 Inter,
+    ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    padding: 28px clamp(16px, 4vw, 48px) 80px; }
+  h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px; letter-spacing: .01em; }
+  h2 { font-size: 14px; font-weight: 600; margin: 30px 0 10px; letter-spacing: .02em; }
+  .sub { color: var(--muted); font-size: 13px; max-width: 62ch; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 18px; margin-top: 14px; }
+  #drop { border: 1.5px dashed var(--line); border-radius: 14px; padding: 34px 20px;
+    text-align: center; color: var(--muted); cursor: pointer; margin-top: 18px;
+    transition: border-color .2s, background .2s; }
+  #drop.over { border-color: var(--good); background: rgba(127,216,160,.07); }
+  button { font: inherit; font-size: 13px; padding: 7px 13px; border-radius: 8px;
+    background: rgba(255,255,255,.08); color: inherit; border: 1px solid var(--line);
+    cursor: pointer; }
+  button:hover { background: rgba(255,255,255,.14); }
+  button.primary { background: rgba(127,216,160,.16); border-color: rgba(127,216,160,.4); }
+  button:disabled { opacity: .4; cursor: default; }
+  table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line);
+    white-space: nowrap; }
+  th { color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase;
+    letter-spacing: .06em; }
+  td.num { font-variant-numeric: tabular-nums; }
+  .scroll { overflow-x: auto; }
+  .tag { font-size: 10.5px; padding: 1px 7px; border-radius: 6px; border: 1px solid var(--line);
+    color: var(--muted); }
+  .good { color: var(--good); } .warn { color: var(--warn); } .bad { color: var(--bad); }
+  .dim { color: var(--dim); }
+  .verdict { font-size: 14px; line-height: 1.65; padding: 14px 16px; border-radius: 12px;
+    border: 1px solid var(--line); background: rgba(255,255,255,.03); max-width: 90ch; }
+  canvas { width: 100%; height: 190px; display: block; border-radius: 10px;
+    background: rgba(0,0,0,.28); }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 8px; font-size: 11.5px;
+    color: var(--muted); }
+  .legend i { display: inline-block; width: 11px; height: 2.5px; vertical-align: middle;
+    margin-right: 5px; border-radius: 2px; }
+  .row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .note { font-size: 12.5px; color: var(--muted); }
+  code { font: 12px ui-monospace, monospace; background: rgba(255,255,255,.07);
+    padding: 1px 5px; border-radius: 4px; }
+</style>
+
+<h1>Lab</h1>
+<p class="sub">Drop session <code>.zip</code> files here. Everything stays on this
+machine — nothing is uploaded, and this page works with no network at all.</p>
+
+<div id="drop">
+  <strong>Drop session archives here</strong><br>
+  <span class="dim">or click to choose files · several at once is better than one</span>
+  <input type="file" id="file" multiple accept=".zip" hidden>
+</div>
+
+<div id="loaded"></div>
+<div id="out"></div>
+
+<script src="dsp.js"></script>
+<script src="labels.js"></script>
+<script src="import.js"></script>
+<script src="analysis.js"></script>
+<script>
+/*
+ * Sessions are held in memory only. Reloading loses them, which is deliberate: the
+ * app already owns the durable copy, and a second store here would be a second thing
+ * to keep in sync and a second copy of somebody's brain data to look after.
+ */
+const sessions = [];
+const dropEl = document.getElementById('drop');
+const fileEl = document.getElementById('file');
+const loadedEl = document.getElementById('loaded');
+const outEl = document.getElementById('out');
+
+const esc = (s) => String(s == null ? '' : s)
+  .replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const clock = (sec) => sec == null ? '—'
+  : `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, '0')}`;
+const f2 = (v) => v == null ? '—' : v.toFixed(2);
+
+dropEl.addEventListener('click', () => fileEl.click());
+dropEl.addEventListener('dragover', (e) => { e.preventDefault(); dropEl.classList.add('over'); });
+dropEl.addEventListener('dragleave', () => dropEl.classList.remove('over'));
+dropEl.addEventListener('drop', (e) => {
+  e.preventDefault();
+  dropEl.classList.remove('over');
+  load(Array.from(e.dataTransfer.files));
+});
+fileEl.addEventListener('change', () => load(Array.from(fileEl.files)));
+
+async function load(files) {
+  for (const f of files) {
+    if (!/\.zip$/i.test(f.name)) continue;
+    try {
+      const read = await Importer.readSessionArchive(new Uint8Array(await f.arrayBuffer()));
+      // Derive the label spans once, here, so every downstream view agrees about
+      // which stretch of time each label describes.
+      const notes = read.notes.map((n) => ({
+        offsetSec: n.offsetSec, anchored: n.anchored === 'no' ? false : true,
+        kind: n.kind, transition: n.transition, text: n.text,
+        dims: Labels.normalise({ focus: n.focus, effort: n.effort, pull: n.pull, tone: n.tone }),
+      }));
+      const duration = read.metrics.length ? read.metrics[read.metrics.length - 1].t : null;
+      const { spans, wholeSit } = Labels.spans(notes, { durationSec: duration });
+      sessions.push({
+        sessionId: f.name, file: f.name, read, notes, spans, wholeSit, durationSec: duration,
+      });
+    } catch (err) {
+      // A bad archive must be reported by name. Silently skipping it would mean
+      // analysing fewer sessions than the screen appears to show.
+      sessions.push({ sessionId: f.name, file: f.name, error: err.message || 'could not read' });
+    }
+  }
+  render();
+}
+
+function render() {
+  renderLoaded();
+  renderTimelines();
+  renderSearch();
+}
+
+function renderLoaded() {
+  if (!sessions.length) { loadedEl.innerHTML = ''; return; }
+  const rows = sessions.map((s, i) => {
+    if (s.error) {
+      return `<tr><td>${esc(s.file)}</td><td colspan="5" class="bad">${esc(s.error)}</td>
+        <td><button data-drop="${i}">Remove</button></td></tr>`;
+    }
+    const labelled = s.spans.filter((x) => x.dims).length;
+    const trans = s.notes.filter((n) => n.kind === 'transition').length;
+    const warn = s.read.warnings.length
+      ? `<span class="warn" title="${esc(s.read.warnings.join(' · '))}">${s.read.warnings.length} warning(s)</span>`
+      : '<span class="dim">complete</span>';
+    return `<tr>
+      <td>${esc(s.file)}</td>
+      <td class="num">${clock(s.durationSec)}</td>
+      <td class="num">${s.read.metrics.length}</td>
+      <td class="num">${labelled || '<span class="dim">0</span>'}</td>
+      <td class="num">${trans || '<span class="dim">0</span>'}</td>
+      <td>${warn}</td>
+      <td><button data-drop="${i}">Remove</button></td></tr>`;
+  }).join('');
+  loadedEl.innerHTML = `<h2>Loaded</h2><div class="card scroll"><table>
+    <tr><th>File</th><th>Length</th><th>Rows</th><th>Labelled spans</th>
+        <th>Transitions</th><th>Archive</th><th></th></tr>${rows}</table></div>`;
+  loadedEl.querySelectorAll('[data-drop]').forEach((b) => {
+    b.addEventListener('click', () => { sessions.splice(Number(b.dataset.drop), 1); render(); });
+  });
+}
+
+/*
+ * One timeline per session: every stored metric, plus the notes and transitions in
+ * their right places.
+ *
+ * Drawn from metrics.csv rather than recomputed from raw, because these are the
+ * numbers the app ACTUALLY SHOWED at the time — which is what a label needs comparing
+ * against. Recomputing with today's formula would compare a label to a number the
+ * person never saw.
+ */
+const SERIES_COLOURS = {
+  calm: '#e3c56b', thinking: '#f19bbb', focus: '#7dd3fc', drowsy: '#a78bfa',
+  equanimity: '#86efac', hrv: '#fb923c', breath: '#c4b5fd', noise: '#6b7280',
+};
+
+function renderTimelines() {
+  const usable = sessions.filter((s) => !s.error && s.read.metrics.length);
+  if (!usable.length) { document.getElementById('timelines')?.remove(); return; }
+  let host = document.getElementById('timelines');
+  if (!host) {
+    host = document.createElement('div');
+    host.id = 'timelines';
+    loadedEl.after(host);
+  }
+  host.innerHTML = '<h2>Timelines</h2>'
+    + '<p class="sub">The numbers the app displayed at the time, not recomputed — a'
+    + ' label has to be compared against what was actually on screen.</p>'
+    + usable.map((s, i) => `<div class="card">
+        <div class="row" style="justify-content:space-between">
+          <strong style="font-size:13px">${esc(s.file)}</strong>
+          <span class="note">${clock(s.durationSec)}</span>
+        </div>
+        <canvas id="tl${i}" height="190"></canvas>
+        <div class="legend" id="lg${i}"></div>
+      </div>`).join('');
+  usable.forEach((s, i) => drawTimeline(s, document.getElementById(`tl${i}`),
+    document.getElementById(`lg${i}`)));
+}
+
+function drawTimeline(s, canvas, legendEl) {
+  const dpr = window.devicePixelRatio || 1;
+  const W = canvas.clientWidth, H = 190;
+  canvas.width = Math.max(1, Math.round(W * dpr));
+  canvas.height = Math.round(H * dpr);
+  const c = canvas.getContext('2d');
+  c.setTransform(dpr, 0, 0, dpr, 0, 0);
+  c.clearRect(0, 0, W, H);
+
+  const rows = s.read.metrics;
+  const tMax = s.durationSec || 1;
+  const keys = Object.keys(SERIES_COLOURS).filter((k) =>
+    rows.some((r) => r[k] != null && Number.isFinite(r[k])));
+
+  // Labelled spans as background bands, so a correlation can be eyeballed before it
+  // is computed — and disbelieved when the bands plainly do not line up.
+  for (const span of s.spans) {
+    if (!span.dims) continue;
+    const x0 = (span.fromSec / tMax) * W, x1 = (span.toSec / tMax) * W;
+    const f = span.dims.focus;
+    c.fillStyle = f == null ? 'rgba(255,255,255,.03)'
+      : `rgba(${f > 3 ? '127,216,160' : '255,143,143'},${0.04 + Math.abs(f - 3) * 0.03})`;
+    c.fillRect(x0, 0, Math.max(1, x1 - x0), H);
+  }
+
+  for (const key of keys) {
+    c.beginPath();
+    c.strokeStyle = SERIES_COLOURS[key];
+    c.lineWidth = 1.3;
+    let started = false;
+    for (const r of rows) {
+      const v = r[key];
+      // A gap in the data must be a GAP, not a straight line across it. Joining
+      // through a dropout invents values and smooths over exactly the artifacts a
+      // reader should notice.
+      if (v == null || !Number.isFinite(v)) { started = false; continue; }
+      const x = (r.t / tMax) * W;
+      const y = H - 12 - Math.max(0, Math.min(1, v)) * (H - 26);
+      if (started) c.lineTo(x, y); else { c.moveTo(x, y); started = true; }
+    }
+    c.stroke();
+  }
+
+  // Notes and transitions.
+  for (const n of s.notes) {
+    if (n.anchored === false || n.offsetSec == null) continue;
+    const x = (n.offsetSec / tMax) * W;
+    const isTrans = n.kind === 'transition';
+    c.strokeStyle = isTrans ? 'rgba(255,255,255,.55)' : 'rgba(255,210,122,.7)';
+    c.lineWidth = 1;
+    c.setLineDash(isTrans ? [] : [2, 3]);
+    c.beginPath(); c.moveTo(x, 0); c.lineTo(x, H); c.stroke();
+    c.setLineDash([]);
+    if (isTrans && n.transition) {
+      c.fillStyle = 'rgba(255,255,255,.75)';
+      c.font = '9px ui-monospace, monospace';
+      c.save(); c.translate(x + 3, 11); c.fillText(n.transition.slice(0, 4), 0, 0); c.restore();
+    }
+  }
+
+  legendEl.innerHTML = keys.map((k) =>
+    `<span><i style="background:${SERIES_COLOURS[k]}"></i>${k}</span>`).join('')
+    + '<span class="dim">│ solid = transition · dashed = note · green/red bands = focus label</span>';
+}
+
+/*
+ * The search. This is the part that has to be trusted, so its output leads with the
+ * verdict in words and shows the size of the search next to every result.
+ */
+function renderSearch() {
+  const usable = sessions.filter((s) => !s.error);
+  const units = Analysis.unitsFromSpans(usable.map((s) => ({
+    sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans,
+  })));
+
+  if (!units.length) {
+    outEl.innerHTML = usable.length ? `<h2>Patterns</h2><div class="card verdict">
+      No labelled spans in what is loaded, so there is nothing to correlate against.
+      Label some sits — in the app's Notes panel during a sit, or on the closing
+      screen — and reload the archives.</div>` : '';
+    return;
+  }
+
+  const res = Analysis.search(units, { iterations: 1500 });
+  const verdictClass = res.confirmed.length ? 'good' : 'warn';
+  const rows = res.tests.slice(0, 40).map((t) => `<tr>
+    <td>${esc(t.feature)}</td><td>${esc(t.label)}</td>
+    <td class="num">${f2(t.trainRho)}</td>
+    <td class="num">${t.p == null ? '—' : t.p.toFixed(4)}</td>
+    <td class="num">${t.q == null ? '—' : t.q.toFixed(3)}</td>
+    <td class="num">${f2(t.testRho)}</td>
+    <td>${t.heldUp === true ? '<span class="good">held</span>'
+      : t.heldUp === false ? '<span class="bad">did not hold</span>'
+      : '<span class="dim">—</span>'}</td>
+    <td class="num dim">${t.trainN}/${t.testN}</td>
+  </tr>`).join('');
+
+  outEl.innerHTML = `<h2>Patterns</h2>
+    <div class="card verdict ${verdictClass}">${esc(res.verdict)}</div>
+    <div class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px">
+        <span class="note">${res.units} labelled observations ·
+          ${res.comparisons} comparisons ·
+          trained on ${res.split.train.length} session(s),
+          held out ${res.split.test.length}</span>
+        <span class="tag">sorted by p · top 40</span>
+      </div>
+      <div class="scroll"><table>
+        <tr><th>Feature</th><th>Label</th><th>rho (train)</th><th>p</th><th>q</th>
+            <th>rho (held out)</th><th>Held out</th><th>n</th></tr>
+        ${rows}</table></div>
+      <p class="note" style="margin-top:12px">
+        <strong>q</strong> is the p-value corrected for having made
+        ${res.comparisons} comparisons. <strong>Held out</strong> is the only column
+        that matters: it asks whether the direction survived on sessions the pattern
+        was never fitted on. A sign flip there is a refutation, not a weak result.
+        Nothing here is a finding until it also reproduces on sits recorded after you
+        read this table — searching and confirming on the same data is how false
+        results get believed.</p>
+    </div>`;
+}
+</script>
