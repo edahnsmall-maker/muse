@@ -617,6 +617,20 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### The summary offers both downloads
+
+**Download report (.md)** is prose — what happened, for reading. **Download data (.zip)**
+is the numbers: raw EEG per channel, per-second metrics, `notes.csv` with every tap,
+probe answer and label, plus any voice notes. That is what the analysis lab and any
+handoff to an AI actually need, and only the report was reachable from the summary before.
+
+The data button appears only when a session was really recorded, so it can never imply an
+unrecorded sit was captured — and it appears on the **"Nothing to summarise yet"** screen
+too, which was the one dead end in the app. That message means too little live signal for
+a sparkline; it does *not* mean nothing was saved. A sit whose headband dropped early
+still has its raw chunks, notes and taps in the database, and that screen used to offer
+only Close.
+
 ### Every visual says what it means
 
 Each of the seven visuals draws its own key, top-left: a colour swatch per series where

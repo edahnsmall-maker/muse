@@ -752,6 +752,112 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ record -> store -> panel -> download works end to end (${out.filename}, ${out.size} bytes)`);
   }
 
+  // 15b) THE SUMMARY OFFERS THE DATA, not just the prose report.
+  //      Asked for directly: "when you see the summarized session, it would be nice to
+  //      have it download the the data as well here." The report is what happened, for
+  //      reading; the archive is the numbers the analysis lab and any AI handoff need.
+  //      Absent when there is no recorded session, because a button producing an empty
+  //      archive after an unrecorded sit would imply the sit was captured.
+  {
+    const out = await page.evaluate(async () => {
+      // A summary needs live signal to have anything to summarise. Feed it a plausible
+      // minute so the real screen renders rather than the "nothing yet" one.
+      sessionLog.length = 0;
+      for (let t = 0; t < 60; t++) {
+        sessionLog.push({ t, calm: 0.4 + 0.2 * Math.sin(t / 9), focus: 0.5, thinking: 0.4,
+          drowsy: 0.2, artifact: 0, levels: [0.4, 0.5, 0.5, 0.4] });
+      }
+
+      // First: no session at all. The Data button must not be offered.
+      recSession = null; lastRecSession = null; recArmed = false;
+      selfRating = 4;                      // skip the rating screen
+      openSummary();
+      const dry = { data: !!document.getElementById('sumData'),
+        report: !!document.getElementById('sumDownload') };
+      closeSummary();
+
+      // Now a real recorded sit, stopped the way the app stops one.
+      const db = await Recorder.open({ name: 'zenbio-sum-' + Math.floor(performance.now()) });
+      recDb = db;
+      sessionStartedAt = Date.now() - 120000;
+      recArmed = true; recError = null;
+      selfRating = 4;                      // closeSummary above resets it
+      await ensureRecording();
+      for (let ch = 0; ch < 4; ch++) recSession.pushEeg(ch, [ch + 0.5, ch + 1.5, ch + 2.5]);
+      recSession.pushRow({ t: 0, calm: 0.4 });
+      recSession.pushRow({ t: 1, calm: 0.7 });
+      await recSession.addNote({ kind: 'transition', transition: 'returned', anchored: true });
+      const id = recSession.id;
+      await stopRecording();               // nulls recSession, opens the summary
+      const wet = { data: !!document.getElementById('sumData'),
+        sessionId: summarySessionId(), matches: summarySessionId() === id };
+
+      // Press it, intercepting the download.
+      let captured = null, filename = null;
+      const realCreate = URL.createObjectURL;
+      const realClick = HTMLAnchorElement.prototype.click;
+      URL.createObjectURL = (b) => { captured = b; return 'blob:stub'; };
+      HTMLAnchorElement.prototype.click = function () { filename = this.download; };
+      const btn = document.getElementById('sumData');
+      const restingLabel = btn.textContent;
+      btn.click();
+      // The label must change while it works — building the archive re-reads every raw
+      // chunk and CRC-32s it, which on a long sit looks like a dead button.
+      const busyLabel = btn.textContent;
+      for (let i = 0; i < 60 && !captured; i++) await new Promise((r) => setTimeout(r, 50));
+      URL.createObjectURL = realCreate;
+      HTMLAnchorElement.prototype.click = realClick;
+      const bytes = captured ? new Uint8Array(await captured.arrayBuffer()) : null;
+
+      /* And the dead end: "nothing to summarise" means too little live signal for a
+         sparkline, NOT that nothing was recorded. That branch used to offer only
+         Close, so a sit whose headband dropped early had its raw chunks, notes and
+         taps stranded in the database with no way to reach them. */
+      closeSummary();
+      sessionLog.length = 0;               // force the no-stats branch
+      lastRecSession = { id };             // but a recorded session still exists
+      selfRating = 4;
+      openSummary();
+      const stranded = { title: document.getElementById('summaryTitle').textContent,
+        data: !!document.getElementById('sumData') };
+
+      closeSummary();
+      await Recorder.deleteSession(db, id);
+      db.close(); recDb = null; lastRecSession = null; selfRating = null;
+      return { dry, wet, stranded, filename, restingLabel, busyLabel,
+        type: captured && captured.type,
+        head: bytes ? Array.from(bytes.slice(0, 4)) : null,
+        size: bytes ? bytes.length : 0,
+        settled: btn.textContent };
+    });
+
+    assert.ok(out.dry.report, 'the report download is always offered');
+    assert.ok(!out.dry.data,
+      'but the DATA download must not appear when nothing was recorded — it would'
+      + ' imply the sit was captured');
+    assert.ok(out.wet.data, 'after a recorded sit the data download must be there');
+    assert.ok(out.wet.matches,
+      `the summary must reach the sit that was just stopped (id ${out.wet.sessionId});`
+      + ' stopRecording nulls recSession before opening the summary, which is what'
+      + ' lastRecSession exists for');
+    assert.notStrictEqual(out.busyLabel, out.restingLabel,
+      `the button must say it is working (stayed "${out.busyLabel}")`);
+    assert.strictEqual(out.settled, out.restingLabel, 'and go back to its label after');
+    assert.strictEqual(out.type, 'application/zip');
+    assert.deepStrictEqual(out.head, [0x50, 0x4b, 0x03, 0x04],
+      'and produce a real zip, not an empty blob');
+    assert.match(out.filename, /^meditation-.*\.zip$/, `named for the sit (got ${out.filename})`);
+    assert.match(out.stranded.title, /Nothing to summarise/,
+      `precondition: the no-stats branch must be the one showing (got "${out.stranded.title}")`);
+    assert.ok(out.stranded.data,
+      '"Nothing to summarise yet" must STILL offer the data. Too little live signal for'
+      + ' a sparkline does not mean nothing was recorded — a sit whose headband dropped'
+      + ' early still has raw chunks, notes and taps saved, and this branch offered'
+      + ' only Close, stranding all of it.');
+    console.log(`✓ the summary downloads the data as well as the report, including when`
+      + ` there is nothing to summarise (${out.filename}, ${out.size} bytes)`);
+  }
+
   // 16) TEXT NOTES: write, stamp or not, review, delete.
   {
     const out = await page.evaluate(async () => {

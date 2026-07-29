@@ -964,10 +964,21 @@ function openSummary() {
   const stats = Summary.summarize(sessionLog);
   if (!stats) {
     summaryTitleEl.textContent = 'Nothing to summarise yet';
-    summaryBodyEl.innerHTML = '<div class="subtle">Sit for a little while first — the summary needs at least a few seconds of signal.</div>'
-      + '<div style="margin-top:18px"><span class="pill" id="sumClose">Close</span></div>';
+    /* THE DATA IS STILL OFFERED HERE, and that matters more than it looks.
+       "Nothing to summarise" means too little live signal for a sparkline — it does NOT
+       mean nothing was recorded. A sit where the headband dropped early still has raw
+       chunks, notes and taps in the database, and this branch was the one dead end from
+       which none of it was reachable: the only button was Close. */
+    const haveData = summarySessionId() != null;
+    summaryBodyEl.innerHTML = '<div class="subtle">Sit for a little while first — the summary needs at least a few seconds of signal.'
+      + (haveData ? '<br>What was recorded is still saved, and can be downloaded.' : '')
+      + '</div><div style="margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'
+      + (haveData ? '<span class="pill" id="sumData">Download data (.zip)</span>' : '')
+      + '<span class="pill" id="sumClose">Close</span></div>';
     summaryEl.classList.add('show');
     document.getElementById('sumClose').addEventListener('click', closeSummary);
+    const dataEl = document.getElementById('sumData');
+    if (dataEl) dataEl.addEventListener('click', () => downloadSummaryData(dataEl));
     return;
   }
   if (selfRating == null) {
@@ -1068,12 +1079,22 @@ function showSummaryStats(stats) {
     + yours
     + `<div id="summaryChannels" style="margin-top:16px">${chan}</div>`
     + renderMarkerEditor()
-    + `<div style="margin-top:22px;display:flex;gap:10px;justify-content:center">`
+    /* TWO DOWNLOADS, because they are two different things and only one of them was
+       reachable from here. The report is prose — what happened, for reading. The
+       archive is the numbers — raw EEG, per-second metrics, notes.csv — which is what
+       the analysis lab and any handoff to an AI actually need.
+       Offered only when there IS a recorded session: a button that produces an empty
+       archive after an unrecorded sit would suggest the sit was captured. */
+    + `<div style="margin-top:22px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">`
     + `<span class="pill" id="sumDownload">Download report (.md)</span>`
+    + (summarySessionId() != null
+      ? '<span class="pill" id="sumData">Download data (.zip)</span>' : '')
     + `<span class="pill" id="sumClose">Close</span></div>`;
   summaryEl.classList.add('show');
   document.getElementById('sumClose').addEventListener('click', closeSummary);
   document.getElementById('sumDownload').addEventListener('click', () => downloadReport(stats));
+  const sumDataEl = document.getElementById('sumData');
+  if (sumDataEl) sumDataEl.addEventListener('click', () => downloadSummaryData(sumDataEl));
   wireMarkerEditor();
 
   // Sparkline of the whole sit — the "shape", not a grade.
@@ -1149,6 +1170,43 @@ function wireMarkerEditor() {
       showSummaryStats(stats);
     });
   });
+}
+
+/*
+ * Which session the summary is about.
+ *
+ * The still-running one if the summary was opened mid-sit, otherwise the one that was
+ * just stopped. `lastRecSession` is why stopRecording keeps a reference at all: it
+ * nulls recSession before the summary opens, so without it the summary screen for a
+ * sit that had just been recorded would have had no way to reach that sit's data.
+ */
+function summarySessionId() {
+  if (recSession) return recSession.id;
+  if (lastRecSession) return lastRecSession.id;
+  return null;
+}
+
+async function downloadSummaryData(btn) {
+  const id = summarySessionId();
+  if (id == null || !recDb) return;
+  const label = btn.textContent;
+  // Building the archive reads every raw chunk back out of IndexedDB and CRC-32s it,
+  // which takes long enough on a 40-minute sit to look like a dead button. Say so.
+  btn.textContent = 'Packaging…';
+  btn.classList.add('active');
+  try {
+    await downloadSession(recDb, id);
+    setStatus('data archive downloaded');
+    statusLockUntil = Date.now() + 2500;
+  } catch (err) {
+    // Never silent: this is the button someone presses when they want the numbers off
+    // the machine, and a failure that says nothing looks like a completed download.
+    setStatus(`could not build the archive: ${escapeHtml((err && err.message) || 'unknown')}`);
+    statusLockUntil = Date.now() + 6000;
+  } finally {
+    btn.textContent = label;
+    btn.classList.remove('active');
+  }
 }
 
 function downloadReport(stats) {
