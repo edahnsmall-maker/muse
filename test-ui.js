@@ -1458,6 +1458,55 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ one-key transitions record on the session clock: ${out.kinds.join(' ')}`);
   }
 
+  // 21c) STOP MUST NOT BE OVERTAKEN BY START, and a start right after a stop must not
+  //      be swallowed. Found by accident: turning Training on now arms a recording, and
+  //      that made a later test see a session it had not created.
+  //
+  //      ensureRecording checked recArmed once at the top and then awaited
+  //      Recorder.open() and startSession(). Stopping during those awaits — two
+  //      keystrokes apart in practice — left the guard already passed, so it published
+  //      a fresh recSession that nothing would ever end(): the button says "Record"
+  //      while a live session writes to IndexedDB for the rest of the page's life.
+  //      And the old `if (recStarting) return` meant the NEXT start was dropped on the
+  //      floor, leaving "Waiting for data…" on screen with nothing recording.
+  {
+    const out = await page.evaluate(async () => {
+      recArmed = false; recSession = null; recError = null; lastRecSession = null;
+
+      // Stop while the session is still opening.
+      const starting = startRecording();
+      await stopRecording({ summary: false });
+      await starting;
+      await new Promise((r) => setTimeout(r, 250));
+      const orphan = { armed: recArmed, session: !!recSession,
+        button: document.getElementById('recBtn').textContent };
+
+      // Now start again immediately. This must actually record.
+      await startRecording();
+      await new Promise((r) => setTimeout(r, 250));
+      const restarted = { armed: recArmed, session: !!recSession,
+        id: recSession && recSession.id,
+        button: document.getElementById('recBtn').textContent };
+
+      const id = recSession && recSession.id;
+      await stopRecording({ summary: false });
+      if (id != null && recDb) await Recorder.deleteSession(recDb, id);
+      recArmed = false; recSession = null; lastRecSession = null; selfRating = null;
+      document.getElementById('summary').classList.remove('show');
+      return { orphan, restarted };
+    });
+
+    assert.strictEqual(out.orphan.armed, false, 'the stop must hold');
+    assert.strictEqual(out.orphan.session, false,
+      'a session opened after the stop must NOT be published — it would write to the'
+      + ` database forever with nothing to end it (button read "${out.orphan.button}")`);
+    assert.ok(out.restarted.armed && out.restarted.session,
+      'and a start immediately after a stop must really record, not be swallowed by the'
+      + ` previous attempt still being in flight (button read "${out.restarted.button}")`);
+    console.log('✓ stop cannot be overtaken by an in-flight start, and the next start'
+      + ' still records');
+  }
+
   // 22b) A MARK MADE WHILE NOTHING IS RECORDING MUST SAY SO.
   //      markerLog.add() always succeeds, so the screen flash fires and the on-screen
   //      count goes up whether or not a session exists. A whole sit was tapped through
@@ -1903,6 +1952,25 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(groups[1].pills.some((p) => /^Timer/.test(p)), 'and Timer');
     assert.ok(groups[2].pills.some((p) => /^Connect$/.test(p)), 'Connect belongs with Session');
     assert.ok(groups[2].pills.some((p) => /^Saved sessions$/.test(p)));
+    /* THE LAB HAS TO BE REACHABLE. It was only openable by knowing to type lab.html
+       into the address bar, which is not a way to reach anything — the whole validation
+       side of this project was effectively hidden. A real <a> with target=_blank, not a
+       click handler that navigates: opening it must not tear down a recording sit. */
+    const lab = await page.evaluate(() => {
+      const a = document.getElementById('labLink');
+      if (!a) return null;
+      return { tag: a.tagName, href: a.getAttribute('href'), target: a.target,
+        text: a.textContent.trim(), inSession: !!a.closest('.pillGroup')
+          && a.closest('.pillGroup').querySelector('.groupLabel').textContent === 'Session',
+        underlined: getComputedStyle(a).textDecorationLine };
+    });
+    assert.ok(lab, 'the bar must offer a way into the analysis lab');
+    assert.strictEqual(lab.tag, 'A', 'a real link, so it can open in a new tab');
+    assert.strictEqual(lab.href, 'lab.html');
+    assert.strictEqual(lab.target, '_blank',
+      'opening the lab must not navigate away from a sit that may be recording');
+    assert.ok(lab.inSession, 'and it belongs with the Session controls');
+    assert.strictEqual(lab.underlined, 'none', 'styled as a pill, not as a link');
     // Every pill must still be somewhere: a reorganisation that loses a control is worse
     // than a messy bar.
     const all = groups.flatMap((g) => g.pills);
@@ -2080,15 +2148,25 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         const el = document.getElementById(id);
         return { id, present: !!el, grip: !!(el && el.querySelector(':scope > .panelGrip')) };
       };
-      const r = ['readout', 'dataPanel', 'modeBar', 'armedBar', 'trainClock'].map(check);
+      const r = ['readout', 'dataPanel', 'modeBar', 'armedBar'].map(check);
       // While we are here: the training pill must LIGHT UP, not just change its word.
       const pill = document.getElementById('trainToggle');
       const on = { active: pill.classList.contains('active'), text: pill.textContent };
+      // The mark hint belongs at the TOP of this panel, with the keys it describes,
+      // rather than in a separate corner element under a large elapsed clock.
+      const hint = armedBarEl.querySelector('.armedHint');
+      const firstChip = armedBarEl.querySelector('.a');
+      const hintFirst = !!(hint && firstChip
+        && hint.compareDocumentPosition(firstChip) & Node.DOCUMENT_POSITION_FOLLOWING);
       setTrainingMode(false);
       const off = { active: pill.classList.contains('active'), text: pill.textContent };
-      // And the clock must be clear of the Record button's corner.
-      const clock = getComputedStyle(document.getElementById('trainClock'));
-      return { r, on, off, clockLeft: clock.left, clockRight: clock.right };
+      // Turning training ON now starts a recording (see setTrainingMode), so this test
+      // has to put that back or it leaks an armed recorder into everything after it.
+      const autoArmed = recArmed;
+      await stopRecording({ summary: false });
+      recArmed = false; recSession = null; lastRecSession = null; selfRating = null;
+      return { r, on, off, autoArmed, hintText: hint && hint.textContent,
+        hintFirst, clockGone: !document.getElementById('trainClock') };
     });
 
     for (const p of out.r) {
@@ -2099,10 +2177,20 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     }
     assert.ok(out.on.active, `the Training pill must highlight when on (text: "${out.on.text}")`);
     assert.ok(!out.off.active, 'and stop highlighting when off');
-    assert.ok(out.clockRight === 'auto' || parseFloat(out.clockLeft) >= 0,
-      `the training clock must be anchored from the left, away from the Record button`
-      + ` (left: ${out.clockLeft}, right: ${out.clockRight})`);
-    console.log('✓ all five reported panels drag, grips survive re-renders, Training highlights');
+    // Asked for: drop the elapsed clock, and put the hint at the top of the word panel.
+    // A running clock is a thing to watch, which is the opposite of what a sit needs,
+    // and the Record pill already shows elapsed time for anyone who wants it.
+    assert.ok(out.clockGone, 'the separate elapsed-time clock element must be gone');
+    assert.match(out.hintText || '', /press\s*M\s*to mark/i,
+      `the armed panel must carry the mark hint (got ${JSON.stringify(out.hintText)})`);
+    assert.ok(out.hintFirst, 'and it must be at the TOP, above the categories');
+    // Asked for: "when you hit training, maybe it auto records." Training exists to
+    // gather data, and every label it collects is worthless if nothing is saving them.
+    assert.ok(out.autoArmed,
+      'turning Training on must start recording — a sit tapped through with nothing'
+      + ' armed produces marks that look identical to saved ones and are not kept');
+    console.log('✓ four panels drag, grips survive re-renders, Training highlights,'
+      + ' and the mark hint heads the word panel');
   }
 
   // 28) THE TIMER RUNNING OUT MUST STOP THE RECORDING. Reported: it did not, and the

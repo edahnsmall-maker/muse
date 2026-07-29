@@ -540,4 +540,35 @@ const VizCore = require('./public/viz-core.js');
     + ' in it comes from the renderer\u2019s own palette');
 }
 
+/*
+ * AND EVERY LEGEND'S OWN SWATCHES MUST BE TELLABLE APART.
+ *
+ * test-ui.js already enforces a 60-unit RGB minimum on the chart series, for a reason it
+ * records: colours that collide have twice made a correctly-drawn line look like a dead
+ * metric. Putting the same palettes into on-canvas legends extends that exposure — and
+ * Eclipse shipped a key whose TP9 and TP10 swatches were 51 apart, so two of the four
+ * sensors read as one colour sitting right next to each other. Two swatches you cannot
+ * distinguish are worse than none: you conclude a sensor is duplicated or dead.
+ */
+{
+  const MIN = 60;
+  const dist = (a, b) => Math.round(Math.sqrt(a.reduce((s, v, i) => s + (v - b[i]) ** 2, 0)));
+  let closest = { d: Infinity };
+  for (const m of VizCore.visibleModes()) {
+    const sw = VizCore.legendFor(m.key, { composites: false }).filter((e) => e.color);
+    for (let i = 0; i < sw.length; i++) {
+      for (let j = i + 1; j < sw.length; j++) {
+        const d = dist(sw[i].color, sw[j].color);
+        if (d < closest.d) closest = { d, mode: m.label, a: sw[i].label, b: sw[j].label };
+        assert.ok(d >= MIN,
+          `${m.label}: "${sw[i].label}" and "${sw[j].label}" are only ${d} apart in RGB`
+          + ` (min ${MIN}). Side by side in the key they read as the same colour, so a`
+          + ' sensor looks duplicated or dead.');
+      }
+    }
+  }
+  console.log(`\u2713 every legend's swatches are distinguishable (closest: ${closest.mode}`
+    + ` ${closest.a}/${closest.b} at ${closest.d})`);
+}
+
 console.log('\nAll viz-core tests passed.');

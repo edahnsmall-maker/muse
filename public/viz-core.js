@@ -37,11 +37,18 @@
   // near-black trends toward pale grey — that was the real reason earlier
   // versions looked colourless.) Channel order is preserved so each sensor
   // still owns one hue.
+  /* Every pair must be TELLABLE APART now that these are keyed in a legend.
+     TP9 magenta and TP10 rose were [255,55,165] and [255,80,120] — 51 apart in RGB,
+     below the 60 minimum test-ui.js already enforces on the chart palette, and side by
+     side in the Eclipse key they read as the same colour. Two swatches you cannot
+     distinguish are worse than none: you conclude a sensor is duplicated or dead.
+     TP10 moved to a cooler rose-violet, which keeps the warm corona intact — every hue
+     here still has a red channel at or near full — while separating it from TP9. */
   const CORONA_COLORS = [
     [255, 55, 165],  // TP9  — magenta
     [255, 125, 55],  // AF7  — orange
     [255, 196, 70],  // AF8  — gold
-    [255, 80, 120],  // TP10 — rose
+    [232, 90, 210],  // TP10 — rose-violet
   ];
 
   /*

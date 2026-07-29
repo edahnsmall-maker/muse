@@ -229,6 +229,9 @@
     background: rgba(10,12,20,.6); color: rgba(255,255,255,.5); cursor: pointer;
     white-space: nowrap; }
   #armedBar .a b { font-family: ui-monospace, monospace; opacity: .8; margin-right: 6px; }
+  .armedHint { font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+    color: rgba(255,255,255,.38); padding: 0 2px 3px; }
+  .armedHint b { font-family: ui-monospace, monospace; color: rgba(255,255,255,.6); }
   #armedBar .a.hot { color: #dfe6ff; border-color: rgba(255,255,255,.3); }
   #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
     padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
@@ -321,6 +324,10 @@
     user-select: none; transition: background .25s, color .25s, border-color .25s, box-shadow .25s;
     backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px); white-space: nowrap; }
   .pill:hover { color: rgba(255,255,255,.92); }
+  /* The lab pill is a real <a> so it can open in a new tab, keeping a recording sit
+     alive. `a { color: inherit }` above already handles the colour; this only removes
+     the underline so it sits in the bar like every other pill. */
+  a.pill { text-decoration: none; }
   .pill.active { color: #f7fbff; border-color: var(--glass-line-hot);
     background: linear-gradient(180deg, rgba(134,225,255,.18), rgba(255,255,255,.06));
     box-shadow: 0 0 22px rgba(102,211,255,.20), 0 1px 0 rgba(255,255,255,.14) inset; }
@@ -355,25 +362,15 @@
   /* Training mode: a visible clock so you can make mental notes of when
      things happen, plus a marker affordance. Off by default — a clock is a
      distraction unless you are deliberately gathering data. */
-  /* TOP LEFT, not top right. The right-hand column is already three deep there:
-     #recBtn is pinned at top/right 14px, #readout starts at top 11vmin right 4vmin,
-     and the clock sat under the first and behind the second. Nothing competes on the
-     left at this height. */
-  #trainClock { position: absolute; top: 3.5vmin; left: 5vmin; text-align: left;
-    color: rgba(255,255,255,.55); font-variant-numeric: tabular-nums;
-    font-size: 26px; letter-spacing: .04em; display: none; }
-  #trainClock.show { display: block; }
-  #trainClock small { display: block; font-size: 11px; letter-spacing: .12em;
-    text-transform: uppercase; opacity: .5; margin-top: 2px; }
+  /* THE ELAPSED CLOCK IS GONE. It was a large 0:00 in the corner whose only other
+     content was the "press M to mark" hint, which now sits at the top of the armed-tap
+     panel with the keys it describes. A running clock is a thing to watch, which is the
+     opposite of what a sit needs, and the Record pill already shows elapsed time for
+     anyone who wants it. */
   #markFlash { position: fixed; inset: 0; pointer-events: none; opacity: 0;
     background: radial-gradient(circle at 50% 50%, rgba(255,255,255,.16), transparent 62%);
     transition: opacity .45s; z-index: 15; }
   #markFlash.on { opacity: 1; transition: opacity .05s; }
-  /* Follows the clock to the left, since it is the clock's second line in effect. */
-  #markCount { position: absolute; top: calc(3.5vmin + 52px); left: 5vmin;
-    color: rgba(255,255,255,.4); font-size: 11px; letter-spacing: .1em;
-    text-align: left; display: none; }
-  #markCount.show { display: block; }
   .markRow { display: flex; gap: 8px; align-items: center; width: 100%;
     max-width: 620px; margin-bottom: 8px; }
   .markRow .stamp { font-variant-numeric: tabular-nums; opacity: .6; font-size: 12px; min-width: 42px; }
@@ -477,8 +474,6 @@
 <div id="modeBar"></div>
 <div id="patternBar"></div>
 <div id="breathCue"></div>
-<div id="trainClock"><span id="clockTime">0:00</span><small>press M to mark</small></div>
-<div id="markCount"></div>
 <div id="markFlash"></div>
 <div id="markPrompt">
   <div id="markPromptHead">marked at <b id="markStamp">0:00</b></div>
@@ -571,6 +566,12 @@
         <span class="pills">
           <span class="pill" id="summaryLink">Summarize session</span>
           <span class="pill" id="sessionsLink">Saved sessions</span>
+          <!-- The lab was reachable only by knowing to type lab.html into the address
+               bar, which is not a way to reach anything. It is a separate page on
+               purpose — it reads exported .zip archives from disk and never touches the
+               live session — so this opens a new tab rather than navigating away from a
+               sit that might be recording. -->
+          <a class="pill" id="labLink" href="lab.html" target="_blank" rel="noopener">Analysis lab</a>
           <span class="pill" id="devToggle">Connect</span>
         </span>
       </span>
@@ -901,26 +902,78 @@ let recArmed = false;
 // summary, so without this the closing note would have nothing to attach to.
 // addNote() still works on an ended session — it writes straight to the note store.
 let lastRecSession = null;
+/*
+ * Bumped by every arm and every disarm, so an in-flight ensureRecording can tell
+ * whether the recording it is opening is still the one that was asked for.
+ *
+ * WITHOUT THIS, STOPPING COULD BE OVERTAKEN BY STARTING. ensureRecording checks
+ * recArmed once, at the top, and then awaits Recorder.open() and startSession(). Stop
+ * the recording during those awaits — which is a couple of keystrokes, and now happens
+ * by itself since turning Training on arms one — and the guard has already passed: the
+ * function goes on to publish a fresh recSession that nothing will ever end(). The UI
+ * says "Record", and a live session writes to IndexedDB for the rest of the page's life.
+ */
+let recGeneration = 0;
+
+/*
+ * The attempt currently in flight, if any. A BOOLEAN WAS NOT ENOUGH.
+ *
+ * The old `if (recStarting) return` swallowed a start that arrived while a previous
+ * attempt was still opening the database: the caller got null, nothing retried, and the
+ * button sat on "Waiting for data…" for the rest of the sit with nothing recording.
+ * That is a couple of keystrokes apart in practice — stop, then start again — and it is
+ * now reachable by itself, since turning Training on arms a recording. Holding the
+ * promise lets a later caller wait for the earlier attempt to settle and then try again
+ * for its own generation.
+ */
+let recStartPromise = null;
+
+async function openRecordingSession(generation) {
+  recDb = await Recorder.open();
+  // Ask not to be evicted before a multi-day retreat, not after.
+  await Recorder.persist();
+  const session = await Recorder.startSession(recDb, {
+    startedAt: sessionClock(),
+    userAgent: navigator.userAgent,
+  });
+  // Disarmed while we were opening. End the session we just created rather than
+  // publishing it — an orphan left open is worse than no recording, because it keeps
+  // writing and never gets flushed or closed.
+  if (generation !== recGeneration || !recArmed) {
+    await session.end();
+    return null;
+  }
+  return session;
+}
 
 async function ensureRecording() {
-  if (!recArmed) return null;             // nothing records unless armed
-  if (recSession || recStarting || recError) return recSession;
-  recStarting = true;
-  try {
-    recDb = await Recorder.open();
-    // Ask not to be evicted before a multi-day retreat, not after.
-    await Recorder.persist();
-    recSession = await Recorder.startSession(recDb, {
-      startedAt: sessionClock(),
-      userAgent: navigator.userAgent,
-    });
-  } catch (err) {
-    // Recording is additive. A browser in private mode, or one that refuses the
-    // database, must still be able to run a sit — it just cannot keep it.
-    recError = (err && err.message) || 'unavailable';
-    console.log('[rec] recording unavailable:', recError);
-  } finally {
-    recStarting = false;
+  // Two passes at most: one to let an in-flight attempt settle, one to make our own.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (!recArmed) return null;           // nothing records unless armed
+    if (recSession || recError) return recSession;
+    if (recStartPromise) {
+      // Someone else is already opening one. Wait, then loop: if their session
+      // belongs to this generation it is ours too, and if it was invalidated by a
+      // stop/start in between, the second pass opens a fresh one.
+      await recStartPromise.catch(() => {});
+      continue;
+    }
+    const generation = recGeneration;
+    recStarting = true;
+    recStartPromise = openRecordingSession(generation);
+    try {
+      const session = await recStartPromise;
+      if (session) recSession = session;
+    } catch (err) {
+      // Recording is additive. A browser in private mode, or one that refuses the
+      // database, must still be able to run a sit — it just cannot keep it.
+      recError = (err && err.message) || 'unavailable';
+      console.log('[rec] recording unavailable:', recError);
+    } finally {
+      recStartPromise = null;
+      recStarting = false;
+    }
+    return recSession;
   }
   return recSession;
 }
@@ -1357,9 +1410,6 @@ function computeFeatures(result) {
 // perishable part, the words are not.
 const markerLog = new Markers.MarkerLog();
 let trainingMode = false;
-const trainClockEl = document.getElementById('trainClock');
-const clockTimeEl = document.getElementById('clockTime');
-const markCountEl = document.getElementById('markCount');
 const markFlashEl = document.getElementById('markFlash');
 
 function sessionSeconds() {
@@ -1460,17 +1510,43 @@ markDurEl.addEventListener('keydown', (e) => {
   e.stopPropagation();
 });
 
+/*
+ * The mark tally lives in the armed panel's hint line, not in its own corner element.
+ *
+ * It used to sit at top-left under the training clock. With the clock gone it moved up
+ * to top-left proper — which is exactly where every visual now draws its legend, so the
+ * two would have overlapped. It belongs next to "press M to mark" anyway: the hint and
+ * the count are one sentence about the same thing.
+ */
 function renderMarkCount() {
+  const el = armedBarEl.querySelector('.armedHint');
+  if (!el) return;
   const n = markerLog.length;
-  markCountEl.textContent = n ? `${n} mark${n === 1 ? '' : 's'}` : '';
-  markCountEl.classList.toggle('show', trainingMode && n > 0);
+  el.innerHTML = 'press <b>M</b> to mark'
+    + (n ? ` \u00b7 ${n} mark${n === 1 ? '' : 's'}` : '');
 }
 
 function setTrainingMode(on) {
+  const wasOn = trainingMode;
   trainingMode = !!on;
-  trainClockEl.classList.toggle('show', trainingMode);
   renderArmedBar();
   renderMarkCount();
+  /* TURNING TRAINING ON STARTS RECORDING.
+   * Training mode exists to gather data, and every label it collects is worthless if
+   * nothing is saving them. This is the exact failure that already happened once: a
+   * whole sit was tapped through with training on and nothing armed, and the marks
+   * looked identical to saved ones because markerLog.add always succeeds.
+   *
+   * Turning it OFF deliberately does not stop recording. Stopping is what packages the
+   * sit and opens the summary, and having that happen as a side effect of tidying the
+   * screen mid-sit would be worse than the problem it solves. The Record pill remains
+   * the one thing that ends a recording.
+   */
+  if (trainingMode && !wasOn && !recArmed && !recError) {
+    startRecording();
+    setStatus('training on · recording started');
+    statusLockUntil = Date.now() + 2600;
+  }
   const el = document.getElementById('trainToggle');
   if (el) {
     el.innerHTML = `Training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
@@ -2533,6 +2609,7 @@ const recBtnEl = document.getElementById('recBtn');
 async function startRecording() {
   if (recArmed) return;
   recArmed = true;
+  recGeneration++;
   recError = null;
   // A fresh clock per recording. Without this, a second sit in the same page load
   // would be stamped against the first one's start and every offset would be wrong.
@@ -2557,6 +2634,7 @@ async function startRecording() {
 async function stopRecording({ summary = true } = {}) {
   if (!recArmed) return;
   recArmed = false;
+  recGeneration++;    // invalidates any ensureRecording still opening a session
   const sess = recSession;
   recSession = null;
   lastRecSession = sess;
@@ -2917,11 +2995,18 @@ function renderArmedBar() {
   if (!armedBarEl.isConnected) return;
   armedBarEl.hidden = !trainingMode;
   if (!trainingMode) return;
-  armedBarEl.innerHTML = Probes.TAP_CATEGORIES.map((t) =>
+  /* The hint lives at the TOP OF THIS PANEL rather than in a separate corner element.
+     It used to be the small line under a large 0:00 clock in the opposite corner —
+     two pieces of furniture for one sentence, and the clock itself was not wanted:
+     an elapsed-time readout is a thing to watch, which is the opposite of what a sit
+     needs. The sentence belongs with the keys it is talking about. */
+  armedBarEl.innerHTML = '<div class="armedHint">press <b>M</b> to mark</div>'
+    + Probes.TAP_CATEGORIES.map((t) =>
     `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
     + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}</b>${escapeHtml(t.label)}`
     + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('');
   ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
+  renderMarkCount();       // the hint carries the tally, and was just rebuilt with it
   armedBarEl.querySelectorAll('[data-arm]').forEach((el) => {
     el.addEventListener('click', () => { armedTap = el.dataset.arm; renderArmedBar(); });
   });
@@ -3442,10 +3527,6 @@ setInterval(() => {
   readoutRowsEl.innerHTML =
     topRows.join('') + '<div style="height:12px"></div>' + tail.join('');
   renderViewSwitch();
-  if (trainingMode) {
-    const t = sessionSeconds();
-    clockTimeEl.textContent = `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
-  }
 
   tickCount++;
   if (tickCount % 4 === 0) {
@@ -3485,7 +3566,6 @@ const DRAGGABLE_PANELS = [
   ['dataPanel', document.getElementById('dataPanel')],
   ['modeBar', modeBarEl],
   ['armedBar', armedBarEl],
-  ['trainClock', trainClockEl],
 ];
 for (const [key, el] of DRAGGABLE_PANELS) {
   if (!el) continue;

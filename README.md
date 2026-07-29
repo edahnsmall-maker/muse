@@ -617,6 +617,32 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### Training mode
+
+Turning Training on does three things: shows the tap-category panel, starts the probe
+schedule, and **starts recording**. The recording is the point — every label it collects
+is worthless if nothing is saving them, and a whole sit was once tapped through with
+nothing armed, producing marks that looked identical to saved ones.
+
+Turning Training *off* deliberately does not stop the recording. Stopping is what
+packages the sit and opens the summary, and having that happen as a side effect of tidying
+the screen mid-sit would be worse than the problem it solves. The Record pill stays the
+one thing that ends a recording.
+
+The elapsed-time clock is gone. Its only other content was the "press M to mark" hint,
+which now heads the tap panel alongside the mark tally, with the keys it describes. A
+running clock is a thing to watch, which is the opposite of what a sit needs, and the
+Record pill already shows elapsed time.
+
+One race worth knowing about, found because Training now arms a recording by itself:
+`ensureRecording` checked `recArmed` once and then awaited `Recorder.open()` and
+`startSession()`. Stopping during those awaits — two keystrokes apart in practice — left
+the guard already passed, so it published a session nothing would ever `end()`: the button
+reads "Record" while a live session writes to IndexedDB for the rest of the page's life.
+A generation counter now invalidates an in-flight open, and the in-flight attempt is held
+as a promise rather than a boolean so a start immediately after a stop waits and retries
+instead of being dropped.
+
 ### A dead electrode draws nothing
 
 If a channel reads **Noisy**, its 1-second window swung more than `ARTIFACT_PTP_UV`
