@@ -2159,7 +2159,7 @@ function createZenVisual(canvas) {
       lctx.clearRect(0, 0, BW, BH);
       return VizCore.MODES[modeIndex];
     },
-    cycleMode() { return this.setMode(VizCore.nextMode(modeIndex)); },
+    cycleMode(dir = 1) { return this.setMode(VizCore.nextMode(modeIndex, dir)); },
     currentMode() { return VizCore.MODES[modeIndex]; },
     // Follows the data panel's Sensors/Composites switch — see seriesMode.
     setSeries(which) {

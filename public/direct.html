@@ -68,6 +68,22 @@
      markup has indentation between the buttons — that case is handled in JS by
      never leaving the panel without content. */
   .popover:empty { display: none; }
+  /* PANEL GRIP — the strip you drag a panel by.
+     Every floating panel here is positioned at a fixed corner, and with seven of them
+     the combinations that overlap outnumber anything worth hand-tuning in CSS: Live
+     feed opened directly over its own pill, and the training clock landed under the
+     Record button. So the panels move.
+     Faint by default and legible on hover: it must be findable when looked for and
+     invisible when sitting. */
+  .panelGrip { cursor: grab; user-select: none; touch-action: none;
+    display: flex; align-items: center; justify-content: center; gap: 3px;
+    height: 14px; margin: -4px 0 4px; opacity: .22; transition: opacity .2s;
+    font: 10px/1 ui-monospace, monospace; letter-spacing: 2px;
+    color: rgba(255,255,255,.85); }
+  .panelGrip::before { content: '⠿⠿⠿'; }
+  .panelGrip:hover { opacity: .7; }
+  .dragging { cursor: grabbing; transition: none !important; }
+  .dragging .panelGrip { cursor: grabbing; opacity: .7; }
   .popoverNote { font-size: 12px; line-height: 1.45; max-width: 240px;
     color: rgba(255,255,255,.7); }
   #timerPicker { display: flex; gap: 8px; }
@@ -199,7 +215,14 @@
     color: rgba(255,255,255,.38); }
   /* The armed tap category, always visible while training so it is never a guess
      which key does what. */
-  #armedBar { position: fixed; left: 16px; bottom: 92px; z-index: 45; display: flex;
+  /* VERTICALLY CENTRED on the left, not anchored to the bottom.
+     The vocabulary grew from three transitions to nine categories, so this column is
+     now ~265px tall and `bottom: 92px` ran it straight up into the controls bar — the
+     last two chips sat on top of the Practice group. Centred, it clears the training
+     clock above and the bar below at any ordinary window height, and max-height keeps
+     it inside a short one. Draggable either way; this is just a sane starting point. */
+  #armedBar { position: fixed; left: 16px; top: 50%; transform: translateY(-50%);
+    max-height: 62vh; overflow-y: auto; z-index: 45; display: flex;
     flex-direction: column; gap: 5px; font: 11px/1.4 Inter, system-ui, sans-serif; }
   #armedBar[hidden] { display: none; }
   #armedBar .a { padding: 4px 9px; border-radius: 7px; border: 1px solid rgba(255,255,255,.12);
@@ -332,7 +355,11 @@
   /* Training mode: a visible clock so you can make mental notes of when
      things happen, plus a marker affordance. Off by default — a clock is a
      distraction unless you are deliberately gathering data. */
-  #trainClock { position: absolute; top: 3.5vmin; right: 5vmin; text-align: right;
+  /* TOP LEFT, not top right. The right-hand column is already three deep there:
+     #recBtn is pinned at top/right 14px, #readout starts at top 11vmin right 4vmin,
+     and the clock sat under the first and behind the second. Nothing competes on the
+     left at this height. */
+  #trainClock { position: absolute; top: 3.5vmin; left: 5vmin; text-align: left;
     color: rgba(255,255,255,.55); font-variant-numeric: tabular-nums;
     font-size: 26px; letter-spacing: .04em; display: none; }
   #trainClock.show { display: block; }
@@ -342,9 +369,10 @@
     background: radial-gradient(circle at 50% 50%, rgba(255,255,255,.16), transparent 62%);
     transition: opacity .45s; z-index: 15; }
   #markFlash.on { opacity: 1; transition: opacity .05s; }
-  #markCount { position: absolute; top: calc(3.5vmin + 52px); right: 5vmin;
+  /* Follows the clock to the left, since it is the clock's second line in effect. */
+  #markCount { position: absolute; top: calc(3.5vmin + 52px); left: 5vmin;
     color: rgba(255,255,255,.4); font-size: 11px; letter-spacing: .1em;
-    text-align: right; display: none; }
+    text-align: left; display: none; }
   #markCount.show { display: block; }
   .markRow { display: flex; gap: 8px; align-items: center; width: 100%;
     max-width: 620px; margin-bottom: 8px; }
@@ -581,6 +609,7 @@
 <script src="labels.js"></script>
 <script src="trials.js"></script>
 <script src="probes.js"></script>
+<script src="panels.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -640,6 +669,7 @@ function renderModeBar() {
     return `<div class="modeRow"><span class="modeRowTitle">${label}</span>${pills}</div>`;
   };
   modeBarEl.innerHTML = row('core', 'Visuals') + row('glass', 'Glass Studies');
+  ensureGrip(modeBarEl);   // innerHTML above just destroyed the previous one
   modeBarEl.querySelectorAll('.pill').forEach((el) => {
     el.addEventListener('click', () => {
       const idx = visual.modes().findIndex((m) => m.key === el.dataset.mode);
@@ -690,12 +720,20 @@ addEventListener('keydown', (e) => {
     if (!document.fullscreenElement) document.documentElement.requestFullscreen();
     else document.exitFullscreen();
   }
-  if (e.key === 'v' || e.key === 'V') {
-    visual.cycleMode();
+  /* NEXT VISUAL is `]`, not V.
+   * V was bound twice in this one handler: first to cycleMode, then to startVoiceNote.
+   * Both fired, and only the voice branch checked `e.repeat` — so holding V to speak
+   * also walked through every visualisation, one per key-repeat, while recording.
+   * A letter shared between a hold gesture and an action cannot be made safe by
+   * ordering the branches; the collision itself had to go. `]` reads as "next" and
+   * cannot collide with a labelling key. */
+  if (e.key === ']' || e.key === '[') {
+    visual.cycleMode(e.key === '[' ? -1 : 1);
     const mode = visual.currentMode();
     setStatus(`${mode.label} — ${mode.blurb}`);
     statusLockUntil = Date.now() + 2200;
     renderModeBar();
+    return;
   }
   if (e.key === 'm' || e.key === 'M') { e.preventDefault(); openMarkPrompt(); }
   if ((e.key === 'v' || e.key === 'V') && !e.repeat) { startVoiceNote(); return; }
@@ -1372,7 +1410,13 @@ function setTrainingMode(on) {
   renderArmedBar();
   renderMarkCount();
   const el = document.getElementById('trainToggle');
-  if (el) el.innerHTML = `Training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
+  if (el) {
+    el.innerHTML = `Training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
+    // The word changed but the pill did not light up, so at a glance — which is the
+    // only kind of glance available mid-sit — the bar looked the same either way.
+    // Every other stateful pill here carries `.active`; this one was simply missed.
+    el.classList.toggle('active', trainingMode);
+  }
 }
 
 function markerContextFor(m) {
@@ -2324,9 +2368,17 @@ const voiceBtn = document.getElementById('voiceNote');
 let mediaRecorder = null;
 let voiceChunks = [];
 let voiceStartedAt = null;
+/* IS THE BUTTON (or the key) STILL DOWN?
+ * startVoiceNote awaits getUserMedia, which takes long enough that a short press
+ * finishes first. stopVoiceNote would then find `mediaRecorder === null`, do nothing,
+ * and the recorder would start a moment later with nobody left to stop it — the mic
+ * stays open for the rest of the sit. The release has to be remembered, not just acted
+ * on, so the start path can check whether it is still wanted. */
+let voiceHeld = false;
 
 async function startVoiceNote() {
   if (mediaRecorder || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  voiceHeld = true;
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     // Let the browser pick the container. Safari and Chrome disagree about what
@@ -2363,6 +2415,9 @@ async function startVoiceNote() {
     mediaRecorder.start();
     voiceBtn.classList.add('rec');
     voiceBtn.innerHTML = 'Listening\u2026 release to save';
+    // Released while the microphone was still opening. Honour it now rather than
+    // leaving a recorder running that nothing holds a reason to stop.
+    if (!voiceHeld) stopVoiceNote();
   } catch (err) {
     // A refused microphone is a permission problem, not a bug. Say which.
     setStatus(`microphone unavailable: ${escapeHtml((err && err.message) || 'refused')}`);
@@ -2371,15 +2426,28 @@ async function startVoiceNote() {
 }
 
 function stopVoiceNote() {
+  voiceHeld = false;
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
 }
 
-// Pointer events rather than mouse/touch pairs: one code path for finger and
-// mouse, and `pointercancel` covers the phone taking the gesture away mid-press.
-voiceBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); startVoiceNote(); });
+/* Pointer events rather than mouse/touch pairs: one code path for finger and
+ * mouse, and `pointercancel` covers the phone taking the gesture away mid-press.
+ *
+ * POINTER CAPTURE, and there was no `pointerleave` before it for a reason.
+ * The label changes from "Hold to speak V" to "Listening… release to save" the instant
+ * recording starts, so the pill grows by about 40px and re-flows the bar. The pointer,
+ * which has not moved, is now outside the element it pressed — `pointerleave` fired and
+ * stopped the recording immediately. That is the "it flashes and disappears".
+ * Capturing the pointer routes every subsequent event for this gesture to this element
+ * regardless of what moves underneath it, which is also the correct behaviour for a
+ * press-and-hold in general: sliding a finger a few pixels must not cancel it. */
+voiceBtn.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  try { voiceBtn.setPointerCapture(e.pointerId); } catch { /* older engines: no capture */ }
+  startVoiceNote();
+});
 voiceBtn.addEventListener('pointerup', stopVoiceNote);
 voiceBtn.addEventListener('pointercancel', stopVoiceNote);
-voiceBtn.addEventListener('pointerleave', stopVoiceNote);
 
 /* --- Saved sessions --------------------------------------------------------- */
 let recQuota = null;
@@ -2780,6 +2848,7 @@ function renderArmedBar() {
     `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
     + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}</b>${escapeHtml(t.label)}`
     + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('');
+  ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
   armedBarEl.querySelectorAll('[data-arm]').forEach((el) => {
     el.addEventListener('click', () => { armedTap = el.dataset.arm; renderArmedBar(); });
   });
@@ -3311,6 +3380,51 @@ setInterval(() => {
     logSessionSample(result, channels);  // whole-session log, for the summary
   }
 }, 250);
+
+/* --- Draggable panels -------------------------------------------------------
+ * Reported from real use, and both are the same problem rather than two:
+ *   * Live feed opens at bottom-left, which is where the "Live feed" pill is, so it
+ *     covered its own off switch.
+ *   * The training clock sat under the Record button with Metrics across its right.
+ * A fixed corner for each panel cannot be right for every combination of panels that
+ * happens to be open, and there are now enough panels that hand-tuning the cases is
+ * not a strategy. The person sitting there can see what is in the way.
+ *
+ * See panels.js for the positioning mechanics. This file only decides WHICH panels
+ * move and WHERE the grip goes.
+ */
+function ensureGrip(el) {
+  // Idempotent, and re-inserted after every innerHTML rebuild rather than held as a
+  // reference — see the note in Panels.makeDraggable about why the listeners are on
+  // the panel and not on the grip.
+  let g = el.querySelector(':scope > .panelGrip');
+  if (!g) {
+    g = document.createElement('div');
+    g.className = 'panelGrip';
+    g.title = 'Drag to move this panel · double-click to put it back';
+  }
+  if (el.firstChild !== g) el.insertBefore(g, el.firstChild);
+  return g;
+}
+
+const DRAGGABLE_PANELS = [
+  ['readout', readoutEl],
+  ['dataPanel', document.getElementById('dataPanel')],
+  ['modeBar', modeBarEl],
+  ['armedBar', armedBarEl],
+  ['trainClock', trainClockEl],
+];
+for (const [key, el] of DRAGGABLE_PANELS) {
+  if (!el) continue;
+  ensureGrip(el);
+  Panels.makeDraggable(el, { key, from: '.panelGrip' });
+}
+// A position saved on a laptop is off-screen on a phone, and a panel that is
+// off-screen cannot be dragged back — so re-clamping on resize is the recovery path,
+// not a nicety. Rotating the phone is the common case.
+addEventListener('resize', () => {
+  Panels.reclampAll(DRAGGABLE_PANELS.map(([, el]) => el).filter(Boolean));
+});
 </script>
 </body>
 </html>

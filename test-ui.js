@@ -1740,6 +1740,199 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ the bar is 3 labelled groups: ${groups.map((g) => `${g.label} (${g.pills.length})`).join(', ')}`);
   }
 
+  // 27b) V IS THE VOICE NOTE AND NOTHING ELSE.
+  //      V was bound twice inside one keydown handler: to visual.cycleMode and then to
+  //      startVoiceNote. Both ran, and only the voice branch guarded `e.repeat` — so
+  //      holding V to speak walked through every visualisation, one per key-repeat.
+  //      Ordering the branches cannot fix that; the collision itself had to go.
+  {
+    const out = await page.evaluate(async () => {
+      const modeOf = () => visual.currentMode().key;
+      const before = modeOf();
+      // Hold V the way the browser reports a held key: one event, then repeats.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true }));
+      for (let i = 0; i < 5; i++) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', repeat: true, bubbles: true }));
+      }
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: 'v', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 40));
+      const afterHold = modeOf();
+
+      // `]` and `[` are the cycle keys now, and `[` must go back rather than forward
+      // through six visuals to arrive at the previous one.
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true }));
+      const afterNext = modeOf();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true }));
+      const afterPrev = modeOf();
+      return { before, afterHold, afterNext, afterPrev };
+    });
+
+    assert.strictEqual(out.afterHold, out.before,
+      `holding V must not change the visual — it went ${out.before} -> ${out.afterHold}`);
+    assert.notStrictEqual(out.afterNext, out.before, '] must advance the visual');
+    assert.strictEqual(out.afterPrev, out.before,
+      `[ must step back to where ] came from (${out.before} -> ${out.afterNext} -> ${out.afterPrev})`);
+    console.log(`✓ V no longer cycles visuals; ] and [ step forward and back (${out.afterNext})`);
+  }
+
+  // 27c) THE HOLD GESTURE SURVIVES THE BUTTON CHANGING SIZE UNDER THE FINGER.
+  //      Reported as "if I hold the button down, it just flashes, and then it
+  //      disappears immediately". The label goes from "Hold to speak V" to
+  //      "Listening… release to save", the pill grows by ~40px and re-flows the bar,
+  //      and the pointer — which never moved — is suddenly outside the element it
+  //      pressed. `pointerleave` fired and stopped the recording at once.
+  {
+    // Press, let the label change, and confirm recording is still live even though the
+    // element under the original pointer position is no longer the button.
+    const held = await page.evaluate(async () => {
+      const btn = document.getElementById('voiceNote');
+      const box = btn.getBoundingClientRect();
+      const at = { x: Math.round(box.left + 6), y: Math.round(box.top + box.height / 2) };
+      const widthBefore = box.width;
+      btn.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 7,
+        clientX: at.x, clientY: at.y, button: 0 }));
+      await new Promise((r) => setTimeout(r, 350));   // getUserMedia + MediaRecorder.start
+      const widthAfter = btn.getBoundingClientRect().width;
+      // What is under the finger now? If the pill grew, this is no longer the pill.
+      const under = document.elementFromPoint(at.x, at.y);
+      const stillRecording = !!(mediaRecorder && mediaRecorder.state === 'recording');
+      const label = btn.textContent;
+      btn.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 7,
+        clientX: at.x, clientY: at.y }));
+      await new Promise((r) => setTimeout(r, 250));
+      return { widthBefore, widthAfter, stillRecording, label,
+        // The premise of the bug, asserted rather than assumed: the pointer never
+        // moved, and what sits under it is no longer the button it pressed.
+        underIsButton: under === btn || btn.contains(under),
+        stoppedAfter: !mediaRecorder };
+    });
+    assert.ok(held.widthAfter > held.widthBefore,
+      'precondition: the label change must actually widen the pill, or this test proves'
+      + ` nothing (${held.widthBefore} -> ${held.widthAfter})`);
+    assert.ok(held.stillRecording,
+      `the recording must survive the label change — it was already stopped.`
+      + ` label="${held.label}", width ${held.widthBefore}->${held.widthAfter}`);
+    assert.match(held.label, /Listening/, 'and the button must say it is listening');
+    assert.ok(held.stoppedAfter, 'releasing must stop it and release the microphone');
+    console.log('✓ hold-to-speak survives the button re-flowing under the pointer'
+      + ` (${Math.round(held.widthBefore)} -> ${Math.round(held.widthAfter)}px)`);
+  }
+
+  // 27d) A RELEASE THAT BEATS getUserMedia MUST STILL STOP THE MICROPHONE.
+  //      startVoiceNote awaits the permission/stream, which is slower than a short
+  //      press. stopVoiceNote would find `mediaRecorder === null`, do nothing, and the
+  //      recorder would start a moment later with nothing left to stop it — the mic
+  //      stays open for the rest of the sit, indicator light and all.
+  {
+    const out = await page.evaluate(async () => {
+      startVoiceNote();            // not awaited: the release lands mid-flight
+      stopVoiceNote();
+      await new Promise((r) => setTimeout(r, 600));
+      return { recorder: mediaRecorder ? mediaRecorder.state : null };
+    });
+    assert.strictEqual(out.recorder, null,
+      `a press released before the mic opened must not leave a recorder running`
+      + ` (state: ${out.recorder})`);
+    console.log('✓ a press released before the microphone opened still closes it');
+  }
+
+  // 27e) PANELS MOVE. Reported: Live feed opens over its own pill so it cannot be
+  //      closed, and the training clock lands under the Record button. A fixed corner
+  //      per panel cannot suit every combination that happens to be open.
+  {
+    const out = await page.evaluate(async () => {
+      const el = document.getElementById('dataPanel');
+      const grip = el.querySelector(':scope > .panelGrip');
+      if (!grip) return { noGrip: true };
+      const from = el.getBoundingClientRect();
+      const g = grip.getBoundingClientRect();
+      const at = { x: Math.round(g.left + g.width / 2), y: Math.round(g.top + g.height / 2) };
+      const send = (type, dx = 0, dy = 0) => grip.dispatchEvent(new PointerEvent(type,
+        { bubbles: true, pointerId: 3, button: 0, clientX: at.x + dx, clientY: at.y + dy }));
+      send('pointerdown');
+      send('pointermove', 120, -80);
+      send('pointerup', 120, -80);
+      await new Promise((r) => setTimeout(r, 30));
+      const to = el.getBoundingClientRect();
+      const saved = localStorage.getItem('zenbio.panel.dataPanel');
+
+      // Double-clicking the grip puts it back, and forgets the position — otherwise the
+      // only way out of a bad drag is clearing browser storage.
+      grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 30));
+      const reset = el.getBoundingClientRect();
+      const clearedStore = localStorage.getItem('zenbio.panel.dataPanel');
+
+      // A drag must NOT be triggered by clicking a control inside the panel.
+      const toggle = document.getElementById('dataToggle');
+      const beforeClick = el.getBoundingClientRect();
+      toggle.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerId: 4, button: 0,
+        clientX: Math.round(beforeClick.left + 30), clientY: Math.round(beforeClick.top + 30) }));
+      toggle.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerId: 4,
+        clientX: Math.round(beforeClick.left + 130), clientY: Math.round(beforeClick.top + 30) }));
+      toggle.dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerId: 4,
+        clientX: Math.round(beforeClick.left + 130), clientY: Math.round(beforeClick.top + 30) }));
+      const afterInnerDrag = el.getBoundingClientRect();
+
+      return {
+        dx: Math.round(to.left - from.left), dy: Math.round(to.top - from.top),
+        saved: saved ? JSON.parse(saved) : null,
+        resetBack: Math.abs(reset.left - from.left) < 2 && Math.abs(reset.top - from.top) < 2,
+        clearedStore,
+        innerDragMoved: Math.abs(afterInnerDrag.left - beforeClick.left) > 2,
+      };
+    });
+
+    assert.ok(!out.noGrip, 'every draggable panel must carry a grip to drag it by');
+    assert.strictEqual(out.dx, 120, `dragging right 120px must move the panel 120px (got ${out.dx})`);
+    assert.strictEqual(out.dy, -80, `and up 80px (got ${out.dy})`);
+    assert.ok(out.saved && Number.isFinite(out.saved.x),
+      `the position must persist, got ${JSON.stringify(out.saved)}`);
+    assert.ok(out.resetBack, 'double-clicking the grip must put the panel back where it started');
+    assert.strictEqual(out.clearedStore, null, 'and must forget the stored position');
+    assert.ok(!out.innerDragMoved,
+      'dragging from a control INSIDE the panel must not move the panel — that would'
+      + ' make the Live feed collapse toggle unusable');
+    console.log('✓ panels drag by their grip, persist, reset on double-click, and'
+      + ' ignore drags that start on a control');
+  }
+
+  // 27f) The panels that were reported as being in the way are all draggable, and the
+  //      grip survives the panels that rebuild their own innerHTML.
+  {
+    const out = await page.evaluate(async () => {
+      setTrainingMode(true);
+      renderArmedBar();            // rebuilds innerHTML — this is what ate the old grip
+      renderModeBar();
+      const check = (id) => {
+        const el = document.getElementById(id);
+        return { id, present: !!el, grip: !!(el && el.querySelector(':scope > .panelGrip')) };
+      };
+      const r = ['readout', 'dataPanel', 'modeBar', 'armedBar', 'trainClock'].map(check);
+      // While we are here: the training pill must LIGHT UP, not just change its word.
+      const pill = document.getElementById('trainToggle');
+      const on = { active: pill.classList.contains('active'), text: pill.textContent };
+      setTrainingMode(false);
+      const off = { active: pill.classList.contains('active'), text: pill.textContent };
+      // And the clock must be clear of the Record button's corner.
+      const clock = getComputedStyle(document.getElementById('trainClock'));
+      return { r, on, off, clockLeft: clock.left, clockRight: clock.right };
+    });
+
+    for (const p of out.r) {
+      assert.ok(p.present, `#${p.id} must exist`);
+      assert.ok(p.grip, `#${p.id} must still have its grip after a re-render —`
+        + ' innerHTML rebuilds destroy children, which is why the drag listeners live'
+        + ' on the panel and the grip is re-inserted');
+    }
+    assert.ok(out.on.active, `the Training pill must highlight when on (text: "${out.on.text}")`);
+    assert.ok(!out.off.active, 'and stop highlighting when off');
+    assert.ok(out.clockRight === 'auto' || parseFloat(out.clockLeft) >= 0,
+      `the training clock must be anchored from the left, away from the Record button`
+      + ` (left: ${out.clockLeft}, right: ${out.clockRight})`);
+    console.log('✓ all five reported panels drag, grips survive re-renders, Training highlights');
+  }
+
   // 28) THE TIMER RUNNING OUT MUST STOP THE RECORDING. Reported: it did not, and the
   //     sit had to be stopped by hand. Driven through the REAL tick and the REAL timer
   //     pill, because the previous claim that this worked was an inference from a

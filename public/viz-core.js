@@ -97,9 +97,14 @@
    * are simply not reachable by cycling or by the picker.
    */
   function visibleModes() { return MODES.filter((m) => !m.hidden); }
-  function nextMode(index) {
+  // `dir` of -1 walks backwards. Needed because the keyboard now has both `]` and `[`:
+  // with forward-only cycling through seven visuals, going back one meant six presses.
+  function nextMode(index, dir = 1) {
+    const unit = dir < 0 ? -1 : 1;
     for (let step = 1; step <= MODES.length; step++) {
-      const i = (index + step) % MODES.length;
+      // + MODES.length before the second modulo: JS `%` keeps the sign of the dividend,
+      // so a backwards walk past index 0 would otherwise produce a negative index.
+      const i = (((index + unit * step) % MODES.length) + MODES.length) % MODES.length;
       if (!MODES[i].hidden) return i;
     }
     return index;

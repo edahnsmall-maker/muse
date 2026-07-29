@@ -588,21 +588,56 @@ canvas.
 A pill bar appears at the bottom on connect. Keyboard shortcuts still work and are
 shown as small hints on the pills, but nothing requires remembering them.
 
+The bar is three labelled groups — **View**, **Practice**, **Session** — in the order the
+practice uses them: what you are looking at, what you are doing, and what happens to the
+sit afterwards.
+
 | Control | Key | What it does |
 |---|---|---|
-| **Mark this moment** | `M` | freeze the timestamp and open the marker prompt |
-| **training: on/off** | `T` | show a live timestamp so you can note times mentally |
-| **cues: on/off** | — | enable/disable in-the-moment cues |
-| **Session summary** | — | generate the report on demand, mid-sit or after |
-| **Fullscreen** | `F` | — |
+| **Training: on/off** | `T` | the clock, the armed-tap list, and the probe schedule |
+| **Notes** | `N` | text notes, timestamped or not, with a deletable history |
+| **Hold to speak** | hold `V` | a voice note for as long as it is held |
+| **Mark** | `M` | freeze the timestamp and open the marker prompt |
+| **Summarize session** | — | generate the report on demand, mid-sit or after |
+| next / previous visual | `]` `[` | step through the seven visuals |
+| — | `F` | fullscreen (no pill — it is a one-off at the start of a sit) |
+| — | `Esc` | close the summary |
 
-Plus the visual-mode pills at the top, the breathing-pattern pills (Breath mode), and
-the timer buttons. `Esc` closes the summary.
+Plus the tap-category keys while Training is on (`C A J L R E U K S` — see `probes.js`),
+`1`/`2` to grade a tap that offers grades, and `1`–`5` to answer a probe.
 
-One bug worth recording: global hotkeys fired **while typing a marker note**, so a note
-containing "m", "t", "v" or "f" would drop extra marks or switch the visual mid-sit. All
-global handlers now bail out through an `isTyping()` guard, and the number keys 1–6 pick
-a marker category only while the note field is still empty.
+Two collisions worth recording, because both came out of real sits and both are the same
+mistake in different forms:
+
+* Global hotkeys fired **while typing a note**, so a note containing "m" or "t" dropped
+  extra marks mid-sit. All global handlers bail out through an `isTyping()` guard.
+* `V` was bound **twice in one handler** — to cycling the visual and to starting a voice
+  note. Both ran, and only the voice branch checked `e.repeat`, so holding `V` to speak
+  also walked through every visualisation, one per key-repeat, while recording. Cycling
+  moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
+  safe by reordering the branches; the collision itself has to go.
+
+### Panels move
+
+Every floating panel — Metrics, Live feed, the visual picker, the armed-tap list, the
+training clock — has a faint grip strip along its top edge. **Drag it anywhere;
+double-click the grip to put it back.** Each position persists.
+
+Fixed corners cannot suit every combination of panels that happens to be open, and there
+are now enough panels that the combinations outnumber anything worth hand-tuning in CSS:
+Live feed opened directly over its own "Live feed" pill, so it could be opened and then
+not closed. Positions are clamped so at least 48px of a panel always stays on screen, and
+re-clamped on resize — a panel dragged fully off, or a position saved on a laptop and
+reloaded on a phone, would otherwise be unrecoverable without clearing browser storage.
+The clamp arithmetic is unit-tested (`test-panels.js`), because getting it wrong does not
+look like a bug, it looks like a panel that vanished.
+
+One trap inside `Panels.place` worth knowing about before touching it: these panels
+animate `transform` for their show/hide slide, so writing `transform: none` to take over
+positioning does not apply it — it starts a 350ms animation *toward* it. The panel slides
+diagonally away from the pointer on the first movement of a drag, and every measurement
+taken in that window is off by the slide distance. The first write suppresses transitions
+and forces a layout read; later writes only touch `left`/`top`, which nothing animates.
 
 ## Cues — silence is the default
 
