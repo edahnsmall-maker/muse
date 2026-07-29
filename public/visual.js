@@ -106,6 +106,23 @@ function createZenVisual(canvas) {
    */
   let legendOn = true;
 
+  /*
+   * HAS THIS ELECTRODE EVER READ ANYTHING?
+   *
+   * Reported as "the two flat lines": TP9 and TP10 both artifact-flagged for a whole
+   * sit, drawn as perfectly straight horizontal lines across the middle of Flow. The
+   * value behind them is the initial 0.5 — bandLevel only moves on a valid window — so
+   * two of the four traces were a fabricated constant rendered as the steadiest signal
+   * on screen. Exactly the bug just fixed in the chart, in the other renderer.
+   *
+   * The existing `held` treatment (dashed and dimmed) is right for a channel that reads
+   * SOMETIMES: the gaps are informative. It is wrong for one that has never read at
+   * all, because there is no signal for the dashes to be gaps in. So: never fresh,
+   * never drawn, and dropped from the key as well — a legend entry for a line that is
+   * not on screen is its own small lie.
+   */
+  const everFresh = [false, false, false, false];
+
   let sessionSec = 0;   // monotonic, for placing blooms along a slow sweep
   let breathPhase = 0;  // integrated radians — see renderBreath
   let patternT = 0;     // seconds accumulated for patterned breathing
@@ -920,10 +937,25 @@ function createZenVisual(canvas) {
     // becoming hard to see.
     const flowTop = H * 0.18;
     const flowBottom = H * 0.76;
+    /*
+     * EACH SERIES IS SCALED TO ITS OWN VISIBLE RANGE — see VizCore.autoRange.
+     *
+     * expandSoft alone assumed the values were already adaptively normalised into
+     * roughly 0.35..0.75. True of the composites, false of the per-channel series,
+     * which is a raw alpha/(alpha+beta) ratio: on a beta-dominant sit that ratio sits
+     * near 0.2 on every electrode, so every trace pinned to the floor of the band and
+     * the whole picture compressed into the bottom third.
+     *
+     * autoRange falls back to null when there is too little history, in which case
+     * expandSoft is used as before rather than nothing being drawn.
+     */
+    const ranges = series.map((sr) => VizCore.autoRange(sr));
     const yOf = (i, k) => {
       const v = series[k][i];
       if (v == null) return null;
-      return flowTop + (flowBottom - flowTop) * (1 - VizCore.expandSoft(v));
+      const u = ranges[k] ? VizCore.inRange(v, ranges[k]) : VizCore.expandSoft(v);
+      if (u == null) return null;
+      return flowTop + (flowBottom - flowTop) * (1 - u);
     };
 
     // BUTT caps, not round: adjacent age groups deliberately share an endpoint,
@@ -987,6 +1019,9 @@ function createZenVisual(canvas) {
     for (let ch = 0; ch < 4; ch++) {
       const col = colors[ch] || [200, 210, 255];
       if (yOf(n - 1, ch) == null) continue;   // nothing to say about this series
+      // An electrode that has never made contact draws NOTHING. Its level is still the
+      // initial 0.5, which would render as a dead-flat line through the middle.
+      if (!composites && !everFresh[ch]) continue;
       for (let gi = 0; gi < FLOW_GROUPS; gi++) {
         const i0 = Math.round((gi * (n - 1)) / FLOW_GROUPS);
         const i1 = Math.round(((gi + 1) * (n - 1)) / FLOW_GROUPS);
@@ -2171,6 +2206,7 @@ function createZenVisual(canvas) {
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
         depositSec: irisDepositSec(),
+        omitSeries: VizCore.CHANNEL_LABELS.filter((_, i) => !everFresh[i]),
       }));
     }
 
@@ -2220,6 +2256,12 @@ function createZenVisual(canvas) {
           fresh: src.fresh !== false,
         };
       });
+      /* Only when bands were actually SUPPLIED. Without the guard the back-compat
+         path (setCalm, which passes no bands) falls through to state.bands, whose
+         default `fresh` is true, and every channel would be marked as having read. */
+      if (next.bands) {
+        bands.forEach((b, i) => { if (b.fresh !== false) everFresh[i] = true; });
+      }
       state = {
         calm: next.calm != null ? next.calm : state.calm,
         noise: next.noise != null ? next.noise : state.noise,
@@ -2269,6 +2311,9 @@ function createZenVisual(canvas) {
       return seriesMode;
     },
     setLegend(on) { legendOn = !!on; return legendOn; },
+    // Which electrodes have produced at least one artifact-free window. Exposed so a
+    // test can assert that a dead one is absent rather than merely dim.
+    channelsReading() { return everFresh.slice(); },
     legendVisible() { return legendOn; },
     /* How long the sit is meant to be, so Iris can spread its rings across the whole
      * of it instead of filling up in ten minutes. Set from the session timer; null
@@ -2290,6 +2335,7 @@ function createZenVisual(canvas) {
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
         depositSec: irisDepositSec(),
+        omitSeries: VizCore.CHANNEL_LABELS.filter((_, i) => !everFresh[i]),
       });
     },
     currentSeries() { return seriesMode; },

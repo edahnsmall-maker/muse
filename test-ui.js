@@ -288,6 +288,54 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ chart colours are distinguishable (closest pair: sensors ${report.sensors.d}, composites ${report.composites.d})`);
   }
 
+  /* 7a2) "NOISY" MUST SAY HOW NOISY, because it covers two situations with different
+   *      fixes. Asked directly, of two channels reading Noisy for a whole sit: "but
+   *      why's it dead at all?" — and the app could not answer.
+   *
+   *      ~150-600µV: the electrode IS on skin, picking up muscle or movement. Fixable
+   *      by sitting differently, and a hint the threshold may be tight for a temporal
+   *      channel. >600µV: the input is floating and railing toward the ends of its
+   *      ±1000µV range. That is not noise, it is no contact, and sitting still will
+   *      never fix it.
+   */
+  {
+    const out = await page.evaluate(() => {
+      const W = 256;
+      const set = (ch, ptp) => {
+        buffers[ch].length = 0;
+        for (let i = 0; i < W; i++) buffers[ch].push((i % 2 ? 0.5 : -0.5) * ptp);
+      };
+      set(0, 900);   // railing: no contact
+      set(1, 300);   // on skin but noisy
+      set(2, 40);    // healthy
+      set(3, 20);    // healthy
+      const ch = computeChannelLabels();
+      return ch.map((c) => ({ name: c.name, label: c.label,
+        ptp: c.ptp == null ? null : Math.round(c.ptp), floating: c.floating }));
+    });
+
+    assert.strictEqual(out[0].label, 'No contact',
+      `a railing electrode must say so, not "Noisy" (got "${out[0].label}" at ${out[0].ptp}µV)`);
+    assert.strictEqual(out[0].floating, true);
+    assert.strictEqual(out[1].label, 'Noisy',
+      `an electrode on skin picking up muscle is Noisy, not disconnected (got "${out[1].label}")`);
+    assert.strictEqual(out[1].floating, false);
+    assert.ok(out[1].ptp >= 250 && out[1].ptp <= 350,
+      `the µV figure must be real, not decorative (got ${out[1].ptp})`);
+    assert.ok(!/Noisy|No contact/.test(out[2].label) && !/Noisy/.test(out[3].label),
+      `a clean channel must report its band, not a fault (${out[2].label}, ${out[3].label})`);
+    // The number reaches the screen, and ONLY for the faulty channels — four numbers to
+    // ignore all sit is how a diagnostic becomes invisible.
+    const shown = await page.evaluate(() => {
+      const texts = Array.from(document.querySelectorAll('#readoutRows .rLabel'))
+        .map((e) => e.parentElement.textContent);
+      return texts.filter((t) => /µV/.test(t)).length;
+    });
+    assert.ok(shown <= 2, `only faulty channels show a µV figure (got ${shown} rows)`);
+    console.log(`✓ a railing electrode reads "No contact" and a noisy one reports its`
+      + ` amplitude (${out[0].ptp}µV vs ${out[1].ptp}µV)`);
+  }
+
   // 7b) A DEAD ELECTRODE MUST DRAW NOTHING, not a flat line at mid-range.
   //     Reported as "any clues as to why TP10 looks dead?" — with a perfectly flat
   //     green line through the centre of the Live feed. That line was fabricated:
@@ -1947,7 +1995,20 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     // The arrangement asked for: settings live with what they affect, and Connect sits
     // with the session controls rather than in a group of its own.
     assert.ok(groups[0].pills.some((p) => /^Cues/.test(p)), 'Cues belongs with the view controls');
-    assert.ok(groups[0].pills.some((p) => /^Response/.test(p)), 'and so does Response');
+    /* Response is NOT in the bar any more. It moved into the Metrics panel, both
+       because it was asked for ("maybe the sensitivity button can kinda go in the
+       metrics") and because it had to: fourteen pills across three labelled groups
+       needed ~1770px, a 1920px window offers 1728 after padding, and the bar wrapped
+       Session onto its own row at anything narrower. */
+    assert.ok(!groups.some((g) => g.pills.some((p) => /^Response/.test(p))),
+      'Response belongs in the Metrics panel, not in the bar');
+    const resp = await page.evaluate(() => {
+      const el = document.getElementById('responseToggle');
+      return el ? { inReadout: !!el.closest('#readout'), text: el.textContent } : null;
+    });
+    assert.ok(resp && resp.inReadout,
+      'but it must still exist, inside the Metrics panel — a control that vanishes in a'
+      + ' reorganisation is worse than a crowded bar');
     assert.ok(groups[1].pills.some((p) => /^Trials$/.test(p)), 'Trials belongs with Practice');
     assert.ok(groups[1].pills.some((p) => /^Timer/.test(p)), 'and Timer');
     assert.ok(groups[2].pills.some((p) => /^Connect$/.test(p)), 'Connect belongs with Session');

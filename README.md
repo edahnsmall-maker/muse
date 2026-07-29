@@ -701,6 +701,22 @@ A generation counter now invalidates an in-flight open, and the in-flight attemp
 as a promise rather than a boolean so a start immediately after a stop waits and retries
 instead of being dropped.
 
+### "Noisy" says how noisy
+
+A channel reads **Noisy** when its 1-second window swings past 150µV peak-to-peak, and
+that covers two situations with completely different fixes — so the amplitude is now
+reported alongside:
+
+- **150–600µV — "Noisy".** The electrode *is* on skin, picking up muscle, jaw,
+  swallowing or movement. Fixable by sitting differently. A temporal channel parked just
+  above 150µV all sit is also a question about whether the threshold is too tight there.
+- **Above 600µV — "No contact".** A floating input rails toward the ends of its ±1000µV
+  range (Muse is 12-bit at 0.488µV/LSB). This is not noise in any useful sense, and no
+  amount of sitting still will fix it: wet the spot behind the ear and reseat the band.
+
+The figure only shows on a channel that is faulty. Four numbers to ignore for a whole
+sit is how a diagnostic becomes invisible.
+
 ### A dead electrode draws nothing
 
 If a channel reads **Noisy**, its 1-second window swung more than `ARTIFACT_PTP_UV`
@@ -757,6 +773,28 @@ per-sensor difference the picture never showed. A legend that is plausible but w
 worse than no legend. `test-viz.js` now checks every legend colour against the constants
 the renderers actually index, which catches the palette half of that drift; the prose
 half is still on whoever edits a renderer.
+
+### Traces are scaled to their own range, not to an absolute level
+
+Flow maps every series onto one vertical band. The expansion curve it used was written
+on the assumption that *"every value here is adaptively normalised against the wearer's
+own baseline, so a real session occupies roughly 0.35..0.75"* — true of the composite
+scores, and **false of the per-channel series**, which is a raw `alpha/(alpha+beta)`
+ratio (deliberately: a bounded ratio needs no normaliser to be meaningful).
+
+So on a beta-dominant sit — eyes open, thinking, which is most of them — that ratio sits
+near 0.2 on every electrode, every trace pinned to the floor of the band, and the whole
+picture compressed into the bottom third of the space it had. Reported exactly that way.
+
+Each series is now rescaled to its own recent 5th–95th percentile range. Percentiles
+rather than min/max, because one artifact spike would otherwise set the top and flatten
+everything else. And a **minimum span** is enforced: without it, a channel that genuinely
+did not move gets its own noise stretched to fill the frame and reads as violent
+activity — inventing a signal, which is worse than the squashing this fixes. A steady
+line stays steady, and sits in the middle of the band.
+
+The cost is that vertical position now shows *change*, not level, so the Flow key says
+so. Two lines crossing is not two values becoming equal.
 
 ### Iris records the sit, not the viewing
 

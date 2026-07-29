@@ -183,6 +183,138 @@ moving.
 **Next up, concretely:** session storage (unblocks self-relative progress),
 scatter→recover in the report, and the calibration trials below.
 
+## Where the lab is weak, and whether this is possible at all (2026-07-29)
+
+Written in answer to a direct question: *"do you think we've really covered
+everything... the patterns might be really subtle and might just have a lot of noise
+around them... do we need more processing power or do we need more sensors or more
+accuracy?"*
+
+The four signature kinds asked for (together, opposite, three-way, one line on its own)
+are built. They were examples, and the honest answer is no — the coverage is not
+complete, and two of the gaps are more serious than the missing feature kinds.
+
+### The short answer to "do we need more X"
+
+- **Processing power: no.** This is 1 Hz data and a few hundred windows. Even
+  recomputing 256 Hz band powers for a 40-minute sit is a few million floating-point
+  operations — trivial in a browser tab. Compute has never been the constraint and is
+  not close to being one.
+- **More sensors: eventually, not yet.** Four dry electrodes limit *spatial* questions
+  badly (there is no left/right asymmetry worth the name from AF7/AF8 alone), and TP9
+  and TP10 are frequently unusable — both read "Noisy" in the screenshot that prompted
+  the dead-line investigation. Fixing the *fit* of the four we have is worth more today
+  than adding more.
+- **The binding constraint is labelled moments.** Everything else is downstream of it.
+  See the arithmetic below: at ~50 marks nothing subtle can be detected by any method,
+  on any hardware, with any amount of compute. This is a practice-and-logging problem,
+  not a technology problem, which is genuinely good news — it is fixable by sitting.
+
+### The arithmetic, measured rather than argued
+
+Detection rate for a planted effect, over repeated runs of the real pipeline
+(`tools/power.js`; "effect" is the separation between marked and control windows in
+standard deviations):
+
+| observations | search size | effect 0.3 | 0.5 | 0.8 |
+|---|---|---|---|---|
+| 96 (6 sits × 8 marks) | 20 features | 0.50 | 0.75 | 1.00 |
+| 96 | 100 features | 0.00 | 0.50 | 1.00 |
+| 192 (12 sits) | 100 features | 0.63 | 1.00 | 1.00 |
+| 480 (30 sits) | 100 features | 1.00 | 1.00 | 1.00 |
+
+`Analysis.detectableRho(n, comparisons)` reports the same thing as a threshold, and it
+now travels with every null result: **at 96 observations and 400 comparisons, nothing
+below a correlation of about 0.37 can be reported at all.** Most real psychophysiological
+effects are smaller than that. So the current honest reading of a null result from three
+sits is "this rules out strong effects", not "there is nothing there" — and that sentence
+is now in the verdict rather than left to be inferred.
+
+Rough targets, if a subtle effect (ρ ≈ 0.2) is the goal: **several hundred marked
+windows, from thirty or more sits.** At 8 marks a sit that is about a month of daily
+practice with training mode on. Nothing about the tooling shortens that.
+
+### A bug this question uncovered
+
+Widening the feature set silently broke the lab's ability to confirm anything.
+
+A permutation *p* cannot go below `1/(iterations+1)`. Benjamini–Hochberg needs the
+strongest hit at `p ≤ q/m`. At 1500 shuffles and q = 0.1 that caps the search at ~150
+comparisons — beyond it **nothing can ever be confirmed, however large the effect.**
+Measured: a 0.87 correlation over 300 observations went undetected in a 100-feature
+search at every sample size tried, because its *p* physically could not be smaller than
+the threshold it had to beat. The lab reported "no pattern survived", which reads as a
+fact about meditation and was a fact about arithmetic.
+
+Fixed by screening with an analytic Spearman *p* (no floor) and using permutation for
+what it is uniquely good at — checking the analytic assumption on the few candidates
+that survive, with enough shuffles that its floor sits an order of magnitude below the
+threshold. Agreement between the two was measured at within ~20% on this shape of data
+(binary labels, heavy ties). `test-analysis.js` now fails if a 2-SD effect cannot survive
+a 200-comparison search.
+
+This is the failure mode to watch for in this whole area: **not a wrong answer, a
+plausible null.** Every widening of the search needs its power re-measured, or the tool
+quietly turns into one that always says no.
+
+### Known weaknesses, roughly in order of how much they cost
+
+1. **The four electrodes are not in the lab's feature set at all.** `metrics.csv` writes
+   per-channel levels as one space-joined text column (`"0.1 0.2 0.3 0.4"`), so
+   `seriesKeys` correctly refuses it as non-numeric — and the most natural reading of
+   "how two things move together" (two electrodes) cannot even be *asked*. Small fix:
+   emit `tp9,af7,af8,tp10` as four columns. Highest value per line of code in the whole
+   list.
+2. **The lab audits the app's scores; it cannot discover better ones.** Archives contain
+   raw EEG at 256 Hz (`eeg-ch*.f32`), but the lab reads only the 1 Hz derived rows. So
+   every "signature" is a shape in an unvalidated hand-tuned summary. If the real marker
+   of returning is 8–12 Hz power at one electrode with a 300 ms latency, no amount of
+   correlating `calm.trend` will find it. Recomputing band powers from raw in the lab is
+   the difference between auditing and discovering.
+3. **No per-session normalisation.** Features are pooled raw across sits, but electrode
+   fit changes day to day, so `calm.level` in one sit is not comparable to another.
+   Between-session variance is currently competing with the within-session effect and
+   will usually win. Z-scoring within session before pooling is a few lines and probably
+   the largest power gain available without more data.
+4. **The movement confound is only half handled.** Dropping the 2 s before a keypress
+   removes the press itself, but marks are *self-selected* moments — you press when
+   something notable happens, and notable moments plausibly involve posture shifts. The
+   controls are random windows, so "moved at all" differs systematically between the two
+   classes. `noise` is in the feature set so the confound is visible, but nothing yet
+   *tests* whether a finding survives with noise partialled out, or uses noise-matched
+   controls. A real, replicable, and completely meaningless finding is reachable here.
+5. **The permutation null ignores session structure.** Labels are shuffled across all
+   training rows, which assumes exchangeability; windows within one sit share drift and
+   electrode state. Shuffling *within* session, or circularly shifting mark times within
+   a sit, is a stricter and more appropriate null.
+6. **The features are heavily redundant.** `level`, `range` and `swing` overlap; so do
+   pair and trio terms built from the same lines. BH treats 400 comparisons as 400
+   independent questions when the effective number is far smaller, which spends power for
+   nothing. Clustering correlated features, or correcting on the effective number, would
+   buy back some of the cost of breadth.
+7. **No effect-size intervals.** Only ρ and *p*. At n = 96 a reported ρ of 0.4 has a
+   confidence interval roughly ±0.2 wide, and showing that interval is the most direct
+   way to make "this is a candidate, not a result" land.
+8. **Self-caught marks have unknown latency.** You press some seconds after the thing
+   you are reporting, and the delay varies. Every window is therefore smeared by an
+   unknown amount, which attenuates any real effect. Probes bound the interval and
+   self-caught taps do not — one more reason the two are analysed separately, and a
+   reason to keep collecting both.
+
+### What to build next, in order
+
+1. Per-channel columns in `metrics.csv` (weakness 1) — unblocks the electrode questions.
+2. Per-session z-scoring before pooling (3) — largest power gain for the least work.
+3. A power readout in the lab UI, not just in the verdict string: "at your current data
+   you could detect ρ ≥ 0.37; you have N marks; M more would get you to 0.25." Turns the
+   honest limit into a target.
+4. Noise-controlled findings (4): re-test every survivor with `noise` partialled out, and
+   report both. A finding that dies is a movement artefact.
+5. Within-session permutation null (5).
+6. Recompute band powers from raw EEG in the lab (2) — the step from auditing to
+   discovering, and the largest piece of work here.
+7. Confidence intervals (7) and effective-comparison correction (6).
+
 ## Validation: calibration trials (the actual next priority)
 
 Recorded from the person using this, and it is a better design than what was

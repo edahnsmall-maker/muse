@@ -571,4 +571,80 @@ const VizCore = require('./public/viz-core.js');
     + ` ${closest.a}/${closest.b} at ${closest.d})`);
 }
 
+/*
+ * AUTO-RANGING: the fix for "it looks like it's compressed on the bottom third".
+ *
+ * Flow maps every series onto one vertical band, and the expansion curve it used assumed
+ * the values were already adaptively normalised into roughly 0.35..0.75. True of the
+ * composites; FALSE of the per-channel series, which is a raw alpha/(alpha+beta) ratio.
+ * A beta-dominant sit — eyes open, thinking, i.e. most of them — sits near 0.2 on every
+ * electrode, so every trace pinned to the floor of the band.
+ */
+{
+  // A low, narrow, moving series must be spread across the band, not pinned to an end.
+  const low = [];
+  for (let i = 0; i < 60; i++) low.push(0.18 + 0.05 * Math.sin(i / 6));
+  const r = VizCore.autoRange(low);
+  const ys = low.map((v) => VizCore.inRange(v, r));
+  assert.ok(Math.min(...ys) < 0.15 && Math.max(...ys) > 0.85,
+    `a series living around 0.2 must still use the full band (got ${Math.min(...ys).toFixed(2)}`
+    + `..${Math.max(...ys).toFixed(2)}) — pinning it to the floor is the reported bug`);
+
+  // ROBUST TO A SPIKE. One artifact must not set the top of the range and flatten
+  // everything else, which is what min/max would do.
+  const spiky = low.slice();
+  spiky[30] = 0.95;
+  const rs = VizCore.autoRange(spiky);
+  const spread = low.map((v) => VizCore.inRange(v, rs));
+  assert.ok(Math.max(...spread) - Math.min(...spread) > 0.5,
+    'a single spike must not squash the rest of the trace — percentiles, not min/max');
+  assert.strictEqual(VizCore.inRange(0.95, rs), 1,
+    'and the spike itself is pinned to the edge, not allowed off the band');
+
+  /* minSpan IS THE HONESTY GUARD. A channel that genuinely did not move must not have
+     its own noise stretched to fill the frame and read as violent activity — that
+     invents a signal, which is worse than the squashing this fixes. */
+  const flat = [];
+  for (let i = 0; i < 60; i++) flat.push(0.5 + 0.001 * Math.sin(i));
+  const rf = VizCore.autoRange(flat);
+  const fys = flat.map((v) => VizCore.inRange(v, rf));
+  assert.ok(Math.max(...fys) - Math.min(...fys) < 0.1,
+    `a genuinely steady series must stay steady on screen (got a spread of`
+    + ` ${(Math.max(...fys) - Math.min(...fys)).toFixed(3)})`);
+  assert.ok(Math.abs((Math.max(...fys) + Math.min(...fys)) / 2 - 0.5) < 0.1,
+    'and sit in the MIDDLE of the band, not pushed against an edge');
+
+  assert.strictEqual(VizCore.autoRange([0.5, 0.5]), null,
+    'too little history to know a range must refuse rather than invent one');
+  assert.strictEqual(VizCore.inRange(0.5, null), null, 'and a null range yields no position');
+  console.log('✓ traces scale to their own recent range, survive a spike, and a steady'
+    + ' line stays steady rather than being amplified into noise');
+}
+
+/*
+ * A LINE THAT IS NOT DRAWN MUST NOT BE IN THE KEY.
+ *
+ * Reported as "the two flat lines": TP9 and TP10 artifact-flagged for a whole sit and
+ * drawn as dead-straight horizontals across the middle. They are omitted from the
+ * picture now, and a key still naming them would send the reader looking for a line
+ * that was never there and concluding it was flat.
+ */
+{
+  const all = VizCore.legendFor('flow', { composites: false });
+  assert.ok(all.some((e) => e.label === 'TP9') && all.some((e) => e.label === 'TP10'),
+    'precondition: all four electrodes are keyed when all four are reading');
+  const some = VizCore.legendFor('flow', { composites: false, omitSeries: ['TP9', 'TP10'] });
+  assert.deepStrictEqual(some.filter((e) => e.label).map((e) => e.label), ['AF7', 'AF8'],
+    'an electrode with no contact must be absent from the key, not merely dimmed');
+  // The relative-scale caption has to be there, because vertical position no longer
+  // means a level: two lines crossing is not two values becoming equal.
+  assert.ok(some.some((e) => e.text && /own recent range/.test(e.text)),
+    'and the key must say the height is relative');
+  const none = VizCore.legendFor('flow',
+    { composites: false, omitSeries: ['TP9', 'AF7', 'AF8', 'TP10'] });
+  assert.deepStrictEqual(none, [],
+    'with nothing drawn there is no key at all — not a lone caption describing nothing');
+  console.log('✓ the key names only what is on screen, and says the height is relative');
+}
+
 console.log('\nAll viz-core tests passed.');

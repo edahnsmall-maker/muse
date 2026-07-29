@@ -426,4 +426,93 @@ const gauss = () => {
     + ' that means cannot see, and noise still confirms nothing');
 }
 
+/*
+ * THE RESOLUTION FLOOR: a large search must still be able to confirm a strong effect.
+ *
+ * This is the regression test for the worst failure this file has had, and it was
+ * SELF-INFLICTED by widening the feature set. A permutation p cannot go below
+ * 1/(iterations+1), and Benjamini-Hochberg needs the strongest hit at p <= q/m. At 1500
+ * shuffles and q = 0.1 that caps the search at ~150 comparisons: beyond it, NOTHING can
+ * ever be confirmed, however large the effect.
+ *
+ * Measured before the fix: a 0.87 correlation over 300 observations went undetected in a
+ * 100-feature search at every sample size tried. The lab reported "no pattern survived",
+ * which reads as a fact about meditation and was a fact about arithmetic.
+ */
+{
+  const units = [];
+  for (let sess = 0; sess < 8; sess++) {
+    for (let u = 0; u < 12; u++) {
+      const marked = u % 2 === 0;
+      // Unmissable: a 2-SD separation. If this cannot be found, nothing can.
+      const features = { real: (marked ? 2 : -2) + gauss() };
+      for (let f = 0; f < 199; f++) features[`noise${f}`] = gauss();
+      units.push({ sessionId: `s${sess}`, features, labels: { 'is:x': marked ? 1 : 0 } });
+    }
+  }
+  const res = A.search(units, { iterations: 400 });
+  assert.ok(res.comparisons > 150,
+    `this test is only meaningful above the old ~150-comparison cap (got ${res.comparisons})`);
+  assert.ok(res.confirmed.some((c) => c.feature === 'real'),
+    `a 2-SD effect in a ${res.comparisons}-comparison search MUST be confirmable.`
+    + ' If this fails, the p-value floor is back: a permutation p cannot go below'
+    + ` 1/(iterations+1), so screening has to use an analytic p.`
+    + ` (confirmed: ${res.confirmed.map((c) => c.feature).join(', ') || 'none'})`);
+
+  // The permutation re-check must have actually RUN, and with enough shuffles that its
+  // floor sits below the threshold it is being asked to clear.
+  const real = res.confirmed.find((c) => c.feature === 'real');
+  assert.strictEqual(real.permutationChecked, true,
+    'a confirmed finding must be re-tested by shuffling, not only screened analytically');
+  assert.ok(1 / (real.permutationIterations + 1) < real.critical / 10,
+    `the shuffle count must put the p floor well under the threshold it must beat`
+    + ` (floor ${(1 / (real.permutationIterations + 1)).toExponential(1)},`
+    + ` threshold ${real.critical.toExponential(1)})`);
+  // And it must be compared against the BH CRITICAL VALUE, not against q. For a strong
+  // effect q is 1e-14 and below, which no finite number of shuffles can ever reach —
+  // comparing to q rejects every strong finding, which is how this was first got wrong.
+  assert.ok(real.pPermutation <= real.critical, 'and it must clear that threshold');
+
+  console.log(`✓ a strong effect survives a ${res.comparisons}-comparison search:`
+    + ' screened analytically, confirmed by'
+    + ` ${real.permutationIterations} shuffles against its own BH threshold`);
+}
+
+/*
+ * AND THE SEARCH MUST SAY WHAT IT COULD HAVE SEEN.
+ *
+ * "No pattern survived" from an underpowered search and from a well-powered one are
+ * completely different statements, and they were reported identically. The floor on the
+ * weakest reportable effect is the number that tells them apart, so it travels with
+ * every null result.
+ */
+{
+  const small = A.detectableRho(96, 400);
+  const big = A.detectableRho(2000, 400);
+  assert.ok(small > big, 'more observations must lower the bar');
+  assert.ok(small > 0.3 && small < 0.6,
+    `at 96 observations and 400 comparisons the bar should be around 0.35 (got ${small})`);
+  // The held-out hurdle is a hard floor: no amount of data lets a 0.05 correlation
+  // through, because it must also keep |rho| >= 0.2 on sits it was not fitted on.
+  assert.ok(big >= 0.2, `the held-out requirement is a floor no n can beat (got ${big})`);
+  assert.strictEqual(A.detectableRho(4, 10), null, 'and it refuses where n is absurd');
+
+  const units = [];
+  for (let sess = 0; sess < 4; sess++) {
+    for (let u = 0; u < 6; u++) {
+      const features = {};
+      for (let f = 0; f < 30; f++) features[`n${f}`] = gauss();
+      units.push({ sessionId: `s${sess}`, features, labels: { 'is:x': u % 2 } });
+    }
+  }
+  const res = A.search(units, { iterations: 300 });
+  assert.strictEqual(res.confirmed.length, 0, 'precondition: noise confirms nothing');
+  assert.match(res.verdict, /weakest relationship that could possibly have been reported/,
+    `a null verdict must state its own power: ${res.verdict}`);
+  assert.match(res.verdict, /rules out strong effects, not subtle ones/,
+    'and must not let a null be read as "there is nothing there"');
+  console.log(`✓ a null result carries the floor on what it could have seen`
+    + ` (${res.detectableRho.toFixed(2)} at n=${res.units}, ${res.comparisons} comparisons)`);
+}
+
 console.log('\nAll analysis tests passed.');

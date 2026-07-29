@@ -128,6 +128,54 @@
    * identity, and renumbering would silently repoint any stored preference — they
    * are simply not reachable by cycling or by the picker.
    */
+  /*
+   * Rescale a series to its OWN recent range, for display.
+   *
+   * Reported as "it looks like it's compressed on the bottom third of the screen", and
+   * it was: Flow maps every channel onto one vertical band straight from its value, and
+   * the expansion curve it uses was written on the assumption that "every value here is
+   * adaptively normalised against the wearer's own baseline, so a real session occupies
+   * roughly 0.35..0.75". That is true of the composite scores and FALSE of the per-
+   * channel series, which is a raw alpha/(alpha+beta) ratio — deliberately so, since a
+   * bounded ratio needs no normaliser to be meaningful.
+   *
+   * The consequence: a beta-dominant sit (eyes open, thinking, which is most of them)
+   * has that ratio sitting around 0.2 for every electrode, so all the traces pin to the
+   * floor of the band and the shape — the only thing a live trace is for — is squeezed
+   * into the bottom fraction of the space it was given.
+   *
+   * PERCENTILES, NOT MIN/MAX. One artifact spike sets the max and flattens everything
+   * else against the floor; the 5th/95th are robust to exactly that.
+   *
+   * `minSpan` is the part that keeps this honest. Without it, a channel that genuinely
+   * did not move gets its own noise stretched to fill the frame and reads as violent
+   * activity — inventing a signal, which is worse than the squashing this fixes. A
+   * series whose real range is narrower than minSpan stays narrow on screen.
+   */
+  function autoRange(values, { minSpan = 0.12, lo = 0.05, hi = 0.95 } = {}) {
+    const v = values.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b);
+    if (v.length < 4) return null;               // not enough to know a range
+    const at = (q) => v[Math.min(v.length - 1, Math.max(0, Math.round(q * (v.length - 1))))];
+    let min = at(lo), max = at(hi);
+    const span = max - min;
+    if (span < minSpan) {
+      // Widen symmetrically about the middle of what was seen, so a steady series sits
+      // in the middle of the band rather than being pushed to an edge.
+      const mid = (min + max) / 2;
+      min = mid - minSpan / 2;
+      max = mid + minSpan / 2;
+    }
+    return { min, max, span: max - min };
+  }
+
+  // Where `value` sits in that range, 0..1, clamped. Values outside the percentile
+  // window are pinned rather than allowed off the band — an artifact should reach the
+  // edge and stop, not leave the frame.
+  function inRange(value, range) {
+    if (value == null || !range || range.span <= 0) return null;
+    return Math.min(1, Math.max(0, (value - range.min) / range.span));
+  }
+
   function visibleModes() { return MODES.filter((m) => !m.hidden); }
   // `dir` of -1 walks backwards. Needed because the keyboard now has both `]` and `[`:
   // with forward-only cycling through seven visuals, going back one meant six presses.
@@ -538,9 +586,12 @@
       ],
       notes: ['flat horizon — calm', 'peaks and vibration — thinking'],
     },
-    // Flow is the only mode that follows the Sensors/Composites switch, so its key
-    // is whatever is actually being traced right now.
-    flow: { follows: true },
+    /* Flow is the only mode that follows the Sensors/Composites switch, so its key is
+       whatever is actually being traced right now.
+       The note is not optional: each line is scaled to its OWN recent range (see
+       autoRange), so vertical position shows change rather than level. Without saying
+       so, two lines crossing looks like two values becoming equal, which it is not. */
+    flow: { follows: true, notes: ['height is each line’s own recent range, not a level'] },
     // No colour key: Breath draws one form and is explicitly "nothing to read".
     // The two lines are still worth having — which direction is the in-breath is
     // the one thing about it that is not self-evident.
@@ -557,10 +608,23 @@
     return r ? `${m}m ${r}s` : `${m}m`;
   }
 
-  function legendFor(modeKey, { composites = false, breath = false, depositSec = null } = {}) {
+  function legendFor(modeKey, {
+    composites = false, breath = false, depositSec = null, omitSeries = null,
+  } = {}) {
     const spec = LEGENDS[modeKey];
     if (!spec) return [];                      // hidden/experimental modes: no key yet
-    if (spec.follows) return legendEntries({ composites, breath });
+    /* `omitSeries` drops lines that are not being drawn — an electrode with no contact
+       is absent from the picture, and a key naming it is a small lie of its own: the
+       reader looks for a line that was never there and concludes it is flat. */
+    const omitted = new Set(omitSeries || []);
+    const keep = (list) => list.filter((e) => !omitted.has(e.label));
+    if (spec.follows) {
+      const base = keep(legendEntries({ composites, breath }));
+      // A key with nothing in it gets no caption either — an electrode that never made
+      // contact is absent from the picture, so there is nothing for a note to describe.
+      if (!base.length) return base;
+      return base.concat((spec.notes || []).map((text) => ({ text })));
+    }
     const out = [];
     if (spec.palette === 'metrics') {
       out.push(...PULSE_METRICS.map((m) => ({ label: m.label, color: m.color })));
@@ -570,6 +634,9 @@
       out.push(...CHANNEL_LABELS.map((label, i) => ({ label, color: CHANNEL_COLORS[i] })));
     }
     if (spec.swatches) out.push(...spec.swatches.map((s) => ({ ...s })));
+    if (omitted.size) {
+      for (let i = out.length - 1; i >= 0; i--) if (omitted.has(out[i].label)) out.splice(i, 1);
+    }
     if (spec.notes) {
       // Only substitute when the interval is actually known. Otherwise drop the line
       // rather than print a placeholder or invent a default — a key that says the
@@ -586,7 +653,7 @@
   return {
     CHANNEL_COLORS, CHANNEL_LABELS, legendEntries, LEGENDS, legendFor, IRIS_MOOD,
     CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, visibleModes, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
+    MODES, nextMode, visibleModes, autoRange, inRange, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,
   };

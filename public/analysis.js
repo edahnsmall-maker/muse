@@ -173,6 +173,124 @@
     };
   }
 
+  /* ==========================================================================
+   * THE RESOLUTION FLOOR, and why an analytic p is needed as well
+   * ==========================================================================
+   *
+   * A permutation p cannot go below 1/(iterations+1) — with zero shuffles beating the
+   * observed value the estimate is (0+1)/(N+1), by construction, because a finite
+   * number of shuffles cannot evidence a smaller number than that.
+   *
+   * Benjamini-Hochberg needs the strongest hit at p <= q/m. So at q = 0.1 and 1500
+   * shuffles, the floor of 6.7e-4 means NOTHING CAN EVER BE CONFIRMED once the search
+   * exceeds ~150 comparisons — not a weak effect, not a crushing one. Measured, not
+   * reasoned about: a 0.87 correlation over 300 observations went undetected in a
+   * 100-feature search at every sample size tried, because its p could not physically
+   * be smaller than the threshold it had to beat.
+   *
+   * This is the worst class of failure in this file: the search reports "no pattern
+   * survived", which reads as a finding about meditation, when it is a fact about the
+   * arithmetic of the tool. And it arrived silently, as a consequence of widening the
+   * feature set — the change that made the search able to ask better questions is the
+   * change that made it unable to answer any.
+   *
+   * So screening now uses an ANALYTIC p, which has no floor, and permutation is kept
+   * for what it is uniquely good at: checking that the analytic assumption holds. The
+   * survivors are few, so they can afford enough shuffles to be worth trusting.
+   */
+
+  // Continued fraction for the incomplete beta function (Lentz's method). Needed for
+  // the t-distribution tail; there is no Math.* for this.
+  function betacf(a, b, x) {
+    const MAXIT = 200, EPS = 3e-16, FPMIN = 1e-300;
+    const qab = a + b, qap = a + 1, qam = a - 1;
+    let c = 1, d = 1 - (qab * x) / qap;
+    if (Math.abs(d) < FPMIN) d = FPMIN;
+    d = 1 / d;
+    let h = d;
+    for (let m = 1; m <= MAXIT; m++) {
+      const m2 = 2 * m;
+      let aa = (m * (b - m) * x) / ((qam + m2) * (a + m2));
+      d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+      c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+      d = 1 / d; h *= d * c;
+      aa = (-(a + m) * (qab + m) * x) / ((a + m2) * (qap + m2));
+      d = 1 + aa * d; if (Math.abs(d) < FPMIN) d = FPMIN;
+      c = 1 + aa / c; if (Math.abs(c) < FPMIN) c = FPMIN;
+      d = 1 / d;
+      const del = d * c;
+      h *= del;
+      if (Math.abs(del - 1) < EPS) break;
+    }
+    return h;
+  }
+
+  function logGamma(z) {
+    // Lanczos approximation. Accurate to ~15 digits over the range used here.
+    const g = [676.5203681218851, -1259.1392167224028, 771.32342877765313,
+      -176.61502916214059, 12.507343278686905, -0.13857109526572012,
+      9.9843695780195716e-6, 1.5056327351493116e-7];
+    if (z < 0.5) return Math.log(Math.PI / Math.sin(Math.PI * z)) - logGamma(1 - z);
+    let x = z - 1, a = 0.99999999999980993, t = x + 7.5;
+    for (let i = 0; i < g.length; i++) a += g[i] / (x + i + 1);
+    return 0.5 * Math.log(2 * Math.PI) + (x + 0.5) * Math.log(t) - t + Math.log(a);
+  }
+
+  function betai(a, b, x) {
+    if (x <= 0) return 0;
+    if (x >= 1) return 1;
+    const lbeta = logGamma(a + b) - logGamma(a) - logGamma(b)
+      + a * Math.log(x) + b * Math.log(1 - x);
+    const bt = Math.exp(lbeta);
+    return x < (a + 1) / (a + b + 2)
+      ? (bt * betacf(a, b, x)) / a
+      : 1 - (bt * betacf(b, a, 1 - x)) / b;
+  }
+
+  /*
+   * Two-sided p for a Spearman rho, from the t approximation.
+   *
+   * t = rho * sqrt((n-2)/(1-rho^2)) on n-2 degrees of freedom. Approximate — it treats
+   * the rank correlation as if it were a Pearson r on normal data, and with a binary
+   * label (heavy ties, which is exactly the marked-vs-unmarked case) the approximation
+   * is looser than for a continuous one. That is precisely why the permutation test is
+   * kept: this value SCREENS, and permutation CONFIRMS.
+   */
+  function spearmanP(rho, n) {
+    if (rho == null || !Number.isFinite(rho) || n == null || n < 4) return null;
+    const r = Math.min(1 - 1e-12, Math.max(-1 + 1e-12, rho));
+    const df = n - 2;
+    const t = Math.abs(r) * Math.sqrt(df / (1 - r * r));
+    return Math.min(1, betai(df / 2, 0.5, df / (df + t * t)));
+  }
+
+  /*
+   * THE SMALLEST EFFECT THIS SEARCH COULD POSSIBLY REPORT.
+   *
+   * The most useful number in the whole file, and the one that was missing. Before
+   * reading any correlation it answers the question that actually matters: given how
+   * many observations there are and how many comparisons were made, is this dataset
+   * capable of showing anything? A "no pattern found" from an underpowered search and
+   * one from a well-powered search are completely different statements, and until this
+   * existed they were reported identically.
+   *
+   * Solved numerically rather than inverted analytically — a bisection over a
+   * monotone function is a dozen lines nobody has to re-derive.
+   */
+  function detectableRho(n, comparisons, { fdr = 0.1, heldOutFloor = 0.2 } = {}) {
+    if (!n || n < 6 || !comparisons) return null;
+    const target = fdr / comparisons;          // what the STRONGEST hit must beat
+    let lo = 0, hi = 0.999;
+    for (let i = 0; i < 60; i++) {
+      const mid = (lo + hi) / 2;
+      if (spearmanP(mid, n) > target) lo = mid; else hi = mid;
+    }
+    // The held-out check is a second, independent hurdle: a pattern must also keep
+    // |rho| >= heldOutFloor on sits it was never fitted on, so the true bar is the
+    // larger of the two.
+    return Math.max(hi, heldOutFloor);
+  }
+
   /*
    * Benjamini-Hochberg, on a whole family of tests at once.
    *
@@ -202,9 +320,16 @@
       const target = out.find((o) => o === t || (o.key === t.key && o.p === t.p));
       if (!target) return;
       target.q = Math.min(1, (t.p * m) / (i + 1));
+      /* The BH threshold this test had to clear, kept for the permutation re-check.
+         `q` is the adjusted p-value and is NOT the right thing to re-test against: for
+         a strong effect q is astronomically small (1e-14 and below), and no finite
+         number of shuffles can produce a p that small, so comparing a permutation p to
+         q rejects every strong finding. The critical value is the actual bar. */
+      target.critical = ((i + 1) / m) * fdr;
+      target.rank = i + 1;
       target.passes = i <= maxPassing;
     });
-    for (const t of out) if (t.p == null) { t.q = null; t.passes = false; }
+    for (const t of out) if (t.p == null) { t.q = null; t.critical = null; t.passes = false; }
     return { tests: out, comparisons: m, fdr, survivors: out.filter((t) => t.passes).length };
   }
 
@@ -255,20 +380,26 @@
     const trainRows = rows.filter((u) => split.train.includes(u.sessionId));
     const testRows = rows.filter((u) => split.test.includes(u.sessionId));
 
+    /*
+     * SCREEN ANALYTICALLY, CONFIRM BY PERMUTATION.
+     *
+     * Every pair gets an analytic p, which has no resolution floor — see the note
+     * above spearmanP for the failure this replaces, where a large search could not
+     * confirm a crushing effect because the permutation p physically could not be
+     * smaller than the threshold it had to beat.
+     */
     const tests = [];
     for (const f of featureKeys) {
       for (const l of labelKeys) {
-        const tr = permutationP(
-          trainRows.map((u) => u.features[f]), trainRows.map((u) => u.labels[l]),
-          { iterations, seed },
-        );
+        const tr = spearman(trainRows.map((u) => u.features[f]), trainRows.map((u) => u.labels[l]));
         // The held-out score is computed even when training found nothing, so the
         // table cannot be read as "we only checked the promising ones".
         const te = spearman(testRows.map((u) => u.features[f]), testRows.map((u) => u.labels[l]));
         tests.push({
           key: `${f}~${l}`, feature: f, label: l,
-          trainRho: tr.rho, p: tr.p, trainN: tr.n,
+          trainRho: tr.rho, p: spearmanP(tr.rho, tr.n), trainN: tr.n,
           testRho: te.rho, testN: te.n,
+          pPermutation: null, permutationChecked: false,
           // The only column that matters: did the direction survive on sits the
           // pattern had never seen? A sign flip is a refutation, not a weak result.
           heldUp: (tr.rho != null && te.rho != null)
@@ -280,12 +411,53 @@
     }
 
     const adjusted = adjustForMultiplicity(tests, { fdr });
-    const confirmed = adjusted.tests.filter((t) => t.passes && t.heldUp === true);
+    const shortlist = adjusted.tests.filter((t) => t.passes && t.heldUp === true);
+
+    /*
+     * Now the expensive, assumption-free check, on the shortlist only.
+     *
+     * The analytic p treats a rank correlation as a Pearson r on normal data, and the
+     * marked-versus-unmarked label is binary — heavy ties, where that approximation is
+     * at its loosest. Measured agreement on this shape of data is within ~20%, which is
+     * fine for ordering a search and not fine for a claim. So anything that survives
+     * screening is re-tested by shuffling, with enough shuffles that the floor sits an
+     * order of magnitude below the threshold it must beat.
+     *
+     * A candidate that fails here is DROPPED, and that is the point: it means the
+     * approximation flattered it.
+     */
+    const critical = fdr / Math.max(1, adjusted.comparisons);
+    const permIterations = Math.max(iterations, Math.ceil(20 / critical));
+    const CONFIRM_CAP = 40;
+    let permutationsSkipped = 0;
+    shortlist.forEach((t, i) => {
+      if (i >= CONFIRM_CAP) { permutationsSkipped++; return; }
+      const pp = permutationP(
+        trainRows.map((u) => u.features[t.feature]),
+        trainRows.map((u) => u.labels[t.label]),
+        { iterations: permIterations, seed },
+      );
+      t.pPermutation = pp.p;
+      t.permutationChecked = true;
+      t.permutationIterations = permIterations;
+    });
+    const confirmed = shortlist.filter((t) => !t.permutationChecked
+      || (t.pPermutation != null && t.pPermutation <= t.critical));
+
     return {
       tests: adjusted.tests.sort((a, b) => (a.p == null ? 1 : b.p == null ? -1 : a.p - b.p)),
       comparisons: adjusted.comparisons,
       survivors: adjusted.survivors,
       confirmed,
+      shortlist: shortlist.length,
+      permutationsSkipped,
+      permutationIterations: permIterations,
+      /*
+       * What this dataset could have shown, whether or not it showed anything. A "no
+       * pattern found" from an underpowered search and one from a well-powered search
+       * are entirely different statements and used to be reported identically.
+       */
+      detectableRho: detectableRho(trainRows.length, adjusted.comparisons, { fdr }),
       split: { train: split.train, test: split.test, reason: split.reason },
       units: rows.length,
       /*
@@ -293,11 +465,11 @@
        * table of correlations invites reading the biggest number as the finding; this
        * says outright when there is nothing.
        */
-      verdict: verdict({ rows, confirmed, adjusted, split }),
+      verdict: verdict({ rows, confirmed, adjusted, split, fdr }),
     };
   }
 
-  function verdict({ rows, confirmed, adjusted, split }) {
+  function verdict({ rows, confirmed, adjusted, split, fdr = 0.1 }) {
     if (rows.length < MIN_N) {
       return `Not enough labelled observations (${rows.length}; need at least ${MIN_N}).`
         + ' Nothing here is worth interpreting yet — label more sits.';
@@ -307,10 +479,19 @@
         + ' unvalidated and could be a property of this single sit.';
     }
     if (!confirmed.length) {
+      /* THE FLOOR ON WHAT COULD HAVE BEEN SEEN, in the same breath as the null result.
+         Without it, "nothing survived" reads as a fact about meditation when it may be
+         a fact about how much data there is: at 96 observations and 400 comparisons
+         nothing below a 0.37 correlation can survive, and most real effects are
+         smaller than that. */
+      const floor = detectableRho(rows.length, adjusted.comparisons, { fdr });
       return `No pattern survived. ${adjusted.comparisons} comparisons were made across`
         + ` ${rows.length} labelled observations, ${adjusted.survivors} passed correction,`
         + ' and none of those held their direction on the held-out sessions.'
-        + ' That is a real result: with this much data, there is nothing to see yet.';
+        + (floor ? ` With this many observations and this many comparisons, the weakest`
+          + ` relationship that could possibly have been reported is about ${floor.toFixed(2)}`
+          + ` — so this rules out strong effects, not subtle ones.` : '')
+        + ' That is a real result, and the way to change it is more labelled moments.';
     }
     return `${confirmed.length} of ${adjusted.comparisons} comparisons survived`
       + ' correction AND held their direction on sessions they were not fitted on:'
@@ -870,6 +1051,6 @@
     eventLocked, eventLockedNull, eventLockedTest,
     seededRandom, shuffle,
     NOT_A_SIGNAL, seriesKeys, slope, windowFeatures, unitsFromMarks,
-    MIN_WINDOW_PAIRS, windowCorr,
+    MIN_WINDOW_PAIRS, windowCorr, spearmanP, detectableRho, betai,
   };
 });
