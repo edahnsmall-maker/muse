@@ -44,6 +44,31 @@
     [255, 80, 120],  // TP10 — rose
   ];
 
+  /*
+   * Iris's palette, which is NOT per-electrode: the disc is coloured by mind state,
+   * so warm means thinking and cool means calm regardless of which sensor said so.
+   *
+   * Here rather than inline in visual.js's irisMindColor specifically so the legend
+   * can key off the same constants the renderer mixes. That is not a tidiness
+   * preference — the first version of the Iris legend keyed TP9/AF7/AF8/TP10 because
+   * it was written from `renderIris`, while the mode actually dispatches to
+   * `renderIrisSediment`, which uses none of those colours. It would have named four
+   * electrodes for a picture that never draws one, and been believed.
+   *
+   * Thresholds and mixes live with the renderer; only the endpoints are shared.
+   */
+  const IRIS_MOOD = {
+    thinkingLo: [168, 36, 72],   // deep red, at the threshold
+    thinkingHi: [255, 94, 62],   // hot orange-red, thinking high
+    calmLo: [44, 150, 176],      // teal, at the threshold
+    calmHi: [88, 221, 164],      // green, deeply settled
+    mixedLo: [88, 116, 190],     // neither clearly winning
+    mixedHi: [170, 88, 164],
+    uncertain: [92, 132, 178],   // blue-grey: no clear state
+    focusTint: [235, 205, 120],  // gold, mixed in as focus rises
+    noiseTint: [112, 112, 120],  // grey: the signal is not trustworthy
+  };
+
   // Where each sensor actually sits on the head. The screen is treated as a
   // plan view from above with the nose toward the top, so the left forehead
   // sensor appears upper-left, and so on. Angles are radians CLOCKWISE FROM
@@ -436,8 +461,99 @@
     return out;
   }
 
+  /*
+   * A KEY FOR EVERY VISUAL, not just Flow.
+   *
+   * Reported twice: "I don't know what these colors actually mean. Thinking and
+   * drowsy." A visual that responds to your physiology and does not say what it is
+   * responding to is decoration — you cannot use it to notice anything, because you
+   * cannot tell a real change from a rendering flourish.
+   *
+   * TWO KINDS OF ENTRY, because these visuals encode two different kinds of thing:
+   *
+   *   { label, color }  a colour key — this hue IS that series
+   *   { text }          an encoding, in words: what growing, brightening or
+   *                     flattening means. Pulse's colours are a key; Eclipse's
+   *                     expanding void is not a colour at all, and no swatch can
+   *                     explain it.
+   *
+   * THE NOTES ARE DERIVED FROM THE RENDERERS, and every one below was read out of
+   * the drawing code rather than guessed from the mode's blurb. A legend that is
+   * plausible but wrong is worse than none: it would be believed, and it would send
+   * someone looking for a state change that the picture never showed. Whoever edits
+   * a renderer's encoding has to edit its note here too — test-viz.js checks that
+   * the colours still come from the same arrays the renderers index, which catches
+   * the palette half of that drift but cannot check the prose.
+   */
+  const LEGENDS = {
+    // Warm corona palette, one hue per electrode — see CORONA_COLORS.
+    eclipse: {
+      palette: 'corona',
+      notes: ['void grows — settling', 'corona reaches out — thinking'],
+    },
+    /* MIND STATE, NOT ELECTRODES — see IRIS_MOOD and visual.js's irisMindColor.
+       The disc is one colour per moment, chosen from calm/thinking/focus/noise, and
+       deposited outward as a record of the sit. This is the mode the "I don't know
+       what these colors mean" complaint was about, and the answer is the palette
+       rather than a channel key. */
+    iris: {
+      swatches: [
+        { label: 'thinking', color: IRIS_MOOD.thinkingHi },
+        { label: 'calm', color: IRIS_MOOD.calmHi },
+        { label: 'focus', color: IRIS_MOOD.focusTint },
+        { label: 'poor signal', color: IRIS_MOOD.noiseTint, faint: true },
+      ],
+      notes: ['colour is the whole mind, not one sensor',
+        'a ring laid down every 5s, growing outward',
+        'so the middle is the start of the sit'],
+    },
+    // One SweepRing per composite metric, PULSE_REV_SEC per revolution.
+    pulse: {
+      palette: 'metrics',
+      notes: ['one lane each · 24s per turn', 'bulges where it flared'],
+    },
+    corona: {
+      palette: 'metrics',
+      notes: ['all four in one field · 24s per turn', 'colour shows which flared'],
+    },
+    /* Silk has no per-series colour: its hue is a cool-to-warm mix driven by focus
+       (renderSilk mixes [60,190,255]..[154,91,230] toward [255,110,69]..[255,200,151]).
+       So the swatches name the ENDS of that mix rather than four series. */
+    silk: {
+      swatches: [
+        { label: 'focused', color: [255, 150, 110] },
+        { label: 'unfocused', color: [80, 190, 250] },
+      ],
+      notes: ['flat horizon — calm', 'peaks and vibration — thinking'],
+    },
+    // Flow is the only mode that follows the Sensors/Composites switch, so its key
+    // is whatever is actually being traced right now.
+    flow: { follows: true },
+    // No colour key: Breath draws one form and is explicitly "nothing to read".
+    // The two lines are still worth having — which direction is the in-breath is
+    // the one thing about it that is not self-evident.
+    breath: { notes: ['expanding — in-breath', 'contracting — out-breath'] },
+  };
+
+  function legendFor(modeKey, { composites = false, breath = false } = {}) {
+    const spec = LEGENDS[modeKey];
+    if (!spec) return [];                      // hidden/experimental modes: no key yet
+    if (spec.follows) return legendEntries({ composites, breath });
+    const out = [];
+    if (spec.palette === 'metrics') {
+      out.push(...PULSE_METRICS.map((m) => ({ label: m.label, color: m.color })));
+    } else if (spec.palette === 'corona') {
+      out.push(...CHANNEL_LABELS.map((label, i) => ({ label, color: CORONA_COLORS[i] })));
+    } else if (spec.palette === 'channels') {
+      out.push(...CHANNEL_LABELS.map((label, i) => ({ label, color: CHANNEL_COLORS[i] })));
+    }
+    if (spec.swatches) out.push(...spec.swatches.map((s) => ({ ...s })));
+    if (spec.notes) out.push(...spec.notes.map((text) => ({ text })));
+    return out;
+  }
+
   return {
-    CHANNEL_COLORS, CHANNEL_LABELS, legendEntries,
+    CHANNEL_COLORS, CHANNEL_LABELS, legendEntries, LEGENDS, legendFor, IRIS_MOOD,
     CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
     MODES, nextMode, visibleModes, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,

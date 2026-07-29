@@ -462,4 +462,82 @@ const VizCore = require('./public/viz-core.js');
   console.log('\u2713 legendEntries names exactly what is drawn, in matching colours');
 }
 
+/*
+ * EVERY VISIBLE MODE MUST HAVE A KEY, and its colours must come from the array the
+ * renderer actually indexes.
+ *
+ * Reported twice: "I don't know what these colors actually mean. Thinking and
+ * drowsy." Only Flow had a legend, because the legend was drawn from inside
+ * renderFlow and no other renderer called it.
+ *
+ * The sharper reason this test exists: the first Iris legend keyed TP9/AF7/AF8/TP10.
+ * It was written by reading `renderIris` \u2014 but the `iris` mode dispatches to
+ * `renderIrisSediment`, which colours the disc by MIND STATE and never touches a
+ * channel hue. The legend would have named four electrodes for a picture that draws
+ * none, and it would have been believed. So colours are checked against the shared
+ * constants rather than eyeballed.
+ */
+{
+  const visible = VizCore.visibleModes();
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  const palettes = [
+    VizCore.CHANNEL_COLORS,
+    VizCore.CORONA_COLORS,
+    VizCore.PULSE_METRICS.map((m) => m.color),
+    Object.values(VizCore.IRIS_MOOD),
+    // Silk's two swatches name the ends of a focus-driven warm/cool mix
+    // (renderSilk), and white is Flow's breath trace.
+    [[255, 150, 110], [80, 190, 250], [255, 255, 255]],
+  ];
+  const known = [].concat(...palettes);
+
+  for (const m of visible) {
+    const entries = VizCore.legendFor(m.key, { composites: false, breath: true });
+    assert.ok(entries.length > 0,
+      `"${m.label}" has no legend. Every visible mode needs one \u2014 a visual that reacts`
+      + ' to your physiology without saying what it is reacting to cannot be used to'
+      + ' notice anything, because a real change and a flourish look the same.'
+      + ' Add an entry to VizCore.LEGENDS.');
+
+    for (const e of entries) {
+      assert.ok((e.color && e.label) || e.text,
+        `"${m.label}" has an entry that is neither a swatch nor a note:`
+        + ` ${JSON.stringify(e)}`);
+      if (e.color) {
+        assert.ok(known.some((c) => eq(c, e.color)),
+          `"${m.label}" keys ${e.label} to ${JSON.stringify(e.color)}, which is not a`
+          + ' colour any renderer draws. A legend colour must come from the same'
+          + ' constant the renderer indexes, or the key and the picture disagree.');
+      }
+    }
+  }
+
+  // Iris specifically: it must NOT claim to be a channel key. The exact mistake that
+  // was caught, written down so it cannot come back quietly.
+  const iris = VizCore.legendFor('iris', {});
+  assert.ok(!iris.some((e) => VizCore.CHANNEL_LABELS.includes(e.label)),
+    'the Iris key must not name electrodes \u2014 renderIrisSediment colours the disc by'
+    + ' mind state (VizCore.IRIS_MOOD) and never draws a per-channel hue');
+  assert.ok(iris.some((e) => eq(e.color, VizCore.IRIS_MOOD.thinkingHi))
+    && iris.some((e) => eq(e.color, VizCore.IRIS_MOOD.calmHi)),
+    'and it must name the warm/cool ends that irisMindColor actually mixes');
+
+  // Flow still follows the Sensors/Composites switch: its key has to change with it,
+  // or flipping the switch silently relabels four lines.
+  const flowSensors = VizCore.legendFor('flow', { composites: false });
+  const flowComps = VizCore.legendFor('flow', { composites: true });
+  assert.notDeepStrictEqual(flowSensors.map((e) => e.label), flowComps.map((e) => e.label),
+    'Flow is the one mode that switches series, so its key must switch too');
+
+  // A mode with no colour key still gets its words. Breath draws one form and is
+  // explicitly "nothing to read" \u2014 but which direction is the in-breath is not
+  // self-evident, and that is worth a line.
+  const breath = VizCore.legendFor('breath', {});
+  assert.ok(breath.length && breath.every((e) => e.text),
+    'Breath has no colour key but must still say which way is in');
+
+  console.log(`\u2713 all ${visible.length} visible modes have a key, and every colour`
+    + ' in it comes from the renderer\u2019s own palette');
+}
+
 console.log('\nAll viz-core tests passed.');

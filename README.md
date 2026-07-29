@@ -617,6 +617,28 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### Every visual says what it means
+
+Each of the seven visuals draws its own key, top-left: a colour swatch per series where
+the colours *are* series, and plain word-lines where they are not. Eclipse's expanding
+void and Iris's outward growth are not colours, and no swatch can explain them.
+
+Only Flow had a legend before, because the legend was drawn from inside `renderFlow`. It
+is now drawn once for every mode after the render dispatch, so a new mode either has an
+entry in `VizCore.LEGENDS` or gets no key — and `test-viz.js` fails if a *visible* mode
+has none.
+
+One near-miss worth recording, because it is the failure mode this whole area invites:
+the first Iris legend keyed `TP9 / AF7 / AF8 / TP10`. It was written by reading
+`renderIris` — but the `iris` mode dispatches to `renderIrisSediment`, which colours the
+disc by **mind state** (warm = thinking, cool = calm, gold = focus, grey = poor signal)
+and never touches a channel hue. The legend would have named four electrodes for a
+picture that draws none, and it would have been believed — sending someone looking for a
+per-sensor difference the picture never showed. A legend that is plausible but wrong is
+worse than no legend. `test-viz.js` now checks every legend colour against the constants
+the renderers actually index, which catches the palette half of that drift; the prose
+half is still on whoever edits a renderer.
+
 ### Panels move
 
 Every floating panel — Metrics, Live feed, the visual picker, the armed-tap list, the

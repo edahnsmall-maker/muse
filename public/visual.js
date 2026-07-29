@@ -99,6 +99,13 @@ function createZenVisual(canvas) {
   // look "dead" when the flat blue line was in fact an electrode.
   let seriesMode = 'sensors';
 
+  /* Is the key drawn? On by default, and that is the deliberate choice: the whole
+   * complaint was not knowing what the colours meant, so a legend you have to find
+   * a switch for does not answer it. Kept switchable because a legend is text on
+   * screen during a sit, and someone who has learned the palette will want it gone.
+   */
+  let legendOn = true;
+
   let sessionSec = 0;   // monotonic, for placing blooms along a slow sweep
   let breathPhase = 0;  // integrated radians — see renderBreath
   let patternT = 0;     // seconds accumulated for patterned breathing
@@ -123,14 +130,23 @@ function createZenVisual(canvas) {
     c.fillRect(0, 0, BW, BH);
   }
 
-  /* A key for whatever a mode is currently drawing. Reusable on purpose: only
-   * Flow uses it today, but the other per-channel modes (Field, Silk, Iris) have
-   * the same ambiguity and are expected to want it.
+  /* A key for whatever a mode is currently drawing.
    *
-   * Entries come from VizCore.legendEntries so the key is generated from the same
-   * source the renderer draws from and cannot drift out of sync with it. That
-   * drift is not hypothetical — the data panel's electrode colours HAD diverged
-   * from the visual's, so a ribbon and its own line were different colours.
+   * Every visible mode has one now, from VizCore.legendFor. Reported twice: "I
+   * don't know what these colors actually mean. Thinking and drowsy." A visual
+   * that reacts to your physiology without saying what it is reacting to cannot
+   * be used to notice anything, because a real change and a rendering flourish
+   * look the same.
+   *
+   * Entries come from VizCore so the key is generated from the same source the
+   * renderer draws from and cannot drift out of sync with it. That drift is not
+   * hypothetical — the data panel's electrode colours HAD diverged from the
+   * visual's, so a ribbon and its own line were different colours.
+   *
+   * TWO ENTRY SHAPES. `{label, color}` draws a swatch: this hue IS that series.
+   * `{text}` draws a word-line with no swatch, for encodings that are not colours
+   * at all — Eclipse's expanding void, Iris's outward growth. No swatch can
+   * explain those, and inventing one would misdescribe the picture.
    *
    * Top-left, because the mode pills own top-centre, the readout bottom-right and
    * the data panel bottom-left. Deliberately quiet: something to glance at, not
@@ -143,25 +159,41 @@ function createZenVisual(canvas) {
     const size = Math.max(10, Math.round(H * 0.0165));
     const lh = Math.round(size * 1.75);
     const swatch = Math.round(size * 1.7);
+    const textX = pad + swatch + Math.round(size * 0.6);
     c.save();
     c.globalCompositeOperation = 'source-over';
-    c.font = `${size}px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
     c.textBaseline = 'middle';
     c.textAlign = 'left';
     c.lineCap = 'round';
-    entries.forEach((e, i) => {
-      const y = pad + size + i * lh;
-      // A short line segment, not a dot: the data is drawn as lines, so the key
-      // should look like the thing it refers to.
-      c.strokeStyle = rgba(e.color, e.faint ? 0.5 : 0.8);
-      c.lineWidth = Math.max(1.5, size * 0.16);
-      c.beginPath();
-      c.moveTo(pad, y);
-      c.lineTo(pad + swatch, y);
-      c.stroke();
-      c.fillStyle = rgba(e.color, e.faint ? 0.42 : 0.66);
-      c.fillText(e.label, pad + swatch + Math.round(size * 0.6), y);
-    });
+    let y = pad + size;
+    let lastWasSwatch = false;
+    for (const e of entries) {
+      const isNote = !e.color;
+      // A blank half-line between the colour key and the words, so the two kinds
+      // of information do not read as one list of eight equal items.
+      if (isNote && lastWasSwatch) y += Math.round(lh * 0.45);
+      if (isNote) {
+        // Smaller and dimmer than the key: these are captions, and they must not
+        // compete with the visual they are describing.
+        c.font = `${Math.max(9, Math.round(size * 0.92))}px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
+        c.fillStyle = 'rgba(226,232,255,0.40)';
+        c.fillText(e.text, pad, y);
+      } else {
+        c.font = `${size}px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif`;
+        // A short line segment, not a dot: the data is drawn as lines, so the key
+        // should look like the thing it refers to.
+        c.strokeStyle = rgba(e.color, e.faint ? 0.5 : 0.8);
+        c.lineWidth = Math.max(1.5, size * 0.16);
+        c.beginPath();
+        c.moveTo(pad, y);
+        c.lineTo(pad + swatch, y);
+        c.stroke();
+        c.fillStyle = rgba(e.color, e.faint ? 0.42 : 0.66);
+        c.fillText(e.label, textX, y);
+      }
+      lastWasSwatch = !isNote;
+      y += lh;
+    }
     c.restore();
   }
 
@@ -628,16 +660,20 @@ function createZenVisual(canvas) {
     const cool = smoothstep(0.50, 0.68, calm) * (1 - 0.25 * thinking);
     const gold = smoothstep(0.38, 0.66, focus) * (1 - 0.35 * heat);
 
-    let base = [92, 132, 178]; // uncertain/mixed blue-gray
+    // Endpoints come from VizCore.IRIS_MOOD so the legend keys off the same values
+    // this mixes. The thresholds and weightings stay here — they are this renderer's
+    // judgement about what is legible, not shared vocabulary.
+    const M = VizCore.IRIS_MOOD;
+    let base = M.uncertain;    // no clear state: blue-grey
     if (heat > cool + 0.12) {
-      base = mixColor([168, 36, 72], [255, 94, 62], clamp01(heat));
+      base = mixColor(M.thinkingLo, M.thinkingHi, clamp01(heat));
     } else if (cool > heat + 0.08) {
-      base = mixColor([44, 150, 176], [88, 221, 164], clamp01(cool));
+      base = mixColor(M.calmLo, M.calmHi, clamp01(cool));
     } else {
-      base = mixColor([88, 116, 190], [170, 88, 164], clamp01(0.35 + heat));
+      base = mixColor(M.mixedLo, M.mixedHi, clamp01(0.35 + heat));
     }
-    base = mixColor(base, [235, 205, 120], gold * 0.40);
-    base = mixColor(base, [112, 112, 120], smoothstep(0.22, 0.58, noise) * 0.72);
+    base = mixColor(base, M.focusTint, gold * 0.40);
+    base = mixColor(base, M.noiseTint, smoothstep(0.22, 0.58, noise) * 0.72);
 
     const accent = mixColor(base, heat > cool ? [255, 182, 126] : [172, 245, 220], 0.28 + 0.22 * gold);
     const intensity = clamp01(0.34 + 0.34 * Math.max(heat, cool) + 0.24 * gold - 0.24 * noise);
@@ -857,13 +893,10 @@ function createZenVisual(canvas) {
     // blew out to white.
     const baseW = Math.max(1, H * 0.0018);
 
-      // A legend, because the four traces change identity with the Sensors /
-    // Composites switch and there is otherwise no way to know whether the blue
-    // line is TP9 or Focus.
-    drawLegend(c, W, H, VizCore.legendEntries({
-      composites,
-      breath: history.some((h) => h.breath != null),
-    }));
+    // The legend used to be drawn here, for Flow alone. It is now drawn once for
+    // every mode at the end of the frame — see the call after the render dispatch.
+    // Drawing it inside a renderer meant six other modes each had to remember to,
+    // and none of them did.
 
   // The breath, as a wave about the vertical midpoint: above the centre line is
     // the in-breath, below it the out-breath. Drawn from the same history buffer
@@ -2072,6 +2105,24 @@ function createZenVisual(canvas) {
       ctx.drawImage(buf, 0, 0, BW, BH, 0, 0, canvas.width, canvas.height);
     }
 
+    /* THE KEY, ONCE, FOR WHATEVER MODE IS RUNNING.
+     * Drawn here rather than inside each renderer: it lived inside renderFlow, so
+     * Flow was the only visual that explained itself and the other six each would
+     * have had to remember to call it. Here there is one call and no mode can be
+     * forgotten — a new mode either has an entry in VizCore.LEGENDS or gets no key,
+     * and test-viz.js fails if a VISIBLE mode has none.
+     *
+     * On the output canvas after the upscale, not into the small buffer, so the text
+     * is drawn at real resolution instead of being magnified from a 4x-smaller
+     * bitmap. That matters more for text than for anything else on screen.
+     */
+    if (legendOn) {
+      drawLegend(ctx, canvas.width, canvas.height, VizCore.legendFor(mode, {
+        composites: seriesMode === 'composites',
+        breath: history.some((h) => h.breath != null),
+      }));
+    }
+
     if (smooth.noise > 0.02) {
       // Eclipse renders on a light ground, so a pale veil would be invisible
       // there — darken instead, so "the signal is unreliable right now" reads
@@ -2165,6 +2216,16 @@ function createZenVisual(canvas) {
     setSeries(which) {
       seriesMode = which === 'composites' ? 'composites' : 'sensors';
       return seriesMode;
+    },
+    setLegend(on) { legendOn = !!on; return legendOn; },
+    legendVisible() { return legendOn; },
+    // Exposed for the tests: what the key currently says, without reading pixels.
+    // The drawing is smoke-tested; WHAT it claims is the part worth asserting.
+    legendNow() {
+      return VizCore.legendFor(VizCore.MODES[modeIndex].key, {
+        composites: seriesMode === 'composites',
+        breath: history.some((h) => h.breath != null),
+      });
     },
     currentSeries() { return seriesMode; },
     modes() { return VizCore.MODES; },
