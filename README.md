@@ -617,6 +617,35 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### The lab remembers
+
+Two things persist in the lab's own IndexedDB (`public/labstore.js`), separate from the
+app's recordings so a lab bug can never touch the only copy of a sit:
+
+- **The loaded sits.** Reopen the lab and your archives are still there, re-analysed from
+  restored data. Removing one really removes it, rather than having it reappear on the
+  next reload.
+- **Dated analysis snapshots.** *Save this analysis* writes the report prose, the
+  structured findings, and **which sits it rested on** — append-only, never overwritten.
+  Reopening one shows what it said *then*, not a fresh run; re-deriving would print
+  today's answer under yesterday's date, which is the one thing a record must not do.
+
+The snapshots are the point, and not for convenience. A finding here is only ever a
+candidate; the only thing that turns one into a result is showing up **again** in sits
+recorded after it was found. That comparison is impossible if the earlier answer was never
+written down — and recording the input set is what lets a stronger later result be told
+apart from simply having more data.
+
+**Raw EEG is deliberately not stored.** A 40-minute sit is ~2.4M float samples per
+channel against ~2400 derived rows, so keeping it would multiply the stored size roughly
+a thousandfold for data no current view reads, and fill a browser's quota after a handful
+of sits — at which point storing *anything* fails, including the small things. The cost is
+real: the planned recompute-from-raw work needs the archives dropped in again.
+
+Storage is additive throughout. If it refuses (private mode, full quota) the lab still
+works completely and **says** it is not saving — a page that silently is not saving looks
+identical to one that is.
+
 ### The lab analyses marks, not just spans
 
 A mark is a moment; the analysis needs a stretch of time. So **each tap contributes the

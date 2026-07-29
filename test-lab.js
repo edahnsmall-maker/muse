@@ -498,6 +498,109 @@ async function drop(page, archives) {
       + ` and a trend/pair signature invisible to means is found`);
   }
 
+  /* 11) THE LAB REMEMBERS. Asked for directly: "is there a way to save the lab analyses
+   *     so I can open them up later?"
+   *
+   *     Two things have to survive a reload, and the second matters more than convenience:
+   *     the loaded sits, and DATED SNAPSHOTS of what the search said. A finding here is
+   *     only ever a candidate, and the only thing that turns one into a result is showing
+   *     up again in sits recorded afterwards — a comparison that is impossible if the
+   *     earlier answer was never written down.
+   */
+  {
+    await page.evaluate(async () => {
+      sessions.length = 0;
+      if (store) await LabStore.clearSessions(store);
+      for (const a of (store ? await LabStore.listAnalyses(store) : [])) {
+        await LabStore.deleteAnalysis(store, a.id);
+      }
+    });
+    const files = [];
+    for (let i = 0; i < 4; i++) files.push(makeMarkArchive({ id: i, seedOffset: 200 + i }));
+    await drop(page, files);
+
+    const before = await page.evaluate(async () => {
+      document.getElementById('saveAnalysis').click();
+      await new Promise((r) => setTimeout(r, 400));
+      const saved = await LabStore.listAnalyses(store);
+      return {
+        loaded: sessions.length,
+        savedCount: saved.length,
+        title: saved[0] && saved[0].title,
+        markdownLen: saved[0] ? (saved[0].markdown || '').length : 0,
+        sessionsInRecord: saved[0] ? saved[0].sessionCount : 0,
+        // Raw EEG must NOT be stored: a 40-minute sit is ~1000x larger raw than the
+        // rows any view reads, and keeping it would fill the quota after a few sits.
+        storedHasEeg: (await LabStore.loadSessions(store))
+          .some((s) => s.read.eeg.some((ch) => ch.length)),
+      };
+    });
+    assert.strictEqual(before.loaded, 4, 'precondition: four sits loaded');
+    assert.strictEqual(before.savedCount, 1, 'Save must write exactly one snapshot');
+    assert.ok(before.markdownLen > 500,
+      `the snapshot must contain the report prose (got ${before.markdownLen} bytes)`);
+    assert.strictEqual(before.sessionsInRecord, 4,
+      'and record WHICH sits it rested on, or a later stronger result cannot be told'
+      + ' apart from simply having more data');
+    assert.ok(!before.storedHasEeg,
+      'raw EEG must not be persisted — it is ~1000x the size of the rows the analysis'
+      + ' reads, and filling the quota would break storing the small things too');
+
+    // RELOAD. Everything above has to still be there.
+    await page.reload();
+    await page.waitForFunction(() => typeof store !== 'undefined' && sessions.length > 0,
+      null, { timeout: 8000 });
+    const after = await page.evaluate(async () => ({
+      loaded: sessions.length,
+      loadedNames: sessions.map((s) => s.file).sort(),
+      metricsRows: sessions[0].read.metrics.length,
+      marks: sessions[0].notes.filter((n) => n.transition).length,
+      savedCount: (await LabStore.listAnalyses(store)).length,
+      // The analysis must re-run from restored data, not just display a stale table.
+      reran: !!document.querySelector('#out [data-source="marks"]'),
+      savedListed: !!document.querySelector('[data-open-analysis]'),
+    }));
+    assert.strictEqual(after.loaded, 4, 'the loaded sits must survive a reload');
+    assert.ok(after.metricsRows > 100,
+      `and carry their metric rows, or nothing can be re-analysed (got ${after.metricsRows})`);
+    assert.ok(after.marks > 0, 'and their marks');
+    assert.ok(after.reran,
+      'the search must re-run from the restored data, not show an empty page');
+    assert.strictEqual(after.savedCount, 1, 'the saved snapshot must survive too');
+    assert.ok(after.savedListed, 'and be listed and reopenable');
+
+    // Opening a snapshot shows what it said THEN. Re-deriving would print today's answer
+    // under yesterday's date, which is the one thing a record must never do.
+    const opened = await page.evaluate(async () => {
+      document.querySelector('[data-open-analysis]').click();
+      await new Promise((r) => setTimeout(r, 250));
+      const v = document.getElementById('analysisView');
+      return { text: v ? v.textContent : '', hasThen: /said THEN/.test(v ? v.textContent : '') };
+    });
+    assert.ok(opened.hasThen, 'a reopened snapshot must say it is not a fresh run');
+    assert.ok(opened.text.length > 400, 'and show the saved prose');
+
+    // Removing a sit must forget it, or it returns on the next reload and the Remove
+    // button looks broken.
+    await page.evaluate(async () => {
+      document.querySelector('[data-drop]').click();
+      await new Promise((r) => setTimeout(r, 300));
+    });
+    await page.reload();
+    await page.waitForFunction(() => typeof store !== 'undefined', null, { timeout: 8000 });
+    await page.waitForTimeout(600);
+    const removed = await page.evaluate(() => sessions.length);
+    assert.strictEqual(removed, 3,
+      `Remove must delete from storage as well as memory (got ${removed} after reload)`);
+
+    await page.evaluate(async () => {
+      await LabStore.clearSessions(store);
+      for (const a of await LabStore.listAnalyses(store)) await LabStore.deleteAnalysis(store, a.id);
+    });
+    console.log('✓ the lab remembers: sits and dated snapshots survive a reload,'
+      + ' raw EEG is not stored, and Remove really removes');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll lab tests passed.');

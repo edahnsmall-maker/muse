@@ -96,6 +96,7 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 
 <div id="loaded"></div>
 <div id="out"></div>
+<div id="saved"></div>
 
 <script src="dsp.js"></script>
 <script src="labels.js"></script>
@@ -103,13 +104,24 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 <script src="import.js"></script>
 <script src="analysis.js"></script>
 <script src="findings.js"></script>
+<script src="labstore.js"></script>
 <script>
 /*
- * Sessions are held in memory only. Reloading loses them, which is deliberate: the
- * app already owns the durable copy, and a second store here would be a second thing
- * to keep in sync and a second copy of somebody's brain data to look after.
+ * Sessions are held in memory AND persisted — see labstore.js.
+ *
+ * They used to be memory-only, on the reasoning that the app owns the durable copy and a
+ * second store would be a second thing to keep in sync. That was wrong about the thing
+ * that matters: a finding here is only ever a candidate, and the only way a candidate
+ * becomes a result is by showing up again in later sits. Comparing this month's search
+ * against last month's is the entire method, and it is impossible if the earlier answer
+ * was never written down.
+ *
+ * What is stored is the PARSED session, not the archive — raw EEG is about a thousand
+ * times larger than the rows any view reads. See trimForStore.
  */
 const sessions = [];
+let store = null;          // the IndexedDB handle, or null if storage is unavailable
+let storeError = null;
 const dropEl = document.getElementById('drop');
 const fileEl = document.getElementById('file');
 const loadedEl = document.getElementById('loaded');
@@ -174,7 +186,28 @@ async function load(files) {
       sessions.push({ sessionId: f.name, file: f.name, error: err.message || 'could not read' });
     }
   }
+  await persist();
   render();
+}
+
+/* Storage is ADDITIVE: the lab works fully without it, and a refusal (private mode, a
+ * full quota) must not cost the analysis that is already on screen. It does have to be
+ * visible though — a page that silently is not saving looks identical to one that is. */
+async function openStore() {
+  try {
+    store = await LabStore.open();
+    const restored = await LabStore.loadSessions(store);
+    for (const r of restored) sessions.push(r);
+  } catch (err) {
+    storeError = (err && err.message) || 'unavailable';
+    console.log('[lab] storage unavailable:', storeError);
+  }
+}
+
+async function persist() {
+  if (!store) return;
+  try { await LabStore.putSessions(store, sessions.filter((s) => !s.error)); }
+  catch (err) { storeError = (err && err.message) || 'could not save'; }
 }
 
 function render() {
@@ -182,6 +215,7 @@ function render() {
   renderTimelines();
   renderTrials();
   renderSearch();
+  renderSaved();
 }
 
 function renderLoaded() {
@@ -209,7 +243,15 @@ function renderLoaded() {
     <tr><th>File</th><th>Length</th><th>Rows</th><th>Labelled spans</th>
         <th>Transitions</th><th>Archive</th><th></th></tr>${rows}</table></div>`;
   loadedEl.querySelectorAll('[data-drop]').forEach((b) => {
-    b.addEventListener('click', () => { sessions.splice(Number(b.dataset.drop), 1); render(); });
+    b.addEventListener('click', async () => {
+      // Forget it in the store too. Removing it only from memory means it reappears on
+      // the next reload, which reads as the Remove button not working.
+      const [gone] = sessions.splice(Number(b.dataset.drop), 1);
+      if (store && gone) {
+        try { await LabStore.deleteSession(store, gone.sessionId); } catch (e) { /* additive */ }
+      }
+      render();
+    });
   });
 }
 
@@ -566,24 +608,136 @@ function handoffBarHtml() {
   return `<div id="handoffBar"><div class="row">
     <button class="primary" id="copyHandoff">Copy findings for an AI</button>
     <button id="downloadHandoff">Download as .md</button>
+    <button id="saveAnalysis">Save this analysis</button>
     <span class="note">Findings and sample sizes only — no raw signal, and it leads with
     what the data cannot support.</span></div></div>`;
 }
 
-function buildHandoff() {
-  const sessionRows = sessions.filter((s) => !s.error).map((s) => ({
+/*
+ * SAVED ANALYSES: append-only, dated, and never overwritten.
+ *
+ * Re-running the search after three more sits produces a NEW entry rather than replacing
+ * the old one, and that is the whole value. A finding here is a candidate; the only thing
+ * that makes it a result is turning up again in data recorded after it was found. That
+ * comparison needs the earlier claim on record — including how many sits it rested on, so
+ * a stronger later result can be told apart from simply having more data.
+ */
+function renderSaved() {
+  const host = document.getElementById('saved');
+  if (!host) return;
+  if (!store) {
+    host.innerHTML = storeError
+      ? `<div class="card note">Not saving: ${esc(storeError)}. The analysis above still
+         works — nothing here needs storage — but it will be gone on reload.</div>`
+      : '';
+    return;
+  }
+  LabStore.listAnalyses(store).then((rows) => {
+    if (!rows.length) {
+      host.innerHTML = `<h2>Saved analyses</h2><div class="card note">
+        Nothing saved yet. Use <strong>Save this analysis</strong> above to keep a dated
+        snapshot. The point is comparison: a pattern only becomes a result by turning up
+        again in sits recorded after it was found, and that needs today's answer on
+        record.</div>`;
+      return;
+    }
+    host.innerHTML = `<h2>Saved analyses</h2><div class="card scroll"><table>
+      <tr><th>When</th><th>Title</th><th>Sits</th><th>Findings</th><th></th></tr>
+      ${rows.map((r) => {
+        const found = (r.reports || []).reduce((n, x) =>
+          n + ((x.report && x.report.confirmed) ? x.report.confirmed.length : 0), 0);
+        return `<tr>
+          <td>${esc(new Date(r.savedAt).toISOString().slice(0, 16).replace('T', ' '))}</td>
+          <td>${esc(r.title)}</td>
+          <td class="num">${r.sessionCount}</td>
+          <td class="num">${found || '<span class="dim">none</span>'}</td>
+          <td><button data-open-analysis="${r.id}">Open</button>
+              <button data-dl-analysis="${r.id}">.md</button>
+              <button data-del-analysis="${r.id}">Delete</button></td></tr>`;
+      }).join('')}</table></div><div id="analysisView"></div>`;
+
+    host.querySelectorAll('[data-open-analysis]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const rec = await LabStore.getAnalysis(store, Number(b.dataset.openAnalysis));
+        const view = document.getElementById('analysisView');
+        if (!rec || !view) return;
+        /* Shown as the SAVED PROSE, not re-derived. Re-running the search to display an
+           old snapshot would show today's answer under yesterday's date, which is the one
+           thing a record must never do. */
+        view.innerHTML = `<div class="card">
+          <div class="note">Saved ${esc(new Date(rec.savedAt).toISOString().slice(0, 16).replace('T', ' '))}
+            · ${rec.sessionCount} sit(s): ${esc((rec.sessions || []).map((x) => x.name).join(', ') || '—')}
+            · this is what it said THEN, not a fresh run</div>
+          <pre style="white-space:pre-wrap;margin:12px 0 0;font-size:12px;line-height:1.6">${esc(rec.markdown || '')}</pre>
+        </div>`;
+        view.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      });
+    });
+    host.querySelectorAll('[data-dl-analysis]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        const rec = await LabStore.getAnalysis(store, Number(b.dataset.dlAnalysis));
+        if (!rec) return;
+        const url = URL.createObjectURL(new Blob([rec.markdown || ''], { type: 'text/markdown' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `analysis-${new Date(rec.savedAt).toISOString().slice(0, 16).replace(/[:T]/g, '-')}.md`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 20000);
+      });
+    });
+    host.querySelectorAll('[data-del-analysis]').forEach((b) => {
+      b.addEventListener('click', async () => {
+        await LabStore.deleteAnalysis(store, Number(b.dataset.delAnalysis));
+        renderSaved();
+      });
+    });
+  }).catch((err) => {
+    host.innerHTML = `<div class="card note">Could not read saved analyses:
+      ${esc((err && err.message) || 'unknown')}</div>`;
+  });
+}
+
+// One description of the input set, used by both the handoff and the saved record, so a
+// snapshot can never claim a different set of sits than the prose inside it describes.
+function sessionSummaryRows() {
+  return sessions.filter((s) => !s.error).map((s) => ({
     name: s.file,
     minutes: s.durationSec == null ? null : Math.round(s.durationSec / 60),
     spans: (s.spans || []).filter((x) => x.dims).length,
     transitions: (s.notes || []).filter((n) => n.kind === 'transition').length,
     blocks: (s.trialBlocks || []).length,
   }));
-  return Findings.handoff(lastReports, { sessions: sessionRows });
+}
+
+function buildHandoff() {
+  return Findings.handoff(lastReports, { sessions: sessionSummaryRows() });
 }
 
 function wireHandoff() {
   const copy = document.getElementById('copyHandoff');
   const dl = document.getElementById('downloadHandoff');
+  const save = document.getElementById('saveAnalysis');
+  if (save) {
+    save.addEventListener('click', async () => {
+      if (!store) { save.textContent = 'Storage unavailable'; return; }
+      try {
+        const rec = await LabStore.saveAnalysis(store, {
+          title: `${sessions.filter((s) => !s.error).length} sit(s)`,
+          reports: lastReports,
+          markdown: buildHandoff(),
+          sessions: sessionSummaryRows(),
+        });
+        save.textContent = 'Saved';
+        renderSaved();
+        void rec;
+      } catch (err) {
+        // Never a silent failure: a page that did not save looks exactly like one
+        // that did.
+        save.textContent = `Could not save: ${(err && err.message) || 'unknown'}`;
+      }
+      setTimeout(() => { save.textContent = 'Save this analysis'; }, 2500);
+    });
+  }
   if (copy) {
     copy.addEventListener('click', async () => {
       const md = buildHandoff();
@@ -609,4 +763,9 @@ function wireHandoff() {
     });
   }
 }
+
+/* Open the store and restore before the first render, so the page comes up with what was
+ * left in it rather than empty-then-populated. Storage is additive: if it refuses, the
+ * lab still works and says so. */
+openStore().then(render);
 </script>
