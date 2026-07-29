@@ -639,6 +639,29 @@ worse than no legend. `test-viz.js` now checks every legend colour against the c
 the renderers actually index, which catches the palette half of that drift; the prose
 half is still on whoever edits a renderer.
 
+### Iris records the sit, not the viewing
+
+Iris lays down one ring per interval, growing outward, so the finished disc is the whole
+sit at a glance: middle is the start, rim is the end, warm is thinking and cool is calm.
+
+Three things about it were wrong, and all three came from the deposit living inside the
+renderer:
+
+* **It only recorded while you were watching it.** Ten minutes on Eclipse and Iris had
+  recorded nothing — the disc was a record of *watching*, not of sitting. Deposits now
+  run from the frame loop, on the session clock, whatever mode is on screen.
+* **A long sit wiped it.** 120 rings at 5s is a ten-minute disc, and the old code cleared
+  the record layer and restarted from the middle when it filled. A forty-minute sit meant
+  three silent erasures and a final disc showing the last ten minutes, presented as the
+  sit. It now freezes at the rim instead — freezing loses the tail, wiping loses
+  everything already earned. And when the session timer is set, `visual.setSessionLength`
+  spaces the rings so the whole intended sit spans the full radius.
+* **The white background.** Whenever signal quality dropped past a threshold, Iris filled
+  a hard-edged `rgba(170,170,180)` circle over the entire disc. It meant "unreliable" and
+  looked like a light grey plate appearing behind the picture. The frame loop already
+  veils every mode by noise, which is where that message belongs — this was a second,
+  louder, mode-specific copy of it.
+
 ### Panels move
 
 Every floating panel — Metrics, Live feed, the visual picker, the armed-tap list, the

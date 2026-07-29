@@ -233,6 +233,98 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
   console.log(`✓ Iris deposits onto its record layer over a long session (${blits} deposits, ${strokes} tracery strokes)`);
 }
 
+/* ---- Iris records THE SIT, not the time spent looking at Iris -------------
+ * Reported: "when I flip back and forth on Iris, it always starts in the beginning...
+ * ideally it just starts running when you connect the device, and it keeps building
+ * rings so that if you switch off and switch on, it's still there."
+ *
+ * The deposit was inside renderIrisSediment, so rings were laid down only during the
+ * seconds Iris happened to be the visible mode. Ten minutes on Eclipse and Iris had
+ * recorded nothing — the disc was a record of WATCHING, which is not what it claims
+ * to be. The deposit now runs from the frame loop.
+ */
+{
+  const v = sandbox.createZenVisual(makeCanvas());
+  const run = (frames) => {
+    for (let i = 0; i < frames; i++) {
+      v.setState(adversarial[i % adversarial.length]);
+      nowMs += 16;
+      const cb = rafCb; rafCb = null;
+      cb(nowMs);
+    }
+  };
+
+  // Sit on ECLIPSE — never switch to Iris at all.
+  while (v.currentMode().key !== 'eclipse') v.cycleMode();
+  run(1260);                                   // ~20 simulated seconds
+  const whileAway = v.irisRecord().rings;
+  assert.ok(whileAway >= 3,
+    `Iris must accumulate while another mode is showing — after 20s on Eclipse it had`
+    + ` ${whileAway} rings. The record is of the sit, not of looking at the record.`);
+
+  // Now switch to Iris: the rings already earned must still be there.
+  while (v.currentMode().key !== 'iris') v.cycleMode();
+  const onArrival = v.irisRecord().rings;
+  assert.strictEqual(onArrival, whileAway,
+    `switching to Iris must not reset the record (${whileAway} -> ${onArrival})`);
+  run(600);
+  const grown = v.irisRecord().rings;
+  assert.ok(grown > onArrival, 'and it must keep growing once shown');
+
+  // Switching away and back must not restart it either — setMode clears only the
+  // scratch layer, and this is the assertion that keeps it that way.
+  while (v.currentMode().key !== 'flow') v.cycleMode();
+  while (v.currentMode().key !== 'iris') v.cycleMode();
+  assert.ok(v.irisRecord().rings >= grown,
+    'a round trip through another mode must not lose rings');
+  console.log(`✓ Iris records the sit, not the viewing: ${whileAway} rings laid down`
+    + ' while Eclipse was on screen, kept across two mode switches');
+}
+
+/* ---- A long sit must not WIPE the record ---------------------------------
+ * The old code cleared the record layer and reset to the centre once the disc filled
+ * — at 120 rings x 5s that is every ten minutes. For a retreat sit of forty minutes
+ * that means three silent erasures and a final disc showing the last ten minutes,
+ * presented as if it were the sit. Freezing at the rim loses the tail; wiping loses
+ * everything already earned.
+ */
+{
+  const v = sandbox.createZenVisual(makeCanvas());
+  while (v.currentMode().key !== 'iris') v.cycleMode();
+  const cap = v.irisRecord().maxRings;
+
+  // A 12-minute intended sit: the interval must stretch so it fits the disc rather
+  // than filling it in ten.
+  v.setSessionLength(12 * 60);
+  assert.ok(v.irisRecord().depositSec > 5,
+    `a 12-minute sit must space rings wider than the 5s default (got`
+    + ` ${v.irisRecord().depositSec}s)`);
+  assert.ok(Math.abs(v.irisRecord().depositSec * cap - 12 * 60) < 1,
+    'and the rings must span exactly the intended length');
+
+  // Drive well past capacity on the short interval and check it freezes full.
+  v.setSessionLength(null);
+  for (let i = 0; i < 60 * 60 * 12; i++) {      // ~12 simulated minutes
+    nowMs += 16;
+    const cb = rafCb; rafCb = null;
+    cb(nowMs);
+    if (v.irisRecord().full) break;
+  }
+  const rec = v.irisRecord();
+  assert.ok(rec.full, `expected the disc to fill within 12 minutes (got ${rec.rings})`);
+  // Keep going: the ring count must hold, never drop back toward zero.
+  for (let i = 0; i < 60 * 90; i++) {
+    nowMs += 16;
+    const cb = rafCb; rafCb = null;
+    cb(nowMs);
+  }
+  assert.strictEqual(v.irisRecord().rings, cap,
+    'a full disc must FREEZE, not wipe and restart from the middle — wiping presents'
+    + " the last ten minutes as if it were the whole sit");
+  console.log(`✓ Iris spreads rings over the intended length and freezes at ${cap}`
+    + ' rather than erasing the sit');
+}
+
 // ---- back-compat: the Mind Monitor page only calls setCalm ---------------
 {
   const v2 = sandbox.createZenVisual(makeCanvas());

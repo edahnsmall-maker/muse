@@ -503,8 +503,13 @@
         { label: 'focus', color: IRIS_MOOD.focusTint },
         { label: 'poor signal', color: IRIS_MOOD.noiseTint, faint: true },
       ],
+      /* `%DEPOSIT%` is filled in by legendFor from the interval the renderer is
+         actually using. Hardcoding "every 5s" was accurate only when no session
+         timer was set — with a 40-minute timer the rings are 20s apart, and a key
+         that states the wrong number is the thing this whole file exists to
+         prevent. */
       notes: ['colour is the whole mind, not one sensor',
-        'a ring laid down every 5s, growing outward',
+        'a ring laid down every %DEPOSIT%, growing outward',
         'so the middle is the start of the sit'],
     },
     // One SweepRing per composite metric, PULSE_REV_SEC per revolution.
@@ -535,7 +540,17 @@
     breath: { notes: ['expanding — in-breath', 'contracting — out-breath'] },
   };
 
-  function legendFor(modeKey, { composites = false, breath = false } = {}) {
+  // "20s", or "1m 40s" once the interval passes a minute. Whole seconds only: this is
+  // a caption, and "every 20.4s" reads as precision nobody asked for.
+  function humanInterval(sec) {
+    const s = Math.max(1, Math.round(sec));
+    if (s < 60) return `${s}s`;
+    const m = Math.floor(s / 60);
+    const r = s % 60;
+    return r ? `${m}m ${r}s` : `${m}m`;
+  }
+
+  function legendFor(modeKey, { composites = false, breath = false, depositSec = null } = {}) {
     const spec = LEGENDS[modeKey];
     if (!spec) return [];                      // hidden/experimental modes: no key yet
     if (spec.follows) return legendEntries({ composites, breath });
@@ -548,7 +563,16 @@
       out.push(...CHANNEL_LABELS.map((label, i) => ({ label, color: CHANNEL_COLORS[i] })));
     }
     if (spec.swatches) out.push(...spec.swatches.map((s) => ({ ...s })));
-    if (spec.notes) out.push(...spec.notes.map((text) => ({ text })));
+    if (spec.notes) {
+      // Only substitute when the interval is actually known. Otherwise drop the line
+      // rather than print a placeholder or invent a default — a key that says the
+      // wrong number is worse than one that says nothing.
+      const deposit = depositSec != null && depositSec > 0 ? humanInterval(depositSec) : null;
+      for (const text of spec.notes) {
+        if (!text.includes('%DEPOSIT%')) { out.push({ text }); continue; }
+        if (deposit) out.push({ text: text.replace('%DEPOSIT%', deposit) });
+      }
+    }
     return out;
   }
 

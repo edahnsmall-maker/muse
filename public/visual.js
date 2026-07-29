@@ -647,6 +647,63 @@ function createZenVisual(canvas) {
     return { rMax, r0, step, rNow: Math.min(rMax, r0 + irisRing * step) };
   }
 
+  /*
+   * How long between deposits.
+   *
+   * IRIS_MAX_RINGS rings at IRIS_DEPOSIT_SEC each is a ten-minute disc, and a sit
+   * longer than that used to WIPE the record and start again from the middle — the
+   * one behaviour a visual whose entire premise is "a record of this sit" must not
+   * have. When the intended length is known (the session timer), the interval is
+   * derived from it so the whole sit maps onto the full radius: a 40-minute sit lays
+   * a ring every 20s and finishes at the rim.
+   *
+   * With no timer set it falls back to 5s and FREEZES at the rim rather than wiping.
+   * Freezing loses the tail; wiping loses everything already earned, which is worse.
+   */
+  let irisSessionSec = null;
+  function irisDepositSec() {
+    if (irisSessionSec && irisSessionSec > 0) {
+      return Math.max(2, irisSessionSec / IRIS_MAX_RINGS);
+    }
+    return IRIS_DEPOSIT_SEC;
+  }
+
+  /*
+   * Lay down one ring if one is due — CALLED EVERY FRAME FROM THE FRAME LOOP, not
+   * from the Iris renderer.
+   *
+   * Reported: "when I flip back and forth on Iris, it always starts in the
+   * beginning... ideally it just starts running when you connect the device, and it
+   * keeps building rings so that if you switch off of it and you switch on, it's
+   * still there." It was inside renderIrisSediment, so rings were only deposited
+   * during the seconds Iris happened to be the visible mode. Spend the first ten
+   * minutes on Eclipse and Iris had recorded nothing — the record was a record of
+   * WATCHING, not of sitting.
+   *
+   * Cheap to call unconditionally: it returns immediately except on the interval
+   * boundary, so the cost is one subtraction per frame.
+   */
+  function depositIrisRing() {
+    if (sessionSec - irisLastDeposit < irisDepositSec()) return false;
+    if (irisRing >= IRIS_MAX_RINGS) return false;   // full: freeze, never wipe
+    irisLastDeposit = sessionSec;
+    const mood = irisMindColor();
+    const rad = irisSedimentRadii();
+    const depositR = Math.max(2, rad.rNow);
+    const ringW = Math.max(2, rad.step * 2.2);
+    lctx.clearRect(0, 0, BW, BH);
+    lctx.globalCompositeOperation = 'source-over';
+    drawIrisSedimentRing(lctx, depositR, ringW, mood, 1, false);
+    rctx.globalCompositeOperation = 'lighter';
+    rctx.filter = 'blur(1.5px)';
+    rctx.drawImage(lay, 0, 0);
+    rctx.filter = 'none';
+    drawIrisSedimentRing(rctx, depositR, ringW * 0.72, mood, 0.85, true);
+    rctx.globalCompositeOperation = 'source-over';
+    irisRing++;
+    return true;
+  }
+
   function irisMindColor() {
     const calm = clamp01(smooth.calm);
     const thinking = clamp01(state.metrics && state.metrics.thinking != null ? state.metrics.thinking : smooth.activity);
@@ -734,28 +791,13 @@ function createZenVisual(canvas) {
     const rad = irisSedimentRadii();
     const mood = irisMindColor();
     const ringW = Math.max(2, rad.step * 2.2);
-    const progress = clamp01((sessionSec - irisLastDeposit) / IRIS_DEPOSIT_SEC);
+    // The live ring creeps outward between deposits, so growth looks continuous
+    // rather than jumping a whole step every interval.
+    const progress = clamp01((sessionSec - irisLastDeposit) / irisDepositSec());
     const rNow = Math.max(2, Math.min(rad.rMax, rad.r0 + (irisRing + progress) * rad.step));
 
-    if (sessionSec - irisLastDeposit >= IRIS_DEPOSIT_SEC) {
-      irisLastDeposit = sessionSec;
-      if (irisRing >= IRIS_MAX_RINGS) {
-        rctx.clearRect(0, 0, BW, BH);
-        irisRing = 0;
-      }
-      const depositRad = irisSedimentRadii();
-      const depositR = Math.max(2, depositRad.rNow);
-      lctx.clearRect(0, 0, BW, BH);
-      lctx.globalCompositeOperation = 'source-over';
-      drawIrisSedimentRing(lctx, depositR, ringW, mood, 1, false);
-      rctx.globalCompositeOperation = 'lighter';
-      rctx.filter = 'blur(1.5px)';
-      rctx.drawImage(lay, 0, 0);
-      rctx.filter = 'none';
-      drawIrisSedimentRing(rctx, depositR, ringW * 0.72, mood, 0.85, true);
-      rctx.globalCompositeOperation = 'source-over';
-      irisRing++;
-    }
+    // NO DEPOSIT HERE. depositIrisRing() runs from the frame loop so the record
+    // accumulates whether or not Iris is the mode on screen — see the note there.
 
     const bg = bctx.createLinearGradient(0, 0, 0, BH);
     bg.addColorStop(0, '#060814');
@@ -796,12 +838,15 @@ function createZenVisual(canvas) {
     bctx.arc(cx, cy, centerR, 0, Math.PI * 2);
     bctx.stroke();
 
-    if (mood.noise > 0.18) {
-      bctx.fillStyle = `rgba(170,170,180,${0.03 + 0.05 * smoothstep(0.18, 0.55, mood.noise)})`;
-      bctx.beginPath();
-      bctx.arc(cx, cy, rad.rMax * 1.02, 0, Math.PI * 2);
-      bctx.fill();
-    }
+    /* THE PALE DISC IS GONE. It filled a hard-edged circle of rgba(170,170,180) at
+       radius rMax * 1.02 whenever noise passed 0.18, meaning to say "the signal is
+       unreliable". Reported as "I still see, like, a white background that goes on
+       sometimes for the iris thing" — because that is what it looked like: a light
+       grey plate appearing behind the disc, washing the colours out, with nothing
+       to connect it to signal quality.
+       The frame loop already veils EVERY mode by smooth.noise, which is where that
+       message belongs — one mechanism, the same reading in every visual. This was a
+       second, louder, mode-specific copy of it. */
   }
 
   // ---- Flow: a live trace that dissolves as it ages ----------------------
@@ -2075,6 +2120,11 @@ function createZenVisual(canvas) {
     const mode = VizCore.MODES[modeIndex].key;
     const tSec = (now - start) / 1000;
 
+    /* Iris's record accumulates on the SESSION clock, not on the time Iris spent
+     * being looked at. Outside the mode dispatch on purpose: a record that only
+     * exists while you are watching it is a record of watching. */
+    depositIrisRing();
+
     if (DIRECT_MODES.has(mode)) {
       // Straight to the output canvas at full resolution — see renderFlow for
       // why. These modes depend on sharp thin lines, which cannot survive the
@@ -2120,6 +2170,7 @@ function createZenVisual(canvas) {
       drawLegend(ctx, canvas.width, canvas.height, VizCore.legendFor(mode, {
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
+        depositSec: irisDepositSec(),
       }));
     }
 
@@ -2219,12 +2270,26 @@ function createZenVisual(canvas) {
     },
     setLegend(on) { legendOn = !!on; return legendOn; },
     legendVisible() { return legendOn; },
+    /* How long the sit is meant to be, so Iris can spread its rings across the whole
+     * of it instead of filling up in ten minutes. Set from the session timer; null
+     * means unknown, and Iris falls back to a fixed interval and freezes at the rim.
+     * Told, not guessed: the app knows the intended length and the visual does not. */
+    setSessionLength(sec) {
+      irisSessionSec = sec != null && sec > 0 ? sec : null;
+      return irisSessionSec;
+    },
+    // Exposed for the tests and the legend: rings, capacity, and the current spacing.
+    irisRecord() {
+      return { rings: irisRing, maxRings: IRIS_MAX_RINGS, depositSec: irisDepositSec(),
+        full: irisRing >= IRIS_MAX_RINGS };
+    },
     // Exposed for the tests: what the key currently says, without reading pixels.
     // The drawing is smoke-tested; WHAT it claims is the part worth asserting.
     legendNow() {
       return VizCore.legendFor(VizCore.MODES[modeIndex].key, {
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
+        depositSec: irisDepositSec(),
       });
     },
     currentSeries() { return seriesMode; },

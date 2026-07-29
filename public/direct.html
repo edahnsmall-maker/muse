@@ -790,6 +790,10 @@ function renderTimerPicker() {
       // 0 clears rather than setting a zero-length timer that fires immediately.
       timerEndAt = min > 0 ? Date.now() + min * 60000 : null;
       timerDone = false;
+      /* Tell the visual how long the sit is meant to be, so Iris spaces its rings
+         across the whole of it. Without this a 30-minute sit fills Iris's disc in
+         ten and the last twenty minutes are not recorded at all. */
+      visual.setSessionLength(min > 0 ? min * 60 : null);
       setPopover(null);
     });
   });
