@@ -251,4 +251,179 @@ const gauss = () => {
   console.log('✓ spans aggregate to one observation each, and the clock is not a feature');
 }
 
+/*
+ * MARKS AS OBSERVATIONS, and the wider signature vocabulary.
+ *
+ * Two things asked for, and both are the kind of change that can quietly go wrong
+ * without failing: a window built from the wrong seconds still produces numbers, and a
+ * feature that is subtly mis-derived still correlates with something.
+ */
+{
+  // Windows come from BEFORE the mark, and stop short of it.
+  const rows = [];
+  for (let t = 0; t < 200; t++) rows.push({ t, calm: t, focus: 200 - t });
+  const sessions = [{ sessionId: 'S1', metrics: rows,
+    notes: [{ offsetSec: 100, transition: 'returned', anchored: true }] }];
+  const units = A.unitsFromMarks(sessions, { leadSec: 10, tailSec: 2, controlsPerMark: 0 });
+  const mark = units.find((u) => !u.isControl);
+  assert.ok(mark, 'a mark must produce a unit');
+  assert.strictEqual(mark.toSec, 98,
+    'the window must END tailSec before the mark: pressing a key moves a hand and a jaw,'
+    + ' and that muscle activity lands in the frequencies the scores are built from');
+  assert.strictEqual(mark.fromSec, 90, 'and reach leadSec back from the mark');
+  // calm == t here, so the mean of t in [90,98) is 93.5 — proof the right rows were used.
+  assert.ok(Math.abs(mark.features['calm.level'] - 93.5) < 1e-9,
+    `the window must contain exactly rows 90..97 (got mean ${mark.features['calm.level']})`);
+  assert.ok(Math.abs(mark.features['calm.trend'] - 1) < 1e-9,
+    'calm rises 1 per second here, so the trend must be 1');
+  assert.ok(Math.abs(mark.features['focus.trend'] + 1) < 1e-9, 'and focus falls at 1');
+  assert.ok(Math.abs(mark.features['calm+focus.pair'] + 1) < 1e-6,
+    'two exactly opposed lines must give a pair value of -1, not 0 or +1');
+
+  // A mark too early to have a full window is DROPPED, not padded with whatever rows
+  // happen to exist — a half-length window is a different measurement.
+  const early = A.unitsFromMarks(
+    [{ sessionId: 'S1', metrics: rows, notes: [{ offsetSec: 4, transition: 'returned' }] }],
+    { leadSec: 10, tailSec: 2, controlsPerMark: 0 });
+  assert.strictEqual(early.length, 0, 'a mark inside the first leadSec must be skipped');
+
+  // Probe answers must NOT become marks: a probe fires on a clock, so the window
+  // before it samples the sit rather than a state the person had just noticed.
+  const withProbe = A.unitsFromMarks([{ sessionId: 'S1', metrics: rows, notes: [
+    { offsetSec: 100, transition: 'returned', anchored: true },
+    { offsetSec: 150, kind: 'probe', response: 'aware-on', anchored: true },
+  ] }], { leadSec: 10, tailSec: 2, controlsPerMark: 0 });
+  assert.strictEqual(withProbe.filter((u) => !u.isControl).length, 1,
+    'only the tap counts as a mark; a clock-scheduled probe is not a noticed moment');
+}
+
+{
+  // CONTROL WINDOWS exist because a single tap category has no contrast: a one-class
+  // label has zero variance, so every correlation against it is null.
+  const rows = [];
+  for (let t = 0; t < 600; t++) rows.push({ t, calm: 0.5, focus: 0.4 });
+  const notes = [];
+  for (let i = 0; i < 5; i++) notes.push({ offsetSec: 60 + i * 100, transition: 'returned' });
+  const units = A.unitsFromMarks([{ sessionId: 'S1', metrics: rows, notes }],
+    { leadSec: 10, tailSec: 2, controlClearanceSec: 30 });
+  const controls = units.filter((u) => u.isControl);
+  assert.ok(controls.length > 0, 'controls must be generated');
+  assert.ok(controls.every((u) => notes.every((n) => Math.abs(n.offsetSec - u.toSec) >= 20)),
+    'a control window must be kept clear of every mark, or it is partly a mark window');
+  // The label is one-vs-rest, and with ONE category the coarse "any mark" question is
+  // the identical question — asking it twice doubles the comparison count for no new
+  // information, which costs real power under multiplicity correction.
+  assert.deepStrictEqual(Object.keys(units[0].labels), ['is:returned'],
+    `one category must yield one label (got ${Object.keys(units[0].labels).join(', ')})`);
+  const two = A.unitsFromMarks([{ sessionId: 'S1', metrics: rows, notes:
+    notes.concat([{ offsetSec: 560, transition: 'lost' }]) }], { leadSec: 10, tailSec: 2 });
+  assert.deepStrictEqual(Object.keys(two[0].labels).sort(),
+    ['is:any-mark', 'is:lost', 'is:returned'],
+    'two categories earn the coarse question as well as one each');
+}
+
+{
+  // windowFeatures: refusals rather than fabrications.
+  assert.strictEqual(A.windowFeatures([{ t: 0, calm: 1 }, { t: 1, calm: 2 }]), null,
+    'fewer than three rows cannot support a trend or an sd — refuse, do not guess');
+  // A constant line has NO co-movement. Reporting 0 would claim it moved independently,
+  // which is a claim about a line that did not move at all.
+  const flat = A.windowFeatures([0, 1, 2, 3, 4].map((t) => ({ t, calm: 0.5, focus: t })));
+  assert.ok(!('calm+focus.pair' in flat),
+    'a constant series must yield no pair feature, not a pair value of 0');
+  /* And the within-window threshold must be BELOW the window length, or a single
+     dropped sample deletes every pair and trio feature rather than costing precision.
+     The default window is leadSec 10 minus tailSec 2 = 8 samples at 1Hz, and this sat
+     exactly on correlate's MIN_N of 8 until windowCorr was split out. */
+  assert.ok(A.MIN_WINDOW_PAIRS < 8,
+    `a ${A.MIN_WINDOW_PAIRS}-sample floor leaves no slack in an 8-sample window`);
+  assert.strictEqual(A.windowCorr([1, 2, 3, 4, 5], [2, 4, 6, 8, 10]), 1,
+    'five clean samples are enough for a within-window co-movement — it is a feature'
+    + ' value, not a claim; the claim is tested across windows');
+  assert.strictEqual(A.windowCorr([1, 2, 3], [2, 4, 6]), null, 'three are not');
+  assert.strictEqual(flat['calm.swing'], 0, 'though its swing is genuinely zero');
+  // Blank columns must not become series: metrics.csv carries whatever the app was
+  // computing, so a score that was off all sit appears as a column of empty strings.
+  const keys = A.seriesKeys([{ t: 0, calm: 0.5, hrv: '' }, { t: 1, calm: 0.6, hrv: '' },
+    { t: 2, calm: 0.4, hrv: '' }]);
+  assert.deepStrictEqual(keys, ['calm'],
+    `an empty column is not a series (got ${keys.join(', ')})`);
+  // Trios are limited to the named composites on purpose: n-choose-3 over every series
+  // would add scores of features and spend the search's power on combinations nobody
+  // had a reason to suspect.
+  const many = {};
+  const rows = [0, 1, 2, 3, 4, 5].map((t) => {
+    const r = { t };
+    for (const k of ['calm', 'focus', 'thinking', 'drowsy', 'noise', 'hrv', 'breath']) {
+      r[k] = Math.sin(t + k.length);
+    }
+    return r;
+  });
+  const f = A.windowFeatures(rows);
+  const trios = Object.keys(f).filter((k) => k.endsWith('.trio'));
+  assert.strictEqual(trios.length, 10,
+    `five composite series give C(5,3)=10 trios, not every combination of all seven`
+    + ` (got ${trios.length})`);
+  assert.ok(!trios.some((k) => /hrv|breath/.test(k)),
+    'and hrv/breath are not in the trio set');
+  void many;
+}
+
+{
+  /*
+   * THE ONE THAT MATTERS: a shape invisible to a comparison of MEANS is found, and
+   * pure noise still produces nothing.
+   *
+   * calm rises and focus falls across each pre-mark window, with the means held equal
+   * by construction. The old search compared means only and would have reported
+   * nothing here — so this is the test that the added breadth buys something real.
+   */
+  const build = (planted, seed) => {
+    let x = seed;
+    const rnd = () => (x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const sessions = [];
+    for (let s = 0; s < 6; s++) {
+      const metrics = [], notes = [], marks = [];
+      for (let i = 0; i < 8; i++) marks.push(60 + i * 90);
+      for (let t = 0; t < 800; t++) {
+        let calm = 0.5 + (rnd() - 0.5) * 0.05;
+        let focus = 0.5 + (rnd() - 0.5) * 0.05;
+        const near = marks.find((m) => t >= m - 10 && t < m - 2);
+        if (planted && near != null) {
+          // Symmetric about the window centre, so the MEAN is unchanged and only the
+          // shape carries the signal.
+          const u = (t - (near - 10) - 3.5) / 8;
+          calm += u * 0.30;
+          focus -= u * 0.30;
+        }
+        metrics.push({ t, calm, focus, thinking: 0.4 + (rnd() - 0.5) * 0.05, noise: 0.1 });
+      }
+      for (const m of marks) notes.push({ offsetSec: m, transition: 'returned' });
+      sessions.push({ sessionId: `S${s}`, metrics, notes });
+    }
+    return sessions;
+  };
+
+  const hit = A.search(A.unitsFromMarks(build(true, 4242)), { iterations: 600 });
+  const keys = hit.confirmed.map((c) => c.key);
+  assert.ok(keys.some((k) => k.startsWith('calm.trend~')),
+    `the rising trend must be found (confirmed: ${keys.join(', ') || 'none'})`);
+  assert.ok(keys.some((k) => k.startsWith('calm+focus.pair~')),
+    `and the two lines moving opposite (confirmed: ${keys.join(', ') || 'none'})`);
+  // The level must NOT be among them: it was held constant, and finding it would mean
+  // the window boundaries are leaking signal from outside the window.
+  assert.ok(!keys.some((k) => k.startsWith('calm.level~')),
+    `the MEAN was held equal by construction, so finding it means the windows are`
+    + ` picking up rows they should not (confirmed: ${keys.join(', ')})`);
+
+  for (const seed of [11, 22, 33]) {
+    const miss = A.search(A.unitsFromMarks(build(false, seed)), { iterations: 600 });
+    assert.strictEqual(miss.confirmed.length, 0,
+      `pure noise must confirm nothing (seed ${seed} gave`
+      + ` ${miss.confirmed.map((c) => c.key).join(', ')})`);
+  }
+  console.log('✓ marks become windows before the tap, the wider signatures find a shape'
+    + ' that means cannot see, and noise still confirms nothing');
+}
+
 console.log('\nAll analysis tests passed.');

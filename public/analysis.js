@@ -539,10 +539,337 @@
     };
   }
 
+  /* ==========================================================================
+   * SIGNATURES: what a "pattern" is allowed to look like
+   * ==========================================================================
+   *
+   * The first version of this search could only ask one question — "is the MEAN of
+   * this score higher when that label is higher" — and that is a small fraction of
+   * the ways a state could show up in four electrodes and a handful of composites.
+   * Asked for directly, and the list is the right one:
+   *
+   *   "it could be how two things are moving together. It could be how two things are
+   *    moving opposite. It could be how three things are moving together or opposite.
+   *    It could also be little patterns and how an individual line is moving
+   *    independent of the other lines."
+   *
+   * So each window yields several KINDS of feature:
+   *
+   *   level      the mean. What the old search had.
+   *   trend      least-squares slope per second. "It was rising" is a different
+   *              claim from "it was high", and for a transition — coming back,
+   *              settling — the rising is the more plausible signature.
+   *   swing      standard deviation within the window: how unsettled the line was,
+   *              independent of where it sat.
+   *   range      peak-to-trough. Catches a single excursion that an sd dilutes.
+   *   pair       within-window Pearson r between two series. POSITIVE means they
+   *              moved together, NEGATIVE means opposite — one number covering both
+   *              of the asked-for cases, and the sign is the answer.
+   *   trio       the mean of the three pairwise r's among three series: how much
+   *              the three moved as one thing. Signed, same reading as `pair`.
+   *
+   * A WARNING THAT IS PART OF THE FEATURE. Every kind added multiplies the number of
+   * comparisons, and multiplicity correction spends real power on each one: a search
+   * over 200 features needs a stronger effect to survive than a search over 20. This
+   * is the correct trade — a signature you never test is a signature you never find —
+   * but it means `search()`'s reported comparison count matters more than ever, and
+   * with a handful of sits the honest answer will usually still be "nothing yet".
+   * Breadth here buys the ABILITY to find these shapes; it does not buy evidence.
+   */
+
+  // Columns that are timestamps or bookkeeping, never signals to correlate.
+  const NOT_A_SIGNAL = new Set(['t', 'epochMs', 'clock', 'absoluteTime', 'levels', 'spikes']);
+
+  /*
+   * Which columns are usable series. A column counts only if it is numeric in most
+   * rows: metrics.csv carries whatever the app happened to be computing, so a score
+   * that was off for the whole sit appears as a column of blanks, and treating that
+   * as a series would generate features from nothing.
+   */
+  function seriesKeys(rows, { minCoverage = 0.6 } = {}) {
+    const counts = new Map();
+    for (const r of rows || []) {
+      for (const k of Object.keys(r || {})) {
+        if (NOT_A_SIGNAL.has(k)) continue;
+        const v = Number(r[k]);
+        if (r[k] === '' || r[k] == null || !Number.isFinite(v)) continue;
+        counts.set(k, (counts.get(k) || 0) + 1);
+      }
+    }
+    const n = (rows || []).length || 1;
+    return Array.from(counts.entries())
+      .filter(([, c]) => c / n >= minCoverage)
+      .map(([k]) => k)
+      .sort();
+  }
+
+  // Least-squares slope of ys against xs, per unit of x. Returns null rather than 0
+  // when x does not vary — a flat window has no trend, which is not the same as a
+  // trend of zero.
+  function slope(xs, ys) {
+    const pts = [];
+    for (let i = 0; i < Math.min(xs.length, ys.length); i++) {
+      const x = Number(xs[i]), y = Number(ys[i]);
+      if (Number.isFinite(x) && Number.isFinite(y)) pts.push([x, y]);
+    }
+    if (pts.length < 3) return null;
+    const mx = pts.reduce((a, p) => a + p[0], 0) / pts.length;
+    const my = pts.reduce((a, p) => a + p[1], 0) / pts.length;
+    let num = 0, den = 0;
+    for (const [x, y] of pts) { num += (x - mx) * (y - my); den += (x - mx) ** 2; }
+    return den < 1e-12 ? null : num / den;
+  }
+
+  /*
+   * Correlation WITHIN one window, which is a different job from `correlate`.
+   *
+   * `correlate` refuses below MIN_N (8) complete pairs, and that refusal is right for
+   * its purpose: it is asked whether a feature tracks a label ACROSS observations, and
+   * an r from six sits is an artefact of one sit. But a within-window co-movement is
+   * not a claim — it is a FEATURE VALUE, one number describing one window, and the
+   * claim is made later by comparing that number across many windows. The protection
+   * lives at the search level (permutation null, multiplicity correction, held-out
+   * sessions), not here.
+   *
+   * The threshold mattered rather than being theoretical. The default window is
+   * leadSec 10 minus tailSec 2 = 8 seconds, which at 1Hz is exactly 8 samples — sitting
+   * precisely on MIN_N, so every pair and trio feature worked only as long as no row
+   * was missing, and vanished silently the moment one was. A dropped sample should cost
+   * precision, not the entire feature.
+   */
+  const MIN_WINDOW_PAIRS = 5;
+  function windowCorr(xs, ys) {
+    const a = [], b = [];
+    for (let i = 0; i < Math.min(xs.length, ys.length); i++) {
+      const x = xs[i], y = ys[i];
+      if (x == null || y == null || !Number.isFinite(x) || !Number.isFinite(y)) continue;
+      a.push(x); b.push(y);
+    }
+    if (a.length < MIN_WINDOW_PAIRS) return null;
+    const ma = a.reduce((p, q) => p + q, 0) / a.length;
+    const mb = b.reduce((p, q) => p + q, 0) / b.length;
+    let num = 0, da = 0, db = 0;
+    for (let i = 0; i < a.length; i++) {
+      const dx = a[i] - ma, dy = b[i] - mb;
+      num += dx * dy; da += dx * dx; db += dy * dy;
+    }
+    const den = Math.sqrt(da * db);
+    return den < 1e-12 ? null : num / den;
+  }
+
+  /*
+   * Every feature for one window of rows.
+   *
+   * `trioKeys` is deliberately a SHORT list rather than every series: three-way
+   * combinations grow as n-choose-3, so ten series would add 120 features and spend
+   * most of the search's power on combinations nobody had a reason to suspect. The
+   * default is the interpretive composites, which are the ones a claim would be made
+   * about. Pairs are cheap enough (n-choose-2) to take all of them.
+   */
+  function windowFeatures(rows, {
+    keys = null, pairs = true, trios = true,
+    trioKeys = ['calm', 'focus', 'thinking', 'drowsy', 'noise'],
+  } = {}) {
+    const list = (rows || []).filter(Boolean);
+    if (list.length < 3) return null;
+    const ks = keys || seriesKeys(list);
+    if (!ks.length) return null;
+    const num = (r, k) => {
+      const v = Number(r[k]);
+      return Number.isFinite(v) ? v : null;
+    };
+    const ts = list.map((r) => {
+      const v = Number(r.t);
+      return Number.isFinite(v) ? v : null;
+    });
+    const cols = {};
+    for (const k of ks) cols[k] = list.map((r) => num(r, k));
+
+    const out = {};
+    for (const k of ks) {
+      const v = cols[k].filter((x) => x != null);
+      if (v.length < 3) continue;
+      out[`${k}.level`] = mean(v);
+      const sl = slope(ts, cols[k]);
+      if (sl != null) out[`${k}.trend`] = sl;
+      const s = sd(v);
+      if (s != null) out[`${k}.swing`] = s;
+      out[`${k}.range`] = Math.max(...v) - Math.min(...v);
+    }
+
+    // Pairs and trios use windowCorr, NOT correlate — see the note on windowCorr for
+    // why the threshold differs. It still drops incomplete pairs rather than imputing,
+    // and still returns null when a series does not vary: a constant line has no
+    // co-movement, and reporting 0 would claim it moved independently.
+    if (pairs) {
+      for (let i = 0; i < ks.length; i++) {
+        for (let j = i + 1; j < ks.length; j++) {
+          const r = windowCorr(cols[ks[i]], cols[ks[j]]);
+          if (r != null) out[`${ks[i]}+${ks[j]}.pair`] = r;
+        }
+      }
+    }
+
+    if (trios) {
+      const avail = trioKeys.filter((k) => ks.includes(k));
+      for (let i = 0; i < avail.length; i++) {
+        for (let j = i + 1; j < avail.length; j++) {
+          for (let k = j + 1; k < avail.length; k++) {
+            const rs = [
+              windowCorr(cols[avail[i]], cols[avail[j]]),
+              windowCorr(cols[avail[i]], cols[avail[k]]),
+              windowCorr(cols[avail[j]], cols[avail[k]]),
+            ].filter((x) => x != null);
+            // All three pairs, or none. Averaging two of three would answer a
+            // different question than "did these three move as one".
+            if (rs.length === 3) {
+              out[`${avail[i]}+${avail[j]}+${avail[k]}.trio`] = mean(rs);
+            }
+          }
+        }
+      }
+    }
+    return Object.keys(out).length ? out : null;
+  }
+
+  /*
+   * Turn each MARK into an observation, using the window just BEFORE it.
+   *
+   * WHY THIS EXISTS. The lab could only analyse hand-labelled spans, and nobody has
+   * been labelling spans — the taps came later than the lab did. Three sits loaded
+   * with plenty of marks produced "no labelled spans, nothing to correlate", which is
+   * a tooling dead end rather than a finding.
+   *
+   * The assumption, and it is the practitioner's own: a mark says something about the
+   * stretch immediately before it. You press "returned" *after* noticing you had come
+   * back, so if returning has a signature it is in the seconds leading up to the
+   * press, not after it.
+   *
+   * `tailSec` DROPS THE LAST FEW SECONDS BEFORE THE MARK, and this is not fussiness.
+   * Two things live in that gap. Pressing a key moves a hand, an arm and usually the
+   * jaw, and EMG from that lands in the same frequencies the "thinking" score is
+   * built from — so the seconds touching the keypress would reliably show "activity"
+   * for every category, which is an artefact of the button and not of the mind.
+   * Second, the noticing itself is the event; including it mixes the state being
+   * reported with the act of reporting it.
+   *
+   * CONTROL WINDOWS. With one category of mark there is nothing to contrast against,
+   * and a one-class label has no variance so every correlation is null. So random
+   * windows from the same sessions, kept clear of every mark, are added as the
+   * comparison class. That also makes single-category datasets analysable, which is
+   * what most early sits will be.
+   */
+  function unitsFromMarks(sessions, {
+    leadSec = 10, tailSec = 2, minSamples = 4, seed = 11,
+    controlsPerMark = 1, controlClearanceSec = 30, features = {},
+  } = {}) {
+    const units = [];
+    const rnd = seededRandom(seed);
+    const kindsSeen = new Set();
+
+    for (const s of sessions || []) {
+      const rows = (s.metrics || []).filter((r) => r && Number.isFinite(Number(r.t)));
+      if (!rows.length) continue;
+      const ks = seriesKeys(rows);
+      if (!ks.length) continue;
+      const opts = Object.assign({ keys: ks }, features);
+
+      // A mark is any note that names a moment. `transition`/`tapCategory` are the
+      // one-key taps; `markKind` is the older Mark-this-moment prompt. Probe answers
+      // are excluded: a probe is a moment chosen by a clock, so the window before it
+      // is a sample of the sit rather than of a state the person had just noticed.
+      const marks = (s.notes || [])
+        .filter((n) => n && n.anchored !== false && Number.isFinite(Number(n.offsetSec)))
+        .map((n) => ({
+          at: Number(n.offsetSec),
+          kind: n.transition || n.tapCategory || n.markKind || null,
+          grade: n.grade != null && n.grade !== '' ? Number(n.grade) : null,
+        }))
+        .filter((m) => m.kind && m.at >= leadSec)
+        .sort((a, b) => a.at - b.at);
+      if (!marks.length) continue;
+
+      const windowFor = (endSec) => rows.filter((r) => {
+        const t = Number(r.t);
+        return t >= endSec - (leadSec - tailSec) && t < endSec;
+      });
+
+      for (const m of marks) {
+        const end = m.at - tailSec;
+        const win = windowFor(end);
+        if (win.length < minSamples) continue;
+        const f = windowFeatures(win, opts);
+        if (!f) continue;
+        kindsSeen.add(m.kind);
+        units.push({
+          sessionId: s.sessionId, features: f,
+          markKind: m.kind, grade: m.grade, isControl: false,
+          fromSec: end - (leadSec - tailSec), toSec: end,
+          markAtSec: m.at, samples: win.length, labels: {},
+        });
+      }
+
+      /*
+       * Controls: random window ends, at least controlClearanceSec from every mark.
+       * Drawn from the same session so anything that differs between sessions —
+       * electrode fit, time of day, how the sit went — cannot masquerade as a
+       * difference between marked and unmarked time.
+       */
+      const wanted = Math.round(marks.length * controlsPerMark);
+      const tMin = Number(rows[0].t) + leadSec;
+      const tMax = Number(rows[rows.length - 1].t);
+      let attempts = 0;
+      let made = 0;
+      while (made < wanted && attempts < wanted * 40) {
+        attempts++;
+        const end = tMin + rnd() * Math.max(0, tMax - tMin);
+        if (marks.some((m) => Math.abs(m.at - end) < controlClearanceSec)) continue;
+        const win = windowFor(end);
+        if (win.length < minSamples) continue;
+        const f = windowFeatures(win, opts);
+        if (!f) continue;
+        units.push({
+          sessionId: s.sessionId, features: f,
+          markKind: null, grade: null, isControl: true,
+          fromSec: end - (leadSec - tailSec), toSec: end,
+          markAtSec: null, samples: win.length, labels: {},
+        });
+        made++;
+      }
+    }
+
+    /*
+     * ONE-VS-REST LABELS. A tap category is not an ordinal quantity, so it cannot be
+     * correlated directly; each category becomes its own 1/0 question instead —
+     * "windows before a `returned` tap versus every other window". Spearman on a
+     * binary variable is a rank-biserial correlation, which is exactly the right
+     * test, so the whole existing pipeline (permutation null, FDR, held-out sessions)
+     * applies unchanged rather than needing a second, less careful one.
+     */
+    const kinds = Array.from(kindsSeen).sort();
+    for (const u of units) {
+      for (const k of kinds) u.labels[`is:${k}`] = u.markKind === k ? 1 : 0;
+      /*
+       * And the coarsest question of all, which is also the one most likely to have
+       * enough n to answer: was this a moment the person noticed anything at all?
+       *
+       * ONLY when more than one category is present. With a single category that
+       * question is character-for-character the same as `is:<that category>`, and
+       * asking it twice doubles the comparison count for no new information — which
+       * costs real power, because multiplicity correction makes every test harder in
+       * proportion to how many were run.
+       */
+      if (kinds.length > 1) u.labels['is:any-mark'] = u.isControl ? 0 : 1;
+    }
+    return units;
+  }
+
   return {
     MIN_N, mean, sd, correlate, rank, spearman, permutationP,
     adjustForMultiplicity, splitSessions, search, unitsFromSpans,
     eventLocked, eventLockedNull, eventLockedTest,
     seededRandom, shuffle,
+    NOT_A_SIGNAL, seriesKeys, slope, windowFeatures, unitsFromMarks,
+    MIN_WINDOW_PAIRS, windowCorr,
   };
 });

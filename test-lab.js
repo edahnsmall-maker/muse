@@ -21,6 +21,52 @@ const PAGE = 'file://' + path.join(__dirname, 'public', 'lab.html');
 // Build a session archive with a planted relationship between `calm` and the focus
 // label, so the lab has something real to find — and noise features that it must not
 // confirm.
+/*
+ * An archive with MARKS AND NO SPAN LABELS — the state the lab was actually loaded
+ * with, and the one it could not analyse.
+ *
+ * `markSignature` plants a signature in the ten seconds before each tap that is
+ * invisible to a comparison of MEANS: calm rises across the window while focus falls,
+ * so only the trend and pair features can see it. That is the point of the test — the
+ * old search compared means and would report nothing here.
+ */
+function makeMarkArchive({ id, seedOffset = 0, markSignature = true, marks = 8, minutes = 14 }) {
+  const t0 = new Date('2026-07-28T06:00:00').getTime() + seedOffset * 86400000;
+  const durationSec = minutes * 60;
+  let seed = 5150 + seedOffset * 13;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+
+  const markTimes = [];
+  for (let i = 0; i < marks; i++) markTimes.push(60 + Math.round(i * (durationSec - 120) / marks));
+
+  const rows = [];
+  for (let t = 0; t < durationSec; t++) {
+    let calm = 0.5 + (rnd() - 0.5) * 0.05;
+    let focus = 0.5 + (rnd() - 0.5) * 0.05;
+    const near = markTimes.find((m) => t >= m - 10 && t < m - 2);
+    if (markSignature && near != null) {
+      const u = (t - (near - 10)) / 8;          // 0..1 across the window
+      calm += (u - 0.5) * 0.30;                 // rising
+      focus -= (u - 0.5) * 0.30;                // and moving opposite
+    }
+    rows.push({ t, epochMs: t0 + t * 1000,
+      calm: Math.max(0, Math.min(1, calm)), focus: Math.max(0, Math.min(1, focus)),
+      thinking: Math.max(0, Math.min(1, 0.4 + (rnd() - 0.5) * 0.05)), noise: rnd() * 0.1 });
+  }
+
+  // Taps only. No `dims` anywhere, so Labels.spans() yields nothing labelled.
+  const notes = markTimes.map((at, i) => ({
+    id: i + 1, kind: 'transition', at: t0 + at * 1000, offsetSec: at,
+    transition: 'returned', text: 'Returned to the object',
+  }));
+
+  const { files } = Exporter.buildFiles({
+    meta: { startedAt: t0, durationSec, bytes: 1e6, ended: true, eegHz: 256, accHz: 50 },
+    eeg: [[1, 2, 3], [4, 5, 6], [], []], acc: [], rr: [], rows, notes,
+  }, {});
+  return { name: `marks-${id}.zip`, bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
+}
+
 function makeArchive({ id, seedOffset = 0, planted = true, spans = 4, minutes = 20 }) {
   const t0 = new Date('2026-07-28T06:00:00').getTime() + seedOffset * 86400000;
   const durationSec = minutes * 60;
@@ -253,7 +299,9 @@ async function drop(page, archives) {
         sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans,
       }))), { iterations: 800 });
       return {
-        verdict: document.querySelector('#out .headline').textContent,
+        // The SPANS headline specifically. The marks search renders first now, and
+        // reading "the first headline" silently compared the wrong section.
+        verdict: document.querySelector('#out [data-source="spans"] .headline').textContent,
         confirmed: res.confirmed.map((c) => c.key),
         calmFocus: res.tests.find((t) => t.key === 'calm~focus') || null,
         units: res.units,
@@ -382,6 +430,72 @@ async function drop(page, archives) {
     assert.ok(!md.includes('eeg-ch'), 'no raw data references');
     console.log(`✓ the handoff copies as ${(md.length / 1024).toFixed(1)}kB of prose,`
       + ' limits first, no raw signal');
+  }
+
+  /* 10) MARKS ALONE ARE ENOUGH, and the signature can be a shape rather than a level.
+   *
+   * The reported state: "I pulled up three studies, but although I have markers, I
+   * didn't label spans... so I have markers, but no spans." The lab only knew how to
+   * analyse hand-labelled spans, so a fully-marked sit produced "no labelled spans,
+   * nothing to correlate" — a tooling dead end presented as a null result.
+   *
+   * The planted signature is deliberately invisible to a comparison of MEANS: calm
+   * rises across the ten seconds before each tap while focus falls. Only the trend and
+   * pair features can see it, so this also tests that the broader signature vocabulary
+   * does something the old mean-only search could not.
+   */
+  {
+    await page.evaluate(() => { sessions.length = 0; });
+    const files = [];
+    for (let i = 0; i < 6; i++) files.push(makeMarkArchive({ id: i, seedOffset: 80 + i }));
+    await drop(page, files);
+
+    const st = await page.evaluate(() => {
+      const forAnalysis = sessions.map((s) => ({
+        sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans, notes: s.notes,
+      }));
+      const spanUnits = Analysis.unitsFromSpans(forAnalysis);
+      const markUnits = Analysis.unitsFromMarks(forAnalysis,
+        { leadSec: 10, tailSec: 2 });
+      const res = Analysis.search(markUnits, { iterations: 800 });
+      const marksSection = document.querySelector('#out [data-source="marks"]');
+      return {
+        spanUnits: spanUnits.length,
+        markUnits: markUnits.length,
+        controls: markUnits.filter((u) => u.isControl).length,
+        featureKinds: Array.from(new Set(Object.keys(markUnits[0].features)
+          .map((k) => k.split('.').pop()))).sort(),
+        confirmed: res.confirmed.map((c) => c.key),
+        sectionShown: !!marksSection,
+        sectionText: marksSection ? marksSection.textContent : '',
+        spansNote: !!document.querySelector('#out [data-source="spans"]'),
+      };
+    });
+
+    assert.strictEqual(st.spanUnits, 0,
+      'precondition: these archives must have NO labelled spans, or the test proves nothing');
+    assert.ok(st.markUnits >= 60,
+      `six sits x eight marks plus controls should give plenty of units (got ${st.markUnits})`);
+    assert.ok(st.controls > 0,
+      'random control windows are required — with one tap category there is otherwise'
+      + ' nothing to contrast against, and a one-class label has no variance at all');
+    assert.deepStrictEqual(st.featureKinds, ['level', 'pair', 'range', 'swing', 'trend', 'trio'],
+      `every signature kind must be built (got ${st.featureKinds.join(', ')})`);
+    assert.ok(st.sectionShown, 'the marks search must render even with no spans present');
+    assert.ok(!st.spansNote, 'and no spans section, since there are none');
+    // The window and the dropped tail have to be STATED, not assumed: the reader is
+    // being told what "before the mark" means, and it is an analysis choice.
+    assert.match(st.sectionText, /8 seconds ending 2s before/,
+      'the section must say exactly what window it used');
+    assert.match(st.sectionText, /random windows/,
+      'and that it is comparing against random windows from the same sits');
+    // The planted shape must actually be found, by the features that can see it.
+    assert.ok(st.confirmed.some((k) => /\.trend~/.test(k)),
+      `the rising trend must be found (confirmed: ${st.confirmed.join(', ') || 'none'})`);
+    assert.ok(st.confirmed.some((k) => /\.pair~/.test(k)),
+      `and the two lines moving opposite (confirmed: ${st.confirmed.join(', ') || 'none'})`);
+    console.log(`✓ marks alone are analysable: ${st.markUnits} windows, no spans needed,`
+      + ` and a trend/pair signature invisible to means is found`);
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

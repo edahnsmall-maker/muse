@@ -225,4 +225,90 @@ const mkSearch = ({ units = 40, comparisons = 20, train = 7, test = 3, confirmed
   console.log(`✓ end to end: a planted negative relationship reads as "${hrv.sentence.slice(0, 62)}…"`);
 }
 
+/*
+ * THE NEW SIGNATURE KINDS MUST READ AS ENGLISH, and say the right thing.
+ *
+ * analysis.js now produces feature keys like `calm.trend`, `calm+focus.pair` and
+ * `calm+focus+thinking.trio`, and labels like `is:returned`. Untranslated, the headline
+ * would read "`calm+focus.pair` was higher when you were closer to \"that label\"" —
+ * which is the exact failure this file exists to prevent, because a reader who cannot
+ * decode the claim cannot judge it, and a claim that cannot be judged gets believed.
+ *
+ * Every assertion here is about wording. That is not fussiness: the sentence IS the
+ * output of this module, and a sentence that parses but misdescribes the statistic is
+ * worse than a table.
+ */
+{
+  const one = (feature, label, testRho) => {
+    const t = { key: `${feature}~${label}`, feature, label,
+      trainRho: testRho, testRho, p: 0.001, q: 0.01, heldUp: true, trainN: 60, testN: 30 };
+    const rep = F.report({ tests: [t], confirmed: [t], comparisons: 40, units: 96,
+      split: { train: ['a', 'b', 'c'], test: ['d', 'e'] }, verdict: 'x' },
+      { label: 'windows before a mark' });
+    return rep.confirmed[0];
+  };
+  const noKeys = (f) => {
+    // No raw feature or label key may reach the prose. A backtick is how this module
+    // signals "I could not translate this", so its presence is the failure.
+    assert.ok(!/`/.test(f.sentence),
+      `an untranslated key leaked into the sentence: ${f.sentence}`);
+    assert.ok(!/\bis:/.test(f.sentence), `a raw label key leaked: ${f.sentence}`);
+    assert.ok(!/\.(level|trend|swing|range|pair|trio)\b/.test(f.sentence),
+      `a raw feature key leaked: ${f.sentence}`);
+  };
+
+  // A TREND reads as a direction, not as a magnitude. "whether the Calm score was
+  // rising or falling was higher" is grammatical and unreadable.
+  const rising = one('calm.trend', 'is:returned', 0.6);
+  noKeys(rising);
+  assert.match(rising.sentence, /Calm score was rising/, rising.sentence);
+  assert.match(rising.sentence, /before "Returned to the object"/,
+    'the tap must be named the way the app names it, not by its key');
+  assert.match(rising.sentence, /than in windows you did not mark/,
+    'a 1/0 contrast must state what it was compared AGAINST — there is no'
+    + ' "closer to one-pointed" end of a binary label');
+  const falling = one('calm.trend', 'is:returned', -0.6);
+  assert.match(falling.sentence, /Calm score was falling/, falling.sentence);
+
+  // A PAIR reads as a relationship, and the SIGN is the whole finding: together vs
+  // opposite. Reporting it as "higher" would lose the only thing it says.
+  const together = one('calm+focus.pair', 'is:returned', 0.7);
+  noKeys(together);
+  assert.match(together.sentence, /moved more together/, together.sentence);
+  const opposite = one('calm+focus.pair', 'is:returned', -0.7);
+  assert.match(opposite.sentence, /moved more opposite/, opposite.sentence);
+  assert.ok(/Calm score/.test(opposite.sentence) && /Focus score/.test(opposite.sentence),
+    'both lines must be named');
+
+  // A TRIO names all three.
+  const trio = one('calm+focus+thinking.trio', 'is:any-mark', 0.6);
+  noKeys(trio);
+  assert.match(trio.sentence, /moved as one/, trio.sentence);
+  assert.match(trio.sentence, /any moment you marked at all/,
+    'the coarse "did you notice anything" label needs its own wording');
+  for (const n of ['Calm score', 'Focus score', 'Thinking score']) {
+    assert.ok(trio.sentence.includes(n), `${n} must be named in a trio finding`);
+  }
+
+  // EVERY series involved carries its caveat, because a co-movement between two
+  // unvalidated scores is a co-movement between two unvalidated scores.
+  assert.ok(/Calm score is/.test(trio.caveat) && /Focus score is/.test(trio.caveat)
+    && /Thinking score is/.test(trio.caveat),
+    `all three caveats must travel with a trio finding: ${trio.caveat}`);
+  // And the caveat must be about the LINES, not a restatement of the shape.
+  assert.ok(!/moved as one/.test(trio.caveat),
+    `the caveat must not restate the claim: ${trio.caveat}`);
+  // Readable: no sentence may begin in lower case after a full stop.
+  assert.ok(!/\. [a-z]/.test(trio.caveat), `broken sentence casing: ${trio.caveat}`);
+
+  // swing/range still read plainly, and the ordinal path is untouched.
+  noKeys(one('hrv.swing', 'is:kensho', 0.6));
+  const ordinal = one('calm', 'focus', 0.6);
+  assert.match(ordinal.sentence, /closer to "one-pointed"/,
+    `the hand-labelled path must be unchanged: ${ordinal.sentence}`);
+
+  console.log('✓ trend, pair and trio findings read as English, name every line,'
+    + ' and say what a marked window was compared against');
+}
+
 console.log('\nAll findings tests passed.');

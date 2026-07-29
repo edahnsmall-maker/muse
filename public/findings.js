@@ -46,7 +46,7 @@
    */
   const TERMS = {
     calm: { name: 'the Calm score', caveat: 'itself unvalidated, and built mostly on alpha power' },
-    thinking: { name: 'the Thinking score', caveat: 'unvalidated; may track band-power volatility rather than thought' },
+    thinking: { name: 'the Thinking score', caveat: 'unvalidated, and may track band-power volatility rather than thought' },
     focus: { name: 'the Focus score', caveat: 'unvalidated' },
     drowsy: { name: 'the Drowsy score', caveat: 'unvalidated' },
     equanimity: { name: 'the Equanimity score', caveat: 'unvalidated, and speculative even by this project’s standards' },
@@ -66,9 +66,101 @@
     aware: { name: 'whether you knew where attention was', high: 'you knew', low: 'you did not' },
   };
 
-  const term = (k) => (TERMS[k] ? TERMS[k].name : `\`${k}\``);
-  const caveatOf = (k) => (TERMS[k] ? TERMS[k].caveat : null);
-  const labelName = (k) => (LABELS[k] ? LABELS[k].name : `\`${k}\``);
+  /*
+   * SIGNATURE KINDS, in words.
+   *
+   * The search no longer only compares averages — see analysis.js windowFeatures. A
+   * feature key is now `<series>.<kind>`, `<a>+<b>.pair` or `<a>+<b>+<c>.trio`, and
+   * without translation the sentence would read "`calm+focus.pair` was higher when…",
+   * which is exactly the failure this file exists to prevent. A reader who cannot
+   * decode the key cannot judge the claim, and a claim that cannot be judged gets
+   * believed.
+   */
+  const KINDS = {
+    level: (names) => `how high ${names[0]} was`,
+    trend: (names) => `whether ${names[0]} was rising or falling`,
+    swing: (names) => `how much ${names[0]} moved about`,
+    range: (names) => `how far ${names[0]} swung, top to bottom`,
+    pair: (names) => `whether ${names[0]} and ${names[1]} moved together or opposite`,
+    trio: (names) => `whether ${names[0]}, ${names[1]} and ${names[2]} moved as one`,
+  };
+
+  // A bare series name, for use inside the phrases above. TERMS carries "the Calm
+  // score" style names; anything unknown is quoted rather than guessed at.
+  const seriesName = (k) => (TERMS[k] ? TERMS[k].name : `\`${k}\``);
+
+  function parseFeature(key) {
+    const dot = String(key).lastIndexOf('.');
+    if (dot < 0) return { series: [String(key)], kind: null };
+    const kind = key.slice(dot + 1);
+    return { series: key.slice(0, dot).split('+'), kind: KINDS[kind] ? kind : null };
+  }
+
+  function term(k) {
+    const { series, kind } = parseFeature(k);
+    if (!kind) return TERMS[k] ? TERMS[k].name : `\`${k}\``;
+    return KINDS[kind](series.map(seriesName));
+  }
+
+  /*
+   * The caveat is the union of every series involved, because a pair feature inherits
+   * the doubt attached to BOTH of its lines — and a co-movement between two
+   * unvalidated scores is a co-movement between two unvalidated scores.
+   */
+  function caveatOf(k) {
+    const { series, kind } = parseFeature(k);
+    if (!kind) return TERMS[k] ? TERMS[k].caveat : null;
+    return TERMS[series[0]] ? TERMS[series[0]].caveat : null;
+  }
+
+  /*
+   * The whole "Note:" sentence, one clause per series involved.
+   *
+   * Per series rather than a merged list, because each TERMS caveat is written as a
+   * singular predicate ("is unvalidated", "is a real physiological measure") and
+   * joining them behind one plural subject produced "the Calm score and the Focus
+   * score are itself unvalidated…; unvalidated" — broken grammar in the one sentence
+   * whose entire job is to be readable.
+   */
+  function caveatSentence(key) {
+    const { series } = parseFeature(key);
+    const clauses = series
+      .filter((x) => TERMS[x] && TERMS[x].caveat)
+      .map((x) => `${TERMS[x].name} is ${TERMS[x].caveat}`);
+    if (!clauses.length) return null;
+    // Semicolons, not full stops: each clause starts lowercase ("the Calm score is…"),
+    // so joining with '. ' produced sentences beginning in lower case.
+    return `Note: ${clauses.join('; ')}.`;
+  }
+
+  /*
+   * A binary "was this the window before a <category> mark" label, in words.
+   *
+   * The human name comes from Labels.TRANSITION_BY_KEY where it is available, so the
+   * lab and the app cannot end up calling the same tap two different things — two
+   * vocabularies for one event already went wrong once here. When Labels is not loaded
+   * the raw key is quoted rather than prettified into something that might be wrong.
+   */
+  const Names = (typeof module !== 'undefined' && module.exports)
+    ? (() => { try { return require('./labels.js'); } catch { return null; } })()
+    : (typeof window !== 'undefined' ? window.Labels : null);
+
+  function markLabelName(kind) {
+    if (kind === 'any-mark') return 'any moment you marked at all';
+    const t = Names && Names.TRANSITION_BY_KEY && Names.TRANSITION_BY_KEY[kind];
+    return t ? `"${t.label}"` : `"${kind}"`;
+  }
+
+  function labelName(k) {
+    if (LABELS[k]) return LABELS[k].name;
+    const m = /^is:(.+)$/.exec(String(k));
+    if (m) return `the seconds before ${markLabelName(m[1])}`;
+    return `\`${k}\``;
+  }
+
+  // Is this label a marked-moment contrast rather than an ordinal rating? The sentence
+  // has to be built differently: there is no "closer to one-pointed" end of a 1/0.
+  const isMarkLabel = (k) => /^is:/.test(String(k));
 
   /*
    * Strength in words, from the held-out correlation.
@@ -98,6 +190,40 @@
     const strength = strengthWord(test.testRho);
     const caveat = caveatOf(test.feature);
 
+    /*
+     * A MARKED-MOMENT CONTRAST IS A DIFFERENT SENTENCE. Its label is 1/0, so there is
+     * no "closer to one-pointed" end to move toward — the claim is that the windows
+     * before a particular kind of mark differ from the windows that were not. Reusing
+     * the ordinal phrasing would have produced "higher when you were closer to
+     * 'that label'", which says nothing and looks like it says something.
+     *
+     * `pair` and `trio` also need the direction read as a relationship rather than as
+     * a magnitude: a positive rho on a co-movement feature means the two lines moved
+     * together MORE in those windows, not that some quantity was larger.
+     */
+    const { kind, series } = parseFeature(test.feature);
+    const relational = kind === 'pair' || kind === 'trio';
+    const moved = relational
+      ? (dir === 'higher' ? 'more together' : 'more opposite')
+      : (dir === 'higher' ? 'higher' : 'lower');
+    /* A TREND IS A DIRECTION, so it reads as one. "whether the Calm score was rising
+       or falling was higher" is grammatical and unreadable; the claim is that the line
+       was rising, or falling, in those windows. */
+    const claim = kind === 'trend'
+      ? (isMarkLabel(test.label)
+        ? `${seriesName(series[0])} was ${dir === 'higher' ? 'rising' : 'falling'}`
+          + ` in ${labelName(test.label)}, more than in windows you did not mark.`
+        : `${seriesName(series[0])} was ${dir === 'higher' ? 'rising' : 'falling'}`
+          + ` when you were closer to "${end}" (${labelName(test.label)}).`)
+      : isMarkLabel(test.label)
+        ? (relational
+          ? `${term(test.feature)}: they moved ${moved} in ${labelName(test.label)}`
+            + ' than in windows you did not mark.'
+          : `${term(test.feature)} was ${dir} in ${labelName(test.label)}`
+            + ' than in windows you did not mark.')
+        : `${term(test.feature)} was ${moved} when you were closer to "${end}"`
+          + ` (${labelName(test.label)}).`;
+
     return {
       key: test.key,
       feature: test.feature,
@@ -105,8 +231,7 @@
       strength,
       heldUp: test.heldUp === true,
       // The headline, with its exposure attached rather than footnoted.
-      sentence: `${term(test.feature)} was ${dir} when you were closer to "${end}"`
-        + ` (${labelName(test.label)}).`
+      sentence: `${claim}`
         + ` A ${strength} relationship, from ${units} labelled observations,`
         + ` and it held its direction on ${testSessions} session(s) it was not fitted on.`,
       // Everything needed to judge it, in one place.
@@ -115,7 +240,10 @@
         + ` p ${test.p == null ? '—' : test.p.toFixed(4)},`
         + ` corrected q ${test.q == null ? '—' : test.q.toFixed(3)};`
         + ` one of ${comparisons} comparisons; fitted on ${trainSessions} session(s).`,
-      caveat: caveat ? `Note: ${term(test.feature)} is ${caveat}.` : null,
+      /* Names the SERIES, not the decoded phrase: "Note: whether the Calm score and the
+         Focus score moved together or opposite is itself unvalidated…" restates the
+         whole claim in order to say something about its ingredients. */
+      caveat: caveatSentence(test.feature),
       // The actionable part. A candidate becomes a result by being predicted in
       // advance and then observed, which means a trial rather than more of the same.
       nextStep: nextStepFor(test),

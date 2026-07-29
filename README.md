@@ -617,6 +617,64 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### The lab analyses marks, not just spans
+
+A mark is a moment; the analysis needs a stretch of time. So **each tap contributes the
+8 seconds ending 2 seconds before you pressed the key.** The window is *before* the mark
+because you press "returned" after noticing you came back — if returning has a signature
+it is in the run-up, not the aftermath.
+
+The 2-second tail is dropped deliberately. Pressing a key moves a hand, an arm and
+usually the jaw, and that muscle activity lands in the same frequencies the Thinking
+score is built from — so the seconds touching the keypress would show "activity" for
+every category alike, an artefact of the button rather than of the mind. It also
+separates the state being reported from the act of reporting it.
+
+Marked windows are compared against **random windows from the same sits**, kept clear of
+every mark. Same session, so electrode fit, time of day and how the sit went cannot
+masquerade as a difference between marked and unmarked time. Controls are also what make
+a *single* tap category analysable at all: a one-class label has no variance, so without
+a comparison class every correlation is null.
+
+Each category becomes its own 1/0 question — "windows before a `returned` tap versus
+everything else". Spearman on a binary variable is a rank-biserial correlation, so the
+existing pipeline (permutation null, FDR, held-out sessions) applies unchanged rather
+than needing a second, less careful one.
+
+This exists because the taps arrived after the lab did: three sits loaded with plenty of
+marks produced *"no labelled spans, nothing to correlate"* — a tooling dead end dressed
+up as a null result.
+
+### What counts as a pattern
+
+The search used to ask one question: is the **mean** of this score higher when that label
+is higher. That is a small fraction of how a state could show up in four electrodes and a
+handful of composites. Each window now yields six kinds of feature:
+
+| kind | question |
+|---|---|
+| `level` | how high the line sat |
+| `trend` | whether it was rising or falling |
+| `swing` | how much it moved about |
+| `range` | how far it swung, top to bottom |
+| `pair` | whether two lines moved **together or opposite** — the sign is the answer |
+| `trio` | whether three lines moved as one |
+
+Findings are still sentences: *"the Calm score was rising in the seconds before 'Returned
+to the object', more than in windows you did not mark"*, or *"the Calm score and the Focus
+score moved more opposite…"*. A key like `calm+focus.pair` reaching the prose would be a
+bug, and `test-findings.js` fails if one does — a claim you cannot decode is a claim you
+cannot judge, and one that cannot be judged gets believed.
+
+**Breadth costs power, and that is the honest trade.** Every kind added multiplies the
+comparison count, and multiplicity correction makes each test harder in proportion. A
+search over 200 features needs a stronger effect to survive than one over 20. This buys
+the *ability* to find these shapes; it does not buy evidence, and with a handful of sits
+the answer will usually still be "nothing yet". Verified both ways: a signature planted
+only in the shape — calm rising while focus falls, means held equal by construction — is
+found by `trend` and `pair` and *not* by `level`, while three seeds of pure noise confirm
+nothing at all.
+
 ### Training mode
 
 Turning Training on does three things: shows the tap-category panel, starts the probe

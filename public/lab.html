@@ -434,24 +434,80 @@ function renderTrials() {
   host.innerHTML = sections;
 }
 
+/*
+ * TWO SOURCES OF OBSERVATIONS, and the second one is why anything is analysable yet.
+ *
+ * Spans are hand-labelled stretches with dimensional ratings. Nobody has been making
+ * them — the one-key taps arrived after the lab did — so three sits loaded with plenty
+ * of marks used to produce "no labelled spans, nothing to correlate": a tooling dead
+ * end dressed up as a null result.
+ *
+ * Marks are the taps themselves, each turned into the window just BEFORE it. Run as a
+ * SEPARATE search rather than pooled with the spans, because the two ask different
+ * questions (how strong was a state over minutes, versus what preceded a noticed
+ * moment) and pooling them would mix the multiplicity correction of both.
+ */
+const MARK_LEAD_SEC = 10;   // how far back from a mark the window reaches
+const MARK_TAIL_SEC = 2;    // dropped: the keypress and the noticing itself live here
+
 function renderSearch() {
   const usable = sessions.filter((s) => !s.error);
-  const units = Analysis.unitsFromSpans(usable.map((s) => ({
-    sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans,
-  })));
+  if (!usable.length) { outEl.innerHTML = ''; return; }
+  const forAnalysis = usable.map((s) => ({
+    sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans, notes: s.notes,
+  }));
 
-  if (!units.length) {
-    outEl.innerHTML = usable.length ? `<h2>Patterns</h2><div class="card verdict">
-      No labelled spans in what is loaded, so there is nothing to correlate against.
-      Label some sits — in the app's Notes panel during a sit, or on the closing
-      screen — and reload the archives.</div>` : '';
+  const spanUnits = Analysis.unitsFromSpans(forAnalysis);
+  const markUnits = Analysis.unitsFromMarks(forAnalysis, {
+    leadSec: MARK_LEAD_SEC, tailSec: MARK_TAIL_SEC,
+  });
+
+  if (!spanUnits.length && !markUnits.length) {
+    outEl.innerHTML = `<h2>Patterns</h2><div class="card verdict">
+      Nothing to correlate against yet. This needs either one-key taps during a sit
+      (turn Training on and press a category key when you notice something) or
+      hand-labelled spans from the Notes panel. Neither is present in what is
+      loaded.</div>`;
     return;
   }
 
-  const res = Analysis.search(units, { iterations: 1500 });
-  const rep = Findings.report(res, { label: 'labelled spans' });
-  lastReports = [{ title: 'Hand-labelled spans', report: rep }];
-  outEl.innerHTML = '<h2>Patterns</h2>' + reportHtml(rep, res) + handoffBarHtml();
+  lastReports = [];
+  let html = '<h2>Patterns</h2>';
+
+  if (markUnits.length) {
+    const marks = markUnits.filter((u) => !u.isControl);
+    const kinds = marks.reduce((m, u) => { m[u.markKind] = (m[u.markKind] || 0) + 1; return m; }, {});
+    const res = Analysis.search(markUnits, { iterations: 1500 });
+    const rep = Findings.report(res, { label: 'windows before a mark' });
+    lastReports.push({ title: 'Marks', report: rep });
+    // Wrapped and named so each search can be pointed at — by a reader comparing the
+    // two, and by the tests, which otherwise pick up whichever headline is first.
+    html += `<section data-source="marks"><h3>Marks</h3><div class="card note">
+      <strong>What is being compared.</strong> Each mark contributes the
+      ${MARK_LEAD_SEC - MARK_TAIL_SEC} seconds ending ${MARK_TAIL_SEC}s before you
+      pressed the key — a mark describes the stretch just before it, and the last
+      couple of seconds are dropped because pressing a key moves a hand and a jaw,
+      and that muscle activity lands in the same frequencies the scores are built
+      from. ${marks.length} marks
+      (${Object.entries(kinds).map(([k, v]) => `${esc(k)}: ${v}`).join(' · ')})
+      against ${markUnits.length - marks.length} random windows from the same sits,
+      kept clear of every mark.
+      </div>` + reportHtml(rep, res) + '</section>';
+  }
+
+  if (spanUnits.length) {
+    const res = Analysis.search(spanUnits, { iterations: 1500 });
+    const rep = Findings.report(res, { label: 'labelled spans' });
+    lastReports.push({ title: 'Hand-labelled spans', report: rep });
+    html += '<section data-source="spans"><h3>Hand-labelled spans</h3>'
+      + reportHtml(rep, res) + '</section>';
+  } else {
+    html += `<div class="card note">No hand-labelled spans loaded. Those come from the
+      Notes panel or the closing screen and rate a whole stretch on four dimensions —
+      a different and slower kind of evidence from the taps above.</div>`;
+  }
+
+  outEl.innerHTML = html + handoffBarHtml();
   wireHandoff();
 }
 
