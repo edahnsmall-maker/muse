@@ -288,6 +288,72 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ chart colours are distinguishable (closest pair: sensors ${report.sensors.d}, composites ${report.composites.d})`);
   }
 
+  // 7b) A DEAD ELECTRODE MUST DRAW NOTHING, not a flat line at mid-range.
+  //     Reported as "any clues as to why TP10 looks dead?" — with a perfectly flat
+  //     green line through the centre of the Live feed. That line was fabricated:
+  //     sampleHistory held the previous value when a channel had no valid reading, and
+  //     50 when there had never been one, so an electrode not touching the head was
+  //     drawn as the steadiest, most perfectly balanced channel on the plot.
+  {
+    const out = await page.evaluate(() => {
+      const strokes = [];
+      const g = chartCanvas.getContext('2d');
+      const realStroke = g.stroke.bind(g);
+      const realMove = g.moveTo.bind(g);
+      const realLine = g.lineTo.bind(g);
+      let pending = [];
+      g.moveTo = (x, y) => { pending.push([x, y]); realMove(x, y); };
+      g.lineTo = (x, y) => { pending.push([x, y]); realLine(x, y); };
+      g.stroke = () => { if (pending.length) strokes.push({ style: g.strokeStyle, pts: pending }); pending = []; realStroke(); };
+
+      // Reset the histories, then feed 30 seconds in which TP10 NEVER reports and TP9
+      // reports, drops out for a stretch, and comes back.
+      for (const k of Object.keys(histories)) histories[k] = new Chart.History(HISTORY_LEN);
+      seriesMode = 'sensors';
+      for (let t = 0; t < 30; t++) {
+        const chans = DSP.CHANNEL_NAMES.map((name, i) => {
+          if (name === 'TP10') return { name, label: 'Noisy', pct: null, artifact: true };
+          if (name === 'TP9' && t >= 10 && t < 20) return { name, label: 'Noisy', pct: null, artifact: true };
+          return { name, label: 'Alpha', pct: 0.3 + 0.1 * i, artifact: false };
+        });
+        sampleHistory({ calm: 0.5, artifactRate: 0.2 }, chans);
+      }
+      // sampleHistory re-renders on every sample, so only the LAST frame's paths
+      // describe the finished series. Counting all 30 frames' worth would just count
+      // renders.
+      strokes.length = 0;
+      renderChart();
+      const colorOf = (n) => SENSOR_SERIES.find((s) => s.key === n).color;
+      const forSeries = (n) => strokes.filter((s) =>
+        String(s.style).toLowerCase() === colorOf(n).toLowerCase());
+      const res = {
+        tp10Strokes: forSeries('TP10').length,
+        tp10Values: histories.TP10.values.slice(0, 4),
+        tp9Runs: forSeries('TP9').length,
+        af7Runs: forSeries('AF7').length,
+        af7Flat: forSeries('AF7').every((s) => s.pts.length > 2),
+      };
+      g.stroke = realStroke; g.moveTo = realMove; g.lineTo = realLine;
+      for (const k of Object.keys(histories)) histories[k] = new Chart.History(HISTORY_LEN);
+      return res;
+    });
+
+    assert.deepStrictEqual(out.tp10Values, [null, null, null, null],
+      'a channel with no valid window must record NO VALUE, not 50 and not a held'
+      + ` previous value (got ${JSON.stringify(out.tp10Values)})`);
+    assert.strictEqual(out.tp10Strokes, 0,
+      `an electrode that never reported must draw nothing — it drew ${out.tp10Strokes}`
+      + ' path(s). A flat line at mid-chart is the most confident-looking line on the'
+      + ' plot and it comes from no data at all.');
+    assert.strictEqual(out.tp9Runs, 2,
+      `a channel that dropped out and came back must draw two separate runs, not one`
+      + ` bridged line (got ${out.tp9Runs})`);
+    assert.ok(out.af7Runs >= 1 && out.af7Flat,
+      'and a channel that reported the whole time must still draw one continuous line');
+    console.log('✓ a dead electrode draws nothing and a dropout breaks the line,'
+      + ' instead of being fabricated at 50');
+  }
+
   // 8) The accelerometer decode reports its own gravity verdict, and says so
   //    plainly when the decode is wrong. A delta-compressed decode cannot be
   //    validated by a test built from the same assumptions, so the runtime shows

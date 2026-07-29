@@ -45,4 +45,52 @@ const Chart = require('./public/chart.js');
   console.log('✓ a partial series is right-aligned (scrolls in from empty on the left)');
 }
 
+/*
+ * 5) A MISSING READING IS A GAP, NOT A VALUE.
+ *
+ * Reported as "any clues as to why TP10 looks dead?" — and it looked dead in the most
+ * misleading way available: a perfectly flat line straight through the middle of the
+ * chart. That line came from no data at all. sampleHistory used to push the previous
+ * value when a channel had no valid reading, or 50 when there had never been one, so an
+ * electrode that never touched the head was graphed as a rock-steady, perfectly
+ * balanced channel — the most confident-looking line on the plot.
+ */
+{
+  const maxLen = 10, width = 300, height = 100;
+
+  // A channel that never reported: every value null.
+  const dead = Array.from({ length: 6 }, () => null);
+  const deadPts = Chart.seriesToPoints(dead, width, height, maxLen);
+  assert.strictEqual(deadPts.length, 6, 'nulls still occupy their slots on the time axis');
+  assert.ok(deadPts.every((p) => p === null), 'a null value must not become a point');
+  assert.deepStrictEqual(Chart.segments(deadPts), [],
+    'a channel that never reported must draw NOTHING — not a flat line at mid-range,'
+    + ' which is what made a disconnected electrode look like a steady signal');
+
+  // A dropout in the middle must break the line rather than bridge it: a bridge
+  // asserts values nobody measured.
+  const gappy = [10, 20, null, null, 60, 70, 80];
+  const pts = Chart.seriesToPoints(gappy, width, height, maxLen);
+  const runs = Chart.segments(pts);
+  assert.strictEqual(runs.length, 2, `a dropout must split the line in two (got ${runs.length})`);
+  assert.strictEqual(runs[0].length, 2);
+  assert.strictEqual(runs[1].length, 3);
+  // The sample after the gap must keep its own time position — the gap holds its place
+  // rather than the later samples sliding left to fill it.
+  const solid = [10, 20, 30, 40, 60, 70, 80];
+  const solidPts = Chart.seriesToPoints(solid, width, height, maxLen);
+  assert.ok(Math.abs(runs[1][0][0] - solidPts[4][0]) < 1e-9,
+    'the sample after a gap must keep its own time position');
+
+  // A single surviving reading is kept as a point, not swallowed: a channel that
+  // worked for one second should leave a mark.
+  const blip = [null, null, 42, null, null];
+  const blipRuns = Chart.segments(Chart.seriesToPoints(blip, width, height, maxLen));
+  assert.strictEqual(blipRuns.length, 1, 'one good reading is still a run');
+  assert.strictEqual(blipRuns[0].length, 1);
+
+  console.log('✓ a missing reading is a gap: a dead channel draws nothing, a dropout'
+    + ' breaks the line, and gaps keep their place in time');
+}
+
 console.log('\nAll chart tests passed.');

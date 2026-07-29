@@ -617,6 +617,27 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### A dead electrode draws nothing
+
+If a channel reads **Noisy**, its 1-second window swung more than `ARTIFACT_PTP_UV`
+(150µV peak-to-peak). A behind-the-ear electrode with no skin contact floats and rails,
+which produces exactly that — so `TP9`/`TP10` saying Noisy for a whole sit is almost
+always a contact problem, not a code one. The band has to sit low enough that the ear
+pieces touch bare skin behind the earlobe, and those two are the flakiest sensors on the
+Muse by a distance.
+
+What *was* a code problem: a channel with no valid reading used to be graphed at its
+**previous value, or 50 if there had never been one**. So an electrode that never touched
+the head was drawn as a perfectly flat line through the middle of the chart —
+indistinguishable from a rock-steady, perfectly balanced channel, and the most
+confident-looking line on the plot. It came from no data at all.
+
+Missing readings are now `null`, and `Chart.segments` splits the line at them, so a dead
+channel draws nothing and a dropout leaves a gap that keeps its place on the time axis.
+The same rule applies to composites: no inputs means a gap, not a fabricated zero and not
+a held-over previous value. Bridging a gap asserts values nobody measured, and on the
+temporal channels the bridges were long.
+
 ### The summary offers both downloads
 
 **Download report (.md)** is prose — what happened, for reading. **Download data (.zip)**

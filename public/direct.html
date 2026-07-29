@@ -1761,32 +1761,43 @@ function renderChart() {
   for (const s of visibleSeries()) {
     if (!seriesEnabled[s.key]) continue;
     const pts = Chart.seriesToPoints(histories[s.key].values, w, h, HISTORY_LEN);
-    if (pts.length < 2) continue;
+    // One path per contiguous run, so a gap is a GAP. Drawing straight through the
+    // nulls would join either side with a line that asserts values nobody measured.
     chartCtx.strokeStyle = s.color;
     chartCtx.lineWidth = 1.5;
-    chartCtx.beginPath();
-    pts.forEach(([x, y], i) => (i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y)));
-    chartCtx.stroke();
+    for (const run of Chart.segments(pts)) {
+      if (run.length < 2) continue;
+      chartCtx.beginPath();
+      run.forEach(([x, y], i) => (i === 0 ? chartCtx.moveTo(x, y) : chartCtx.lineTo(x, y)));
+      chartCtx.stroke();
+    }
   }
 }
 
 function sampleHistory(result, channels) {
   histories.calm.push(Math.round(result.calm * 100));
   histories.noise.push(Math.round(result.artifactRate * 100));
+  /* NO READING PUSHES NULL, AND THE LINE BREAKS. It used to hold the previous value,
+   * or 50 if there had never been one — which is how "TP10's electrode is not touching
+   * my head" was drawn as a perfectly flat line through the middle of the chart,
+   * indistinguishable from a rock-steady, perfectly balanced channel. That is the most
+   * confident-looking line on the graph and it came from no data at all.
+   *
+   * Holding across a brief dropout is not much better: a bridged gap asserts values
+   * nobody measured, and on the temporal channels — which are artifact-flagged much of
+   * the time — the bridges are long. A break is true, and a one-second gap in a 1Hz
+   * series is barely visible anyway. */
   for (const ch of channels) {
-    const h = histories[ch.name];
-    const prev = h.values.length ? h.values[h.values.length - 1] : 50;
-    h.push(ch.pct != null ? Math.round(ch.pct * 100) : prev); // hold last value if unavailable this tick
+    histories[ch.name].push(ch.pct != null ? Math.round(ch.pct * 100) : null);
   }
-  // Composites. A metric with no inputs yields null, and we hold the previous
-  // value rather than graphing a fabricated zero.
+  // Composites: same rule. A metric with no inputs yields null and graphs as a gap
+  // rather than as a fabricated zero OR a held-over previous value.
   for (const c of COMPOSITE_SERIES) {
     if (c.key === 'calm' || c.key === 'noise') continue;
     const h = histories[c.key];
     if (!h) continue;
     const v = Metrics.compute(c.key, features);
-    const prev = h.values.length ? h.values[h.values.length - 1] : 50;
-    h.push(v == null ? prev : Math.round(v * 100));
+    h.push(v == null ? null : Math.round(v * 100));
   }
   renderChart();
 }

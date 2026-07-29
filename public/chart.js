@@ -29,16 +29,40 @@
     return height - ((clamped - min) / (max - min)) * height;
   }
 
-  // Right-aligns the series to the current time — the most recent value is
-  // always at the right edge, so a buffer that isn't full yet leaves empty
-  // space on the LEFT (scrolling in from empty), not the right.
+  /*
+   * Right-aligns the series to the current time — the most recent value is
+   * always at the right edge, so a buffer that isn't full yet leaves empty
+   * space on the LEFT (scrolling in from empty), not the right.
+   *
+   * A NULL VALUE YIELDS A NULL POINT, and the caller must break the line there.
+   * "No reading" has to look different from "a reading that happens to be
+   * mid-range", and it did not: a channel whose electrode never made contact was
+   * graphed as a confident flat line at exactly 50 — see the note in sampleHistory.
+   * The index still advances across nulls, so a gap keeps its place on the time axis
+   * instead of sliding the rest of the series sideways.
+   */
   function seriesToPoints(values, width, height, maxLen, min = 0, max = 100) {
     return values.map((v, i) => {
       const idx = maxLen - values.length + i;
       const x = maxLen > 1 ? (idx / (maxLen - 1)) * width : width;
-      return [x, valueToY(v, height, min, max)];
+      return v == null ? null : [x, valueToY(v, height, min, max)];
     });
   }
 
-  return { History, valueToY, seriesToPoints };
+  // Contiguous runs of real points, for a caller that draws one path per run.
+  // Single points are kept rather than dropped: a channel that worked for one second
+  // in the middle of a sit should leave a mark, not vanish.
+  function segments(points) {
+    const out = [];
+    let run = [];
+    for (const p of points) {
+      if (p) { run.push(p); continue; }
+      if (run.length) out.push(run);
+      run = [];
+    }
+    if (run.length) out.push(run);
+    return out;
+  }
+
+  return { History, valueToY, seriesToPoints, segments };
 });
