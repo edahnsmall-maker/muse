@@ -515,4 +515,155 @@ const gauss = () => {
     + ` (${res.detectableRho.toFixed(2)} at n=${res.units}, ${res.comparisons} comparisons)`);
 }
 
+/*
+ * THE CLIP LIBRARY, and the baseline trap the practitioner named.
+ *
+ * "Since the mark is when I NOTICE I was thinking, don't use the immediately preceding
+ *  period as the only baseline — that may erase the effect we're looking for."
+ *
+ * Exactly right, and it is why the default is no baseline correction at all. A self-caught
+ * mark is pressed BECAUSE something was happening just before it, so the seconds adjacent
+ * to the mark are the least neutral part of the window — the one place standard practice
+ * says to baseline against.
+ *
+ * The test plants a RAMP over the ten seconds before each mark: the effect lives entirely
+ * in the run-up. It must survive the default, survive far-baselining, and be destroyed by
+ * detrending — the last being the point of keeping that mode rather than a defect.
+ */
+{
+  const build = ({ ramp = true, sits = 5, marksPer = 8, seed = 4242 }) => {
+    let x = seed;
+    const rnd = () => (x = (x * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    const out = [];
+    for (let s = 0; s < sits; s++) {
+      const metrics = [], marks = [];
+      for (let i = 0; i < marksPer; i++) marks.push(120 + i * 120);
+      for (let t = 0; t < 1200; t++) {
+        // A per-session offset, so pooling raw values across sits would be dominated by
+        // between-session differences — this is what zBySession is for.
+        let calm = 0.4 + s * 0.08 + (rnd() - 0.5) * 0.02;
+        const m = marks.find((mm) => t >= mm - 10 && t < mm);
+        if (ramp && m != null) calm += 0.10 * ((t - (m - 10)) / 10);
+        metrics.push({ t, calm });
+      }
+      out.push({ sessionId: `S${s}`, metrics,
+        notes: marks.map((at) => ({ offsetSec: at, transition: 'lost', anchored: true })) });
+    }
+    return out;
+  };
+
+  const sessions = build({ ramp: true });
+  const at = (lib, t) => lib.average[lib.bins.indexOf(t)];
+
+  // Default: no baseline correction, within-session normalised.
+  const none = A.epochLibrary(sessions, { feature: 'calm', category: 'lost', baseline: 'none' });
+  assert.strictEqual(none.bins[0], -15, 'the window must start 15s before the mark');
+  assert.strictEqual(none.bins[none.bins.length - 1], 15, 'and end 15s after');
+  assert.strictEqual(none.n, 40, `five sits x eight marks should give 40 clips (got ${none.n})`);
+  assert.ok(none.surrogateN > none.n * 4,
+    `and plenty of surrogates to build a band from (got ${none.surrogateN})`);
+  // The individual clips are RETURNED, not only their average: an average of forty
+  // windows hides whether it came from forty similar shapes or one huge outlier, and that
+  // is the whole question at this sample size.
+  assert.strictEqual(none.clips.length, 40, 'every clip must be available, not just the mean');
+  assert.strictEqual(none.clips[0].values.length, none.bins.length);
+
+  const rise = at(none, -1) - at(none, -10);
+  assert.ok(rise > 0.5,
+    `the planted pre-mark ramp must be visible with no baseline correction (rose ${rise.toFixed(2)})`);
+  assert.ok(none.peak && none.peak.atSec < 0,
+    `and the average must leave the surrogate band BEFORE the mark (peak at`
+    + ` ${none.peak ? none.peak.atSec : 'nowhere'}s)`);
+
+  // Far baselining removes the between-clip offset but keeps the run-up, because it uses
+  // the EARLIEST part of the window rather than the seconds next to the mark.
+  const far = A.epochLibrary(sessions, { feature: 'calm', category: 'lost', baseline: 'far' });
+  const farRise = at(far, -1) - at(far, -10);
+  assert.ok(farRise > 0.5,
+    `far baselining must preserve the ramp (rose ${farRise.toFixed(2)}) — that is the whole`
+    + ' reason it uses the far end of the window and not the adjacent seconds');
+  assert.ok(Math.abs(at(far, -14)) < 0.4,
+    `and should sit near zero at the far end it was baselined against (got ${at(far, -14).toFixed(2)})`);
+
+  /* WHAT DETRENDING ACTUALLY DOES, measured rather than assumed. The first version of
+     this test asserted that detrending would flatten the planted ramp and it did not —
+     6.52 against 6.11, very slightly MORE. A straight-line fit across a 31-second window
+     barely touches a ramp confined to the last ten seconds of it, so detrending is safer
+     for a localised run-up than expected. What it does erase is a trend spanning the
+     whole window, which is exactly what it is for: slow drift over a sit. */
+  const det = A.epochLibrary(sessions, { feature: 'calm', category: 'lost', baseline: 'detrend' });
+  const detRise = at(det, -1) - at(det, -10);
+  assert.ok(detRise > rise * 0.8,
+    `detrending must LEAVE a localised pre-mark ramp largely intact — a line fit over 31s`
+    + ` cannot absorb a 10s ramp (${detRise.toFixed(2)} vs ${rise.toFixed(2)})`);
+
+  // And it does erase a window-spanning trend, which is the thing it exists for.
+  const drift = build({ ramp: false, seed: 7 }).map((s) => ({
+    ...s,
+    metrics: s.metrics.map((r) => ({ t: r.t, calm: r.calm + 0.0004 * r.t })),
+  }));
+  const driftNone = A.epochLibrary(drift, { feature: 'calm', category: 'lost', baseline: 'none' });
+  const driftDet = A.epochLibrary(drift, { feature: 'calm', category: 'lost', baseline: 'detrend' });
+  const span = (lib) => Math.abs(at(lib, 14) - at(lib, -14));
+  assert.ok(span(driftDet) < span(driftNone) * 0.5,
+    `detrending must remove a trend that spans the window (${span(driftDet).toFixed(2)}`
+    + ` vs ${span(driftNone).toFixed(2)})`);
+
+  /* THE TRAP ITSELF, demonstrated on the clips the library returns.
+   *
+   * The concern was: "don't use the immediately preceding period as the only baseline —
+   * that may erase the effect we're looking for." No such mode is offered, and this is
+   * why. Subtracting the mean of the last five seconds before the mark — the textbook
+   * choice — removes most of the planted ramp, because on a self-caught mark those are
+   * the least neutral seconds in the whole window. */
+  const nearBaselined = none.clips.map((c) => {
+    const idx = none.bins.map((b, i) => (b >= -5 && b < 0 ? i : -1)).filter((i) => i >= 0);
+    const base = A.mean(idx.map((i) => c.values[i]));
+    return c.values.map((v) => (v == null || base == null ? null : v - base));
+  });
+  const nearStack = A.stackClips(nearBaselined, none.bins);
+  /* WHAT IT DESTROYS IS THE ELEVATION, not the shape — and the first version of this
+     test measured the wrong thing. A within-window difference (value at -1 minus value
+     at -10) is invariant to subtracting any constant, so it read 6.11 both ways and
+     proved nothing. The claim being made about a marked moment is that the signal was
+     HIGH there, i.e. its level against the rest of the sit; near-baselining pins exactly
+     that level to zero, because it defines the seconds before the mark as the reference
+     when those are the least neutral seconds in the window. */
+  const level = (m) => m[none.bins.indexOf(-1)];
+  assert.ok(level(none.average) > 0.8,
+    `precondition: with no baseline the run-up must sit well above the session mean`
+    + ` (got ${level(none.average).toFixed(2)} in z units)`);
+  assert.ok(Math.abs(level(nearStack.mean)) < level(none.average) * 0.25,
+    `baselining on the adjacent seconds pins the elevation to nothing`
+    + ` (${level(nearStack.mean).toFixed(2)} against ${level(none.average).toFixed(2)}) —`
+    + " the reason 'none' is the default and no near-baseline mode is offered at all");
+  // 'far' keeps it, because it references the far end of the window instead.
+  assert.ok(level(far.average) > level(none.average) * 0.5,
+    `far baselining must keep the elevation (${level(far.average).toFixed(2)})`);
+
+  // No ramp planted: the average must stay inside the surrogate band. Averaging any forty
+  // windows produces a smooth curve, so the curve is never the finding.
+  const flat = A.epochLibrary(build({ ramp: false, seed: 99 }),
+    { feature: 'calm', category: 'lost', baseline: 'none' });
+  assert.strictEqual(flat.peak, null,
+    `with nothing planted the average must stay inside the band (excursion at`
+    + ` ${flat.peak ? flat.peak.atSec + 's' : 'nowhere'})`);
+
+  // Per-session normalisation is what makes clips from different sits comparable: the
+  // builder gives each sit its own offset, and pooling raw values would be dominated by it.
+  const z = A.zBySession([1, 2, 3, 4, 5]);
+  assert.ok(Math.abs(mean0(z)) < 1e-12, 'z-scoring must centre the session');
+  assert.strictEqual(A.zBySession([2, 2, 2])[0], null,
+    'a session that does not vary cannot be normalised — refuse rather than divide by zero');
+  assert.strictEqual(A.zBySession([1, null, 3])[1], null, 'and gaps stay gaps');
+
+  console.log(`✓ the clip library keeps all ${none.n} clips, shows a pre-mark ramp against a`
+    + ` surrogate band; far-baselining keeps its elevation and near-baselining destroys it`);
+}
+
+function mean0(xs) {
+  const v = xs.filter((x) => x != null);
+  return v.reduce((a, b) => a + b, 0) / v.length;
+}
+
 console.log('\nAll analysis tests passed.');

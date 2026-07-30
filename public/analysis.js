@@ -1045,7 +1045,198 @@
     return units;
   }
 
+  /* ==========================================================================
+   * THE CLIP LIBRARY: every marked moment, side by side
+   * ==========================================================================
+   *
+   * Asked for as "a library of all of the times I said I was thinking, and compare them
+   * all" — which is epoching, the standard move in event-related EEG, and the right
+   * instinct. `eventLocked` above already averages across events; this returns the
+   * INDIVIDUAL clips as well, because an average of twelve windows hides whether it came
+   * from twelve similar shapes or from one enormous outlier, and that distinction is the
+   * whole question when n is this small.
+   *
+   * THE BASELINE DECISION IS THE IMPORTANT ONE, and it came from the practitioner:
+   *
+   *   "Since the mark is when I NOTICE I was thinking, don't use the immediately
+   *    preceding period as the only baseline — that may erase the effect we're looking
+   *    for."
+   *
+   * Exactly right, and it is a real trap. Standard practice baselines against the
+   * seconds just before the event, which assumes those seconds are neutral. Here they
+   * are the opposite: a self-caught mark is pressed BECAUSE something was happening just
+   * before it, so subtracting that period subtracts the signal. `eventLocked`'s
+   * per-window linear detrending has the same problem for a slow pre-mark ramp — it fits
+   * the ramp and removes it.
+   *
+   * So three modes, and 'none' is the default:
+   *
+   *   none      the within-session z-scored trace, untouched. Comparable across sits
+   *             because each session is normalised against itself — electrode fit
+   *             changes day to day — while nothing event-locked is removed.
+   *   far       subtract the mean of the EARLIEST part of the window (the default is the
+   *             first third, ~15s to ~10s before the mark), deliberately not the seconds
+   *             adjacent to it. Removes between-clip offset without touching the run-up.
+   *   detrend   remove a per-clip straight line. The most aggressive, and the one that
+   *             will erase a slow ramp — kept because if an effect survives it, that
+   *             effect is not slow drift.
+   *
+   * Every mode is applied identically to the surrogate clips, or the comparison is rigged.
+   */
+
+  // Z-score a series against its own session. The unit of normalisation is the session
+  // because that is the unit over which electrode fit, posture and time of day are
+  // constant. Returns null where the session does not vary at all.
+  function zBySession(values) {
+    const v = (values || []).map((x) => (x == null ? null : Number(x)))
+      .map((x) => (Number.isFinite(x) ? x : null));
+    const m = mean(v);
+    const s = sd(v);
+    if (m == null || s == null || s < 1e-12) return v.map(() => null);
+    return v.map((x) => (x == null ? null : (x - m) / s));
+  }
+
+  // One clip, sampled onto a fixed grid of offsets relative to the event. Nearest sample
+  // within half a step; null where there is no data, so a gap stays a gap.
+  function clipAt(rows, key, atSec, bins, { stepSec = 1 } = {}) {
+    const out = new Array(bins.length).fill(null);
+    let hits = 0;
+    for (let b = 0; b < bins.length; b++) {
+      const want = atSec + bins[b];
+      let best = null, bestD = stepSec / 2 + 1e-9;
+      for (const r of rows) {
+        const d = Math.abs(r.t - want);
+        if (d <= bestD) { bestD = d; best = r; }
+      }
+      if (best && best[key] != null) { out[b] = best[key]; hits++; }
+    }
+    return hits >= bins.length * 0.6 ? out : null;   // too sparse to be a clip
+  }
+
+  function applyBaseline(clip, bins, mode) {
+    if (mode === 'none' || !mode) return clip.slice();
+    if (mode === 'far') {
+      // The EARLIEST third of the pre-event window, never the seconds next to the mark.
+      const preBins = bins.filter((b) => b < 0);
+      if (!preBins.length) return clip.slice();
+      const cut = preBins[Math.max(0, Math.floor(preBins.length / 3) - 1)];
+      const vals = clip.filter((v, i) => v != null && bins[i] <= cut);
+      const base = mean(vals);
+      return base == null ? clip.slice() : clip.map((v) => (v == null ? null : v - base));
+    }
+    if (mode === 'detrend') {
+      const xs = [], ys = [];
+      bins.forEach((b, i) => { if (clip[i] != null) { xs.push(b); ys.push(clip[i]); } });
+      const sl = slope(xs, ys);
+      const my = mean(ys), mx = mean(xs);
+      if (sl == null || my == null) return clip.slice();
+      return clip.map((v, i) => (v == null ? null : v - (my + sl * (bins[i] - mx))));
+    }
+    return clip.slice();
+  }
+
+  // Mean and standard error across clips, bin by bin, ignoring gaps.
+  function stackClips(clips, bins) {
+    const meanAt = [], seAt = [], nAt = [];
+    for (let b = 0; b < bins.length; b++) {
+      const col = clips.map((c) => c[b]).filter((v) => v != null);
+      nAt.push(col.length);
+      meanAt.push(col.length ? mean(col) : null);
+      const s = col.length > 1 ? sd(col) : null;
+      seAt.push(s == null ? null : s / Math.sqrt(col.length));
+    }
+    return { mean: meanAt, se: seAt, n: nAt };
+  }
+
+  /*
+   * The library for one feature and one mark category.
+   *
+   * The surrogate band is what makes the average readable. Averaging ANY forty windows
+   * produces a smooth curve, so a smooth curve is not the finding — the finding is the
+   * real average leaving the band that random moments produce. Surrogate times are drawn
+   * from the same sessions, kept clear of every mark of any kind, and pushed through the
+   * identical normalisation, clipping and baseline steps.
+   */
+  function epochLibrary(sessions, {
+    feature = 'calm', category = null, preSec = 15, postSec = 15, stepSec = 1,
+    baseline = 'none', surrogatesPerClip = 8, clearanceSec = 30, seed = 17,
+  } = {}) {
+    const bins = [];
+    for (let t = -preSec; t <= postSec; t += stepSec) bins.push(t);
+    const rnd = seededRandom(seed);
+    const clips = [];
+    const surrogates = [];
+
+    for (const s of sessions || []) {
+      const raw = (s.metrics || [])
+        .map((r) => ({ t: Number(r.t), v: r[feature] == null ? null : Number(r[feature]) }))
+        .filter((r) => Number.isFinite(r.t));
+      if (raw.length < 10) continue;
+      // Normalised per session BEFORE clipping, so every clip from every sit is on one
+      // scale without any event-locked structure being removed.
+      const z = zBySession(raw.map((r) => r.v));
+      const rows = raw.map((r, i) => ({ t: r.t, v: z[i] }));
+
+      const marks = (s.notes || [])
+        .filter((n) => n && n.anchored !== false && Number.isFinite(Number(n.offsetSec)))
+        .map((n) => ({ at: Number(n.offsetSec),
+          kind: n.transition || n.tapCategory || n.markKind || null }))
+        .filter((m) => m.kind);
+      const wanted = marks.filter((m) => !category || m.kind === category);
+      const tMin = rows[0].t, tMax = rows[rows.length - 1].t;
+
+      for (const m of wanted) {
+        if (m.at - preSec < tMin || m.at + postSec > tMax) continue;   // clipped by the edge
+        const c = clipAt(rows, 'v', m.at, bins, { stepSec });
+        if (c) clips.push({ sessionId: s.sessionId, atSec: m.at, kind: m.kind,
+          values: applyBaseline(c, bins, baseline) });
+      }
+
+      // Surrogates: clear of EVERY mark, not only the ones in this category — a window
+      // next to a different kind of tap is not an unmarked moment.
+      const want = Math.round(wanted.length * surrogatesPerClip);
+      let tries = 0, made = 0;
+      while (made < want && tries < want * 40) {
+        tries++;
+        const at = tMin + preSec + rnd() * Math.max(0, (tMax - postSec) - (tMin + preSec));
+        if (marks.some((m) => Math.abs(m.at - at) < clearanceSec)) continue;
+        const c = clipAt(rows, 'v', at, bins, { stepSec });
+        if (!c) continue;
+        surrogates.push({ sessionId: s.sessionId, atSec: at,
+          values: applyBaseline(c, bins, baseline) });
+        made++;
+      }
+    }
+
+    const real = stackClips(clips.map((c) => c.values), bins);
+    const surr = stackClips(surrogates.map((c) => c.values), bins);
+    /* The band is the surrogate mean plus/minus twice its standard error, scaled to the
+     * number of REAL clips: the question is whether this many random windows would have
+     * produced this average, so the band has to represent the spread of an average of n,
+     * not the spread of hundreds. */
+    const scale = clips.length ? Math.sqrt(surrogates.length / clips.length) : 1;
+    const band = bins.map((_, b) => {
+      if (surr.mean[b] == null || surr.se[b] == null) return null;
+      const half = 2 * surr.se[b] * (Number.isFinite(scale) && scale > 0 ? scale : 1);
+      return { lo: surr.mean[b] - half, hi: surr.mean[b] + half, mid: surr.mean[b] };
+    });
+    // How far outside the band the real average goes, and where. Reported rather than
+    // interpreted: with a handful of clips this is a thing to look at, not a test.
+    let peak = null;
+    bins.forEach((t, b) => {
+      if (real.mean[b] == null || !band[b]) return;
+      const out = real.mean[b] > band[b].hi ? real.mean[b] - band[b].hi
+        : real.mean[b] < band[b].lo ? band[b].lo - real.mean[b] : 0;
+      if (out > 0 && (!peak || out > peak.excess)) peak = { atSec: t, excess: out };
+    });
+
+    return { bins, feature, category, baseline, clips, surrogates,
+      average: real.mean, se: real.se, nAt: real.n, band,
+      n: clips.length, surrogateN: surrogates.length, peak };
+  }
+
   return {
+    zBySession, clipAt, applyBaseline, stackClips, epochLibrary,
     MIN_N, mean, sd, correlate, rank, spearman, permutationP,
     adjustForMultiplicity, splitSessions, search, unitsFromSpans,
     eventLocked, eventLockedNull, eventLockedTest,

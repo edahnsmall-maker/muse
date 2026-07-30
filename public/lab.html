@@ -95,6 +95,7 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 </div>
 
 <div id="loaded"></div>
+<div id="clips"></div>
 <div id="out"></div>
 <div id="saved"></div>
 
@@ -233,9 +234,190 @@ async function persist() {
 function render() {
   renderLoaded();
   renderTimelines();
+  renderClips();
   renderTrials();
   renderSearch();
   renderSaved();
+}
+
+/* ==========================================================================
+ * THE CLIP LIBRARY
+ * ==========================================================================
+ * Asked for as "a library of all of the times I said I was thinking... compare them all",
+ * from -15s to +15s, every clip overlaid with the average and a time-matched surrogate
+ * band. See Analysis.epochLibrary for the baseline reasoning — the short version is that
+ * the default subtracts nothing, because on a self-caught mark the seconds just before it
+ * are where the effect lives and baselining against them removes it.
+ */
+let clipFeature = 'calm';
+let clipBaseline = 'none';
+let clipCategory = null;
+
+function clipFeatureOptions() {
+  const usable = sessions.filter((s) => !s.error);
+  const keys = new Set();
+  for (const s of usable) {
+    for (const k of Analysis.seriesKeys(s.read.metrics || [])) keys.add(k);
+  }
+  return Array.from(keys).sort();
+}
+
+function clipCategories() {
+  const counts = {};
+  for (const s of sessions.filter((x) => !x.error)) {
+    for (const n of s.notes || []) {
+      const k = n.transition || n.tapCategory || n.markKind;
+      if (k) counts[k] = (counts[k] || 0) + 1;
+    }
+  }
+  return counts;
+}
+
+function renderClips() {
+  const host = document.getElementById('clips');
+  if (!host) return;
+  const cats = clipCategories();
+  const catKeys = Object.keys(cats).sort();
+  if (!catKeys.length) { host.innerHTML = ''; return; }
+  const feats = clipFeatureOptions();
+  if (!feats.includes(clipFeature)) clipFeature = feats[0] || 'calm';
+  if (clipCategory && !catKeys.includes(clipCategory)) clipCategory = null;
+
+  const lib = Analysis.epochLibrary(sessions.filter((s) => !s.error).map((s) => ({
+    sessionId: s.sessionId, metrics: s.read.metrics, notes: s.notes,
+  })), { feature: clipFeature, category: clipCategory || catKeys[0],
+    baseline: clipBaseline });
+
+  const BASELINES = [
+    ['none', 'no baseline', 'The within-session z-scored trace, untouched — nothing'
+      + ' event-locked is removed'],
+    ['far', 'far baseline', 'Subtracts the EARLIEST third of the window, never the seconds'
+      + ' next to the mark'],
+    ['detrend', 'detrend', 'Removes a straight line per clip — kills drift across the whole'
+      + ' window, leaves a short run-up largely intact'],
+  ];
+
+  host.innerHTML = `<h2>Clip library</h2>
+    <div class="card">
+      <div class="row" style="flex-wrap:wrap;gap:8px;align-items:center">
+        <label>Mark <select id="clipCat">${catKeys.map((k) =>
+          `<option value="${esc(k)}"${(clipCategory || catKeys[0]) === k ? ' selected' : ''}>
+            ${esc(k)} (${cats[k]})</option>`).join('')}</select></label>
+        <label>Signal <select id="clipFeat">${feats.map((k) =>
+          `<option value="${esc(k)}"${clipFeature === k ? ' selected' : ''}>${esc(k)}</option>`
+        ).join('')}</select></label>
+        <label>Baseline <select id="clipBase">${BASELINES.map(([k, label]) =>
+          `<option value="${k}"${clipBaseline === k ? ' selected' : ''}>${esc(label)}</option>`
+        ).join('')}</select></label>
+      </div>
+      <div class="note" style="margin-top:8px">
+        ${lib.n} clip(s) from −15s to +15s, each thin line one marked moment, the bright line
+        their average, the shaded band what ${lib.surrogateN} random windows from the same
+        sits produce. <strong>The average leaving the band is the finding; a smooth average
+        is not</strong> — averaging any set of windows produces a smooth curve.
+        <br>${esc(BASELINES.find(([k]) => k === clipBaseline)[2])}.
+        Vertical units are standard deviations of that signal within its own sit.
+      </div>
+      <canvas id="clipCanvas" width="880" height="300"
+        style="width:100%;height:300px;margin-top:12px"></canvas>
+      <div class="note">${lib.peak
+        ? `The average leaves the band furthest at <strong>${lib.peak.atSec}s</strong>`
+          + `${lib.peak.atSec < 0 ? ' — before the mark' : lib.peak.atSec > 0 ? ' — after it' : ' — at the mark'}`
+          + `, by ${lib.peak.excess.toFixed(2)} SD. With this many clips that is something to`
+          + ' look at, not a result.'
+        : 'The average stays inside the band the whole way. With this many clips that is the'
+          + ' expected outcome, and it is an answer rather than a failure.'}</div>
+    </div>`;
+
+  drawClips(document.getElementById('clipCanvas'), lib);
+  const wire = (id, fn) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', () => { fn(el.value); renderClips(); });
+  };
+  wire('clipCat', (v) => { clipCategory = v; });
+  wire('clipFeat', (v) => { clipFeature = v; });
+  wire('clipBase', (v) => { clipBaseline = v; });
+}
+
+function drawClips(canvas, lib) {
+  if (!canvas) return;
+  const c = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+  c.clearRect(0, 0, W, H);
+  const pad = { l: 44, r: 12, t: 12, b: 26 };
+  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
+
+  // Scale from everything that will be drawn, so no clip is silently cut off.
+  let lo = Infinity, hi = -Infinity;
+  const consider = (v) => { if (v != null && Number.isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); } };
+  for (const cl of lib.clips) for (const v of cl.values) consider(v);
+  for (const b of lib.band) if (b) { consider(b.lo); consider(b.hi); }
+  if (!Number.isFinite(lo) || !Number.isFinite(hi) || hi - lo < 1e-9) { lo = -1; hi = 1; }
+  const padY = (hi - lo) * 0.06;
+  lo -= padY; hi += padY;
+  const X = (t) => pad.l + ((t - lib.bins[0]) / (lib.bins[lib.bins.length - 1] - lib.bins[0])) * iw;
+  const Y = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * ih;
+
+  // The surrogate band first, so everything else reads on top of it.
+  c.fillStyle = 'rgba(255,255,255,.10)';
+  c.beginPath();
+  let started = false;
+  lib.bins.forEach((t, i) => {
+    const b = lib.band[i];
+    if (!b) return;
+    if (!started) { c.moveTo(X(t), Y(b.hi)); started = true; } else c.lineTo(X(t), Y(b.hi));
+  });
+  for (let i = lib.bins.length - 1; i >= 0; i--) {
+    const b = lib.band[i];
+    if (b) c.lineTo(X(lib.bins[i]), Y(b.lo));
+  }
+  c.closePath(); c.fill();
+
+  // Zero line and the mark itself, which is the reference the whole picture is about.
+  c.strokeStyle = 'rgba(255,255,255,.14)'; c.lineWidth = 1;
+  c.beginPath(); c.moveTo(pad.l, Y(0)); c.lineTo(W - pad.r, Y(0)); c.stroke();
+  c.strokeStyle = 'rgba(255,210,120,.55)';
+  c.beginPath(); c.moveTo(X(0), pad.t); c.lineTo(X(0), H - pad.b); c.stroke();
+
+  // Every clip, thin. This is the point of the view: an average of twelve windows hides
+  // whether it came from twelve similar shapes or one enormous outlier.
+  c.lineWidth = 1;
+  c.strokeStyle = 'rgba(134,225,255,.20)';
+  for (const cl of lib.clips) {
+    c.beginPath();
+    let on = false;
+    cl.values.forEach((v, i) => {
+      if (v == null) { on = false; return; }
+      const x = X(lib.bins[i]), y = Y(v);
+      if (!on) { c.moveTo(x, y); on = true; } else c.lineTo(x, y);
+    });
+    c.stroke();
+  }
+
+  // The average, bright.
+  c.strokeStyle = '#86e1ff'; c.lineWidth = 2.5;
+  c.beginPath();
+  let on2 = false;
+  lib.average.forEach((v, i) => {
+    if (v == null) { on2 = false; return; }
+    const x = X(lib.bins[i]), y = Y(v);
+    if (!on2) { c.moveTo(x, y); on2 = true; } else c.lineTo(x, y);
+  });
+  c.stroke();
+
+  c.fillStyle = 'rgba(232,234,240,.55)';
+  c.font = '11px Inter, system-ui, sans-serif';
+  c.textBaseline = 'middle';
+  c.textAlign = 'right';
+  c.fillText(hi.toFixed(1), pad.l - 6, Y(hi) + 6);
+  c.fillText('0', pad.l - 6, Y(0));
+  c.fillText(lo.toFixed(1), pad.l - 6, Y(lo) - 6);
+  c.textAlign = 'center';
+  c.textBaseline = 'top';
+  for (const t of [-15, -10, -5, 0, 5, 10, 15]) {
+    if (t < lib.bins[0] || t > lib.bins[lib.bins.length - 1]) continue;
+    c.fillText(t === 0 ? 'mark' : `${t}s`, X(t), H - pad.b + 6);
+  }
 }
 
 function renderLoaded() {

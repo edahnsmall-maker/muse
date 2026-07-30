@@ -617,6 +617,46 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### The clip library
+
+Every marked moment from **−15s to +15s**, each clip drawn thin, their average bright, and
+behind them the band that random windows from the same sits produce. Selectable by mark
+category, by signal, and by baseline mode.
+
+The individual clips are drawn, not just the average, because an average of twelve windows
+hides whether it came from twelve similar shapes or one enormous outlier — and at this
+sample size that is the whole question. The surrogate band is what makes the average
+readable at all: averaging *any* set of windows produces a smooth curve, so a smooth
+average is never the finding. The finding is the average leaving the band, and the view
+says so in those words plus where and by how much.
+
+**The baseline decision came from the practitioner and it matters:**
+
+> *"Since the mark is when I notice I was thinking, don't use the immediately preceding
+> period as the only baseline — that may erase the effect we're looking for."*
+
+Correct, and it is a real trap. Standard practice baselines against the seconds just before
+the event, assuming they are neutral. On a self-caught mark they are the opposite: you
+pressed *because* something was happening just then, so subtracting that period subtracts
+the signal. Three modes, default first:
+
+| mode | what it does |
+|---|---|
+| **none** (default) | the within-session z-scored trace, untouched — nothing event-locked removed |
+| **far** | subtracts the earliest third of the window, deliberately *not* the adjacent seconds |
+| **detrend** | removes a straight line per clip — kills drift spanning the window |
+
+Vertical units are standard deviations *within each sit*, so clips from different days are
+comparable without any event-locked structure being removed. Every mode is applied
+identically to the surrogate clips, or the comparison would be rigged.
+
+`test-analysis.js` plants a ramp confined to the ten seconds before each mark and checks
+all of it. Two of my own expectations were wrong there and the tests record both: detrending
+does **not** flatten a localised run-up (a line fit across 31s can't absorb a 10s ramp — it
+measured 6.52 against 6.11, very slightly *more*), and near-baselining destroys the
+**elevation** rather than the shape, which a within-window difference cannot detect at all
+because a constant offset cancels in a subtraction.
+
 ### Straight from a sit into the lab
 
 The summary offers **Open in analysis lab** next to the two downloads. Downloading a zip

@@ -1303,14 +1303,35 @@ async function openInLab(btn) {
     const labDb = await LabStore.open();
     await LabStore.putIncoming(labDb,
       { name: Exporter.archiveName(bytes.archiveMeta), bytes });
+    /* VERIFY THE DELIVERY, do not assume it.
+     *
+     * The handoff works because the app and the lab share an origin. On the only origin
+     * that can produce a recording that is guaranteed — Web Bluetooth refuses to run
+     * outside a secure context, so a recorded sit never comes from a file:// page, and
+     * on https/localhost same-origin storage is spec. But `file://` origins are opaque
+     * per spec and browsers differ on whether they share storage at all, so on that path
+     * this could silently write into a store the lab will never read.
+     *
+     * Reading the count back costs nothing and turns a silent failure into a sentence
+     * that names the fallback — which already exists, and is Download data plus dropping
+     * the file into the lab.
+     */
+    const waiting = await LabStore.countIncoming(labDb);
     labDb.close();
+    if (!waiting) {
+      throw new Error('this browser did not keep the handoff'
+        + (location.protocol === 'file:'
+          ? ' — file:// pages do not reliably share storage. Use Download data and drop'
+            + ' the file into the lab, or serve the page over http://localhost.'
+          : ' — use Download data and drop the file into the lab instead.'));
+    }
     // A new tab, so a sit that is still recording is not torn down by navigating away.
     window.open('lab.html', '_blank', 'noopener');
     setStatus('handed to the analysis lab');
     statusLockUntil = Date.now() + 2500;
   } catch (err) {
     setStatus(`could not hand it over: ${escapeHtml((err && err.message) || 'unknown')}`);
-    statusLockUntil = Date.now() + 6000;
+    statusLockUntil = Date.now() + 8000;
   } finally {
     btn.textContent = label;
     btn.classList.remove('active');

@@ -679,6 +679,80 @@ async function drop(page, archives) {
       + ' and delivered exactly once');
   }
 
+  /* 13) THE CLIP LIBRARY renders, and the baseline choice is real.
+   *
+   * Asked for: every marked epoch from -15s to +15s, overlaid with the average and a
+   * time-matched surrogate band — plus, specifically, the within-session-normalised trace
+   * WITHOUT baseline subtraction as well as a baseline-corrected option, "since the mark
+   * is when I notice I was thinking" and the seconds before it are where the effect lives.
+   */
+  {
+    await page.evaluate(async () => {
+      sessions.length = 0;
+      if (store) await LabStore.clearSessions(store);
+    });
+    const files = [];
+    for (let i = 0; i < 4; i++) files.push(makeMarkArchive({ id: `clip${i}`, seedOffset: 400 + i }));
+    await drop(page, files);
+
+    const out = await page.evaluate(() => {
+      const host = document.getElementById('clips');
+      const canvas = document.getElementById('clipCanvas');
+      const opts = (id) => Array.from(document.querySelectorAll(`#${id} option`))
+        .map((o) => o.value);
+      // Something must actually be painted: an empty canvas would pass any structural check.
+      const ctx = canvas.getContext('2d');
+      const px = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+      let lit = 0;
+      for (let i = 3; i < px.length; i += 4) if (px[i] > 8) lit++;
+      return {
+        shown: !!host.textContent.trim(),
+        text: host.textContent,
+        cats: opts('clipCat'),
+        feats: opts('clipFeat'),
+        baselines: opts('clipBase'),
+        litPixels: lit,
+        width: canvas.width,
+      };
+    });
+
+    assert.ok(out.shown, 'the clip library must render when marks are loaded');
+    assert.ok(out.cats.includes('returned'),
+      `the mark categories must be offered (got ${out.cats.join(', ')})`);
+    assert.deepStrictEqual(out.baselines, ['none', 'far', 'detrend'],
+      'all three baseline modes must be selectable, with none first');
+    assert.ok(out.litPixels > 2000,
+      `the canvas must actually be drawn on (only ${out.litPixels} lit pixels)`);
+    // The window and the reading instruction both have to be stated: a smooth average is
+    // not a finding, and someone reading this needs to be told that in the view itself.
+    assert.match(out.text, /−15s to \+15s/, 'the window must be stated');
+    assert.match(out.text, /leaving the band is the finding/,
+      'and the view must say that a smooth average is not one');
+    assert.match(out.text, /standard deviations of that signal within its own sit/,
+      'and name its vertical units, since they are per-session z scores');
+
+    // Changing the baseline must actually change the picture, not just the label.
+    const changed = await page.evaluate(async () => {
+      const before = document.getElementById('clipCanvas')
+        .getContext('2d').getImageData(0, 0, 880, 300).data.join(',').length;
+      const sel = document.getElementById('clipBase');
+      sel.value = 'far';
+      sel.dispatchEvent(new Event('change'));
+      await new Promise((r) => setTimeout(r, 200));
+      const after = document.getElementById('clipCanvas')
+        .getContext('2d').getImageData(0, 0, 880, 300).data.join(',').length;
+      return { before, after, note: document.getElementById('clips').textContent };
+    });
+    assert.notStrictEqual(changed.before, changed.after,
+      'switching the baseline must redraw, not merely relabel');
+    assert.match(changed.note, /never the seconds\s+next to the mark/,
+      'and far-baselining must explain that it avoids the adjacent seconds');
+
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    console.log('✓ the clip library draws every epoch with its average and surrogate band,'
+      + ' and all three baseline modes redraw it');
+  }
+
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
   console.log('\nAll lab tests passed.');
