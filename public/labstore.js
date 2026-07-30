@@ -34,6 +34,25 @@
   const DB_VERSION = 1;
   const SESSIONS = 'sessions';
   const ANALYSES = 'analyses';
+  /*
+   * The INBOX: archives handed straight from the app to the lab.
+   *
+   * The app and the lab are the same origin — verified, including over file://, where
+   * both report an origin of "file://" and share one IndexedDB — so the app can write a
+   * finished archive here and the lab picks it up when it opens. That removes the
+   * download-then-drag step at the end of every sit, which is the point.
+   *
+   * ZIP BYTES, not a lab-shaped record. The app already knows how to build an archive
+   * and the lab already knows how to parse one, so handing over the archive means a
+   * handed-off sit and a dropped file travel the exact same code path. Passing a
+   * pre-parsed record instead would create a second ingest path that could drift from
+   * the first, and drift between two paths that are supposed to agree is the bug this
+   * project keeps paying for.
+   *
+   * Consumed once: taking an entry deletes it, so reopening the lab does not re-add the
+   * same sit every time.
+   */
+  const INBOX = 'inbox';
 
   function open({ name = DB_NAME, indexedDB: idb = null } = {}) {
     const db = idb || (typeof indexedDB !== 'undefined' ? indexedDB : null);
@@ -48,6 +67,9 @@
         if (!d.objectStoreNames.contains(SESSIONS)) d.createObjectStore(SESSIONS, { keyPath: 'sessionId' });
         if (!d.objectStoreNames.contains(ANALYSES)) {
           d.createObjectStore(ANALYSES, { keyPath: 'id', autoIncrement: true });
+        }
+        if (!d.objectStoreNames.contains(INBOX)) {
+          d.createObjectStore(INBOX, { keyPath: 'id', autoIncrement: true });
         }
       };
       req.onsuccess = () => resolve(req.result);
@@ -182,8 +204,37 @@
     return tx(db, ANALYSES, 'readwrite', (store) => store.delete(id));
   }
 
+  // Hand an archive to the lab. Called from the app.
+  function putIncoming(db, { name, bytes, at = null }) {
+    if (!name || !bytes || !bytes.length) return Promise.reject(new Error('nothing to hand over'));
+    return tx(db, INBOX, 'readwrite', (store) => store.add({
+      name, bytes, at: at || Date.now(),
+    }));
+  }
+
+  /*
+   * Drain the inbox: return everything waiting and delete it in the same transaction.
+   *
+   * Read-and-delete together rather than read-then-delete, so a crash between the two
+   * cannot lose a sit that has already been reported as delivered — the transaction
+   * either hands it over and forgets it, or does neither.
+   */
+  async function takeIncoming(db) {
+    const rows = await tx(db, INBOX, 'readwrite', (store) => {
+      const q = store.getAll();
+      q.onsuccess = () => { for (const r of q.result || []) store.delete(r.id); };
+      return q;
+    });
+    return (rows || []).sort((a, b) => (a.at || 0) - (b.at || 0));
+  }
+
+  function countIncoming(db) {
+    return tx(db, INBOX, 'readonly', (store) => store.count());
+  }
+
   return {
-    DB_NAME, SESSIONS, ANALYSES,
+    DB_NAME, SESSIONS, ANALYSES, INBOX,
+    putIncoming, takeIncoming, countIncoming,
     open, trimForStore, rehydrate,
     putSessions, loadSessions, deleteSession, clearSessions,
     saveAnalysis, listAnalyses, getAnalysis, deleteAnalysis,

@@ -617,6 +617,21 @@ mistake in different forms:
   moved to `]`/`[`. A letter shared between a hold gesture and an action cannot be made
   safe by reordering the branches; the collision itself has to go.
 
+### Straight from a sit into the lab
+
+The summary offers **Open in analysis lab** next to the two downloads. Downloading a zip
+and dragging it back in is a step that gets skipped, and a sit that never reaches the lab
+never gets analysed.
+
+The app and the lab share one IndexedDB — same origin, verified including over `file://`,
+where both report an origin of `"file://"` — so the app writes the finished archive to an
+inbox and the lab drains it when it opens. It hands over **archive bytes**, not a
+pre-parsed record, so a handed-over sit and a dropped file travel exactly the same parse
+path; a second ingest path would be a second thing to keep correct, and drift between two
+paths meant to agree is the bug this project keeps paying for. Delivery is read-and-delete
+in one transaction, so a sit arrives exactly once however often the lab is reopened, and
+the Loaded list says which sits came from the app rather than from a file.
+
 ### The lab remembers
 
 Two things persist in the lab's own IndexedDB (`public/labstore.js`), separate from the

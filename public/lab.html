@@ -143,11 +143,24 @@ dropEl.addEventListener('drop', (e) => {
 });
 fileEl.addEventListener('change', () => load(Array.from(fileEl.files)));
 
+const handedOver = [];   // names of sits the app passed straight over, for the notice
+
 async function load(files) {
   for (const f of files) {
     if (!/\.zip$/i.test(f.name)) continue;
+    await ingest(f.name, new Uint8Array(await f.arrayBuffer()));
+  }
+  await persist();
+  render();
+}
+
+/* ONE INGEST PATH for a dropped file and for an archive handed over by the app. Two
+ * paths that are meant to agree eventually stop agreeing. */
+async function ingest(name, bytes) {
+  {
+    const f = { name };
     try {
-      const read = await Importer.readSessionArchive(new Uint8Array(await f.arrayBuffer()));
+      const read = await Importer.readSessionArchive(bytes);
       // Derive the label spans once, here, so every downstream view agrees about
       // which stretch of time each label describes.
       const notes = read.notes.map((n) => ({
@@ -186,8 +199,6 @@ async function load(files) {
       sessions.push({ sessionId: f.name, file: f.name, error: err.message || 'could not read' });
     }
   }
-  await persist();
-  render();
 }
 
 /* Storage is ADDITIVE: the lab works fully without it, and a refusal (private mode, a
@@ -198,6 +209,15 @@ async function openStore() {
     store = await LabStore.open();
     const restored = await LabStore.loadSessions(store);
     for (const r of restored) sessions.push(r);
+    /* Anything the app handed over since last time. Ingested through the SAME path as a
+     * dropped file — it is the same archive bytes — so there is only ever one parse to
+     * keep correct. */
+    const incoming = await LabStore.takeIncoming(store);
+    for (const item of incoming) {
+      await ingest(item.name, item.bytes);
+      handedOver.push(item.name);
+    }
+    if (incoming.length) await persist();
   } catch (err) {
     storeError = (err && err.message) || 'unavailable';
     console.log('[lab] storage unavailable:', storeError);
@@ -220,6 +240,12 @@ function render() {
 
 function renderLoaded() {
   if (!sessions.length) { loadedEl.innerHTML = ''; return; }
+  /* Say when a sit arrived from the app rather than from a dropped file. Data appearing
+     with no account of where it came from is the sort of thing that gets doubted later,
+     and doubting your own data is expensive. */
+  const handoffNote = handedOver.length
+    ? `<div class="card note">Received from the app: ${esc(handedOver.join(', '))}.</div>`
+    : '';
   const rows = sessions.map((s, i) => {
     if (s.error) {
       return `<tr><td>${esc(s.file)}</td><td colspan="5" class="bad">${esc(s.error)}</td>
@@ -239,7 +265,7 @@ function renderLoaded() {
       <td>${warn}</td>
       <td><button data-drop="${i}">Remove</button></td></tr>`;
   }).join('');
-  loadedEl.innerHTML = `<h2>Loaded</h2><div class="card scroll"><table>
+  loadedEl.innerHTML = `<h2>Loaded</h2>${handoffNote}<div class="card scroll"><table>
     <tr><th>File</th><th>Length</th><th>Rows</th><th>Labelled spans</th>
         <th>Transitions</th><th>Archive</th><th></th></tr>${rows}</table></div>`;
   loadedEl.querySelectorAll('[data-drop]').forEach((b) => {

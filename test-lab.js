@@ -161,7 +161,12 @@ async function drop(page, archives) {
 
 (async () => {
   const browser = await chromium.launch();
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+  /* An EXPLICIT context, because one test needs a second page in the same storage.
+     browser.newPage() creates an implicit context that refuses to hold another page, and
+     browser.newPage() twice creates two contexts with two separate IndexedDBs — which
+     would make the app-to-lab handoff look broken when it is not. */
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await context.newPage();
   const errors = [];
   page.on('pageerror', (e) => errors.push(e.message));
   await page.goto(PAGE);
@@ -599,6 +604,79 @@ async function drop(page, archives) {
     });
     console.log('✓ the lab remembers: sits and dated snapshots survive a reload,'
       + ' raw EEG is not stored, and Remove really removes');
+  }
+
+  /* 12) THE APP CAN HAND A SIT STRAIGHT TO THE LAB. Asked for: "at the end of a
+   *     recording session, open the data directly in the analysis lab."
+   *
+   *     Downloading a zip and dragging it back in is a step that gets skipped, and a sit
+   *     that never reaches the lab never gets analysed. The two pages share one
+   *     IndexedDB — same origin, including over file://, where both report an origin of
+   *     "file://" — so the app writes the archive to an inbox and the lab drains it on
+   *     open. Archive BYTES, so a handed-over sit and a dropped file go through the same
+   *     parse: two ingest paths meant to agree eventually stop agreeing.
+   */
+  {
+    await page.evaluate(async () => {
+      sessions.length = 0;
+      if (store) await LabStore.clearSessions(store);
+    });
+    const handed = makeMarkArchive({ id: 'handed', seedOffset: 300 });
+
+    // Write it the way the app does, from a DIFFERENT page, so this exercises the
+    // cross-page path rather than the lab talking to itself.
+    /* page.context(), NOT browser.newPage(). The latter creates a fresh BrowserContext
+       with its OWN storage, so the writer would be talking to a different IndexedDB and
+       this test would report the feature broken when it is not. Same trap as the real
+       thing depends on avoiding: the handoff works precisely because the two pages share
+       an origin and a store. */
+    const writer = await context.newPage();
+    await writer.goto(PAGE.replace('lab.html', 'direct.html'));
+    await writer.waitForTimeout(500);
+    const wrote = await writer.evaluate(async ({ name, b64 }) => {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const db = await LabStore.open();
+      await LabStore.putIncoming(db, { name, bytes });
+      const waiting = await LabStore.countIncoming(db);
+      db.close();
+      return { waiting, origin: location.origin };
+    }, { name: handed.name, b64: handed.bytes.toString('base64') });
+    assert.strictEqual(wrote.waiting, 1, 'the app must be able to write to the lab inbox');
+    await writer.close();
+
+    // Now open the lab: it must pick the sit up, parse it, and analyse it.
+    await page.reload();
+    await page.waitForFunction(() => typeof store !== 'undefined' && sessions.length > 0,
+      null, { timeout: 8000 });
+    const got = await page.evaluate(async () => ({
+      loaded: sessions.map((s) => s.file),
+      metricsRows: sessions[0] ? sessions[0].read.metrics.length : 0,
+      marks: sessions[0] ? sessions[0].notes.filter((n) => n.transition).length : 0,
+      inboxLeft: await LabStore.countIncoming(store),
+      analysed: !!document.querySelector('#out [data-source="marks"]'),
+    }));
+    assert.deepStrictEqual(got.loaded, [handed.name],
+      `the handed-over sit must appear in the lab (got ${got.loaded.join(', ') || 'nothing'})`);
+    assert.ok(got.metricsRows > 100,
+      `and be fully parsed, not just named (got ${got.metricsRows} rows)`);
+    assert.ok(got.marks > 0, 'with its marks');
+    assert.ok(got.analysed, 'and analysed on arrival');
+    // CONSUMED ONCE. Read-and-delete in one transaction, so a sit cannot be delivered
+    // twice — reopening the lab would otherwise re-add it on every visit.
+    assert.strictEqual(got.inboxLeft, 0, 'the inbox must be emptied by delivery');
+
+    await page.reload();
+    await page.waitForFunction(() => typeof store !== 'undefined', null, { timeout: 8000 });
+    await page.waitForTimeout(600);
+    const again = await page.evaluate(() => sessions.length);
+    assert.strictEqual(again, 1,
+      `reopening must not duplicate the handed-over sit (got ${again} copies)`);
+
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    console.log('✓ the app hands a sit straight to the lab: parsed, analysed on arrival,'
+      + ' and delivered exactly once');
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

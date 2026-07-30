@@ -2277,7 +2277,16 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       // Wait for the page's own 250ms tick rather than calling checkTimerDone().
       const deadline = Date.now() + 4000;
       while (recArmed && Date.now() < deadline) await new Promise((r) => setTimeout(r, 100));
-      await new Promise((r) => setTimeout(r, 400));
+      /* POLL FOR THE CHIMES, do not sleep for them. This was `setTimeout(400)` and it
+         was flaky: recArmed goes false at the TOP of stopRecording, but the three notes
+         are scheduled after `await sess.end()` and the last lands 380ms after that — so
+         the fixed window began before the chimes even existed and only sometimes
+         covered the third. The harness note at the top of this file describes exactly
+         this trap; the test had it anyway. */
+      const chimeDeadline = Date.now() + 4000;
+      while (chimes.length < 3 && Date.now() < chimeDeadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
 
       const stored = id ? await Recorder.loadSession(recDb, id) : null;
       const after = {

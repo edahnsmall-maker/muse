@@ -641,6 +641,8 @@
 <script src="trials.js"></script>
 <script src="probes.js"></script>
 <script src="panels.js"></script>
+<!-- Only for handing a finished sit to the lab's inbox; the app never reads lab data. -->
+<script src="labstore.js"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -1171,13 +1173,16 @@ function showSummaryStats(stats) {
     + `<div style="margin-top:22px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">`
     + `<span class="pill" id="sumDownload">Download report (.md)</span>`
     + (summarySessionId() != null
-      ? '<span class="pill" id="sumData">Download data (.zip)</span>' : '')
+      ? '<span class="pill" id="sumData">Download data (.zip)</span>'
+        + '<span class="pill" id="sumLab">Open in analysis lab</span>' : '')
     + `<span class="pill" id="sumClose">Close</span></div>`;
   summaryEl.classList.add('show');
   document.getElementById('sumClose').addEventListener('click', closeSummary);
   document.getElementById('sumDownload').addEventListener('click', () => downloadReport(stats));
   const sumDataEl = document.getElementById('sumData');
   if (sumDataEl) sumDataEl.addEventListener('click', () => downloadSummaryData(sumDataEl));
+  const sumLabEl = document.getElementById('sumLab');
+  if (sumLabEl) sumLabEl.addEventListener('click', () => openInLab(sumLabEl));
   wireMarkerEditor();
 
   // Sparkline of the whole sit — the "shape", not a grade.
@@ -1267,6 +1272,49 @@ function summarySessionId() {
   if (recSession) return recSession.id;
   if (lastRecSession) return lastRecSession.id;
   return null;
+}
+
+/*
+ * Hand this sit straight to the analysis lab.
+ *
+ * Asked for: "at the end of a recording session, open the data directly in the analysis
+ * lab." Downloading a zip and dragging it back in is a step that will be skipped, and a
+ * sit that never reaches the lab is a sit that never gets analysed.
+ *
+ * The app and the lab share one IndexedDB — same origin, verified including over
+ * file://, where both report an origin of "file://" — so the archive is written to the
+ * lab's inbox and the lab picks it up when it opens. ARCHIVE BYTES, not a pre-parsed
+ * record: the lab already knows how to read an archive, so a handed-over sit and a
+ * dropped file go through exactly the same parse. A second ingest path would be a second
+ * thing to keep correct.
+ *
+ * The write happens BEFORE the tab opens. Doing it after would race the lab's own
+ * startup, which drains the inbox once — and losing that race looks like the button
+ * doing nothing.
+ */
+async function openInLab(btn) {
+  const id = summarySessionId();
+  if (id == null || !recDb) return;
+  const label = btn.textContent;
+  btn.textContent = 'Packaging…';
+  btn.classList.add('active');
+  try {
+    const bytes = await buildSessionArchive(recDb, id);
+    const labDb = await LabStore.open();
+    await LabStore.putIncoming(labDb,
+      { name: Exporter.archiveName(bytes.archiveMeta), bytes });
+    labDb.close();
+    // A new tab, so a sit that is still recording is not torn down by navigating away.
+    window.open('lab.html', '_blank', 'noopener');
+    setStatus('handed to the analysis lab');
+    statusLockUntil = Date.now() + 2500;
+  } catch (err) {
+    setStatus(`could not hand it over: ${escapeHtml((err && err.message) || 'unknown')}`);
+    statusLockUntil = Date.now() + 6000;
+  } finally {
+    btn.textContent = label;
+    btn.classList.remove('active');
+  }
 }
 
 async function downloadSummaryData(btn) {
@@ -3215,7 +3263,13 @@ async function openSessions() {
   });
 }
 
-async function downloadSession(db, id) {
+/*
+ * A stored session as archive bytes. One place that knows how to do this, because there
+ * are now two reasons to want it — downloading, and handing the sit to the lab — and two
+ * copies of the packaging would eventually produce two different archives from one sit.
+ * `archiveMeta` comes back so the caller can name the file the same way either way.
+ */
+async function buildSessionArchive(db, id) {
   // Flush first: the session being exported may be the one still running, and
   // up to a few seconds sit in memory between commits.
   if (recSession && recSession.id === id) await recSession.flush();
@@ -3230,6 +3284,13 @@ async function downloadSession(db, id) {
   }
   const { files } = Exporter.buildFiles(session, audio);
   const bytes = Exporter.zip(files, { date: new Date(session.meta.startedAt) });
+  bytes.archiveMeta = session.meta;
+  return bytes;
+}
+
+async function downloadSession(db, id) {
+  const bytes = await buildSessionArchive(db, id);
+  const session = { meta: bytes.archiveMeta };
   const url = URL.createObjectURL(new Blob([bytes], { type: 'application/zip' }));
   const a = document.createElement('a');
   a.href = url;
