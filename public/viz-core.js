@@ -152,6 +152,37 @@
    * activity — inventing a signal, which is worse than the squashing this fixes. A
    * series whose real range is narrower than minSpan stays narrow on screen.
    */
+  /*
+   * Hold a range STEADY across frames, widening at once and narrowing slowly.
+   *
+   * Reported straight after auto-ranging shipped: "the entire line seemed to sort of
+   * sink and raise a little bit almost arbitrarily... it feels like the axes are
+   * unstable." Exactly right, and it is the cost of recomputing the range every frame.
+   * Because the same range is applied to the whole visible history, any change to it
+   * moves every past sample — so a range that twitches makes the recorded past appear
+   * to move, which is the one thing a history plot must never do.
+   *
+   * Fast attack, slow release, borrowed from audio gain control:
+   *   WIDEN IMMEDIATELY. A sample outside the range would otherwise be clipped, and
+   *   silently flattening a real excursion against the edge is worse than a nudge.
+   *   NARROW SLOWLY. Nothing is lost by a range that is temporarily too wide — the
+   *   trace just uses a little less of the band — so contraction is rate-limited to a
+   *   few percent per second and the axis reads as still.
+   *
+   * `rate` is per second and needs dt, so time is passed in rather than read: same rule
+   * as everything else in this file.
+   */
+  function settleRange(current, target, dtSec, { rate = 0.06 } = {}) {
+    if (!target) return current || null;
+    if (!current) return { min: target.min, max: target.max, span: target.span };
+    const k = Math.min(1, Math.max(0, (rate * Math.max(0, dtSec)) / 1));
+    // Widening is instant in whichever direction needs it; narrowing eases.
+    const ease = (from, to, widening) => (widening ? to : from + (to - from) * k);
+    const min = ease(current.min, target.min, target.min < current.min);
+    const max = ease(current.max, target.max, target.max > current.max);
+    return { min, max, span: max - min };
+  }
+
   function autoRange(values, { minSpan = 0.12, lo = 0.05, hi = 0.95 } = {}) {
     const v = values.filter((x) => x != null && Number.isFinite(x)).sort((a, b) => a - b);
     if (v.length < 4) return null;               // not enough to know a range
@@ -653,7 +684,7 @@
   return {
     CHANNEL_COLORS, CHANNEL_LABELS, legendEntries, LEGENDS, legendFor, IRIS_MOOD,
     CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, visibleModes, autoRange, inRange, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
+    MODES, nextMode, visibleModes, autoRange, inRange, settleRange, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,
   };

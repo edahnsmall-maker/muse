@@ -123,6 +123,12 @@ function createZenVisual(canvas) {
    */
   const everFresh = [false, false, false, false];
 
+  // Flow's vertical range per series, persisted between frames so the axis holds still.
+  // Cleared when the series being drawn changes, since a composite's range says nothing
+  // about an electrode's.
+  let flowRanges = [null, null, null, null];
+  let flowDt = 0;
+
   let sessionSec = 0;   // monotonic, for placing blooms along a slow sweep
   let breathPhase = 0;  // integrated radians — see renderBreath
   let patternT = 0;     // seconds accumulated for patterned breathing
@@ -949,7 +955,15 @@ function createZenVisual(canvas) {
      * autoRange falls back to null when there is too little history, in which case
      * expandSoft is used as before rather than nothing being drawn.
      */
-    const ranges = series.map((sr) => VizCore.autoRange(sr));
+    /* HELD ACROSS FRAMES, not recomputed fresh each one. The same range is applied to
+       the whole visible history, so recomputing it every frame made the entire recorded
+       line rise and sink — the past appearing to move, which is exactly what was
+       reported. settleRange widens at once (never clip a real excursion) and narrows a
+       few percent per second (nothing is lost by a range that is briefly too wide). */
+    const ranges = series.map((sr, k) => {
+      flowRanges[k] = VizCore.settleRange(flowRanges[k], VizCore.autoRange(sr), flowDt);
+      return flowRanges[k];
+    });
     const yOf = (i, k) => {
       const v = series[k][i];
       if (v == null) return null;
@@ -2137,6 +2151,7 @@ function createZenVisual(canvas) {
     const dtSec = Math.min(0.1, (now - last) / 1000);
     last = now;
     sessionSec += dtSec;
+    flowDt = dtSec;
 
     const response = RESPONSE_MODES[responseIndex].rates;
     smooth.calm += response.calm * (state.calm - smooth.calm);
@@ -2307,6 +2322,11 @@ function createZenVisual(canvas) {
     currentMode() { return VizCore.MODES[modeIndex]; },
     // Follows the data panel's Sensors/Composites switch — see seriesMode.
     setSeries(which) {
+      if (seriesMode !== (which === 'composites' ? 'composites' : 'sensors')) {
+        // Different series entirely — a held range from the old set would be applied to
+        // the new one for a few seconds and put every trace against an edge.
+        flowRanges = [null, null, null, null];
+      }
       seriesMode = which === 'composites' ? 'composites' : 'sensors';
       return seriesMode;
     },

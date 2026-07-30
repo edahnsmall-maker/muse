@@ -851,6 +851,9 @@
     // The in/out orientation, once RSA has settled it. Persisted across estimates
     // because it only changes when the strap is physically re-seated.
     let sign = 0;
+    // True once the orientation came from the person rather than from RSA. Latched, so
+    // the per-tick inference cannot quietly undo a correction.
+    let signManual = false;
 
     function push(samples) {
       if (!samples || !samples.length) return;
@@ -887,6 +890,8 @@
      * therefore understate it.
      */
     function resolveSign(reference) {
+      // A sign set by the person is not a hypothesis to be re-tested. See setSign.
+      if (signManual) return sign;
       const est = pick();
       if (!est) return sign;
       const own = band(est.axis);
@@ -928,9 +933,79 @@
         const r = sum / Math.sqrt(va * vb);
         if (Math.abs(r) > bestAbs) { bestAbs = Math.abs(r); bestR = r; }
       }
-      if (bestAbs >= cfg.minCorrelation) sign = bestR > 0 ? 1 : -1;
+      /* HARDER TO CHANGE AN ANSWER THAN TO GIVE ONE.
+       *
+       * This runs every tick, and RSA is a weak, lagging, noisy reference. At the bare
+       * threshold the inferred sign can flip back and forth between ticks, which on
+       * screen is a breath trace that inverts every few seconds — worse than a
+       * consistently wrong sign, because a consistent one can at least be read
+       * backwards. Establishing a sign takes the ordinary threshold; overturning an
+       * established one takes a clearly stronger correlation.
+       */
+      const wanted = sign === 0 ? cfg.minCorrelation
+        : Math.min(0.95, cfg.minCorrelation + 0.2);
+      const proposed = bestR > 0 ? 1 : -1;
+      if (bestAbs >= wanted || (sign !== 0 && proposed === sign && bestAbs >= cfg.minCorrelation)) {
+        sign = proposed;
+      }
       return sign;
     }
+
+    /*
+     * Set the orientation from OUTSIDE — from the person, who is the only reliable
+     * reference there is.
+     *
+     * The header note above is honest that the accelerometer cannot know which way is
+     * inhale and that RSA is used to infer it. What it did not provide was a way to
+     * correct a wrong inference, and the failure is invisible from inside: an inverted
+     * trace is a perfectly good signal drawn upside down, so nothing in the data looks
+     * wrong. Reported as exactly that — "is it possible that the graph is inverted even
+     * if the data is good".
+     *
+     * `manual` latches it. Without the latch the automatic resolution would overwrite a
+     * correction on the next tick, which is indistinguishable from the button not
+     * working.
+     */
+    function setSign(next, { manual = true } = {}) {
+      sign = next > 0 ? 1 : next < 0 ? -1 : 0;
+      signManual = !!manual && sign !== 0;
+      return sign;
+    }
+
+    /*
+     * One-press calibration: called WHILE BREATHING IN.
+     *
+     * Takes the chest position now and orients so that this moment reads as inhaling.
+     * More reliable than asking someone to judge whether a trace looks inverted, which
+     * is the same question one step removed — and it needs no reference signal at all,
+     * so it works when RSA is too weak to have settled the sign in the first place.
+     *
+     * Refuses rather than guesses when the chest is not clearly displaced: at the
+     * turnaround the signal is near zero and its sign is noise, so a press mistimed to
+     * the top of the breath would latch a coin flip and be trusted.
+     */
+    function calibrateInhaling() {
+      const est = pick();
+      if (!est) return { ok: false, reason: 'no breathing signal yet' };
+      const sig = est.series;
+      if (!sig || !sig.length) return { ok: false, reason: 'no breathing signal yet' };
+      const now = sig[sig.length - 1];
+      /* A THIRD of the typical excursion, and the bound is set by filter lag rather
+       * than by taste. The series is band-passed and smoothed with smoothSec = 1.0,
+       * which on a 5-second breath is about 70 degrees of phase — measured: at the raw
+       * signal's zero crossing the filtered value is still 0.57 of amplitude. So
+       * "where the chest is" here means roughly a second ago, and a press near the
+       * turnaround can land on the wrong side of zero. Requiring a clear displacement
+       * refuses exactly those presses instead of latching them. */
+      if (!(Math.abs(now) > (est.amp || 0) * 0.35)) {
+        return { ok: false, reason: 'chest is near the turnaround — press mid-inhale' };
+      }
+      setSign(now > 0 ? 1 : -1, { manual: true });
+      return { ok: true, sign };
+    }
+
+    // Give the inference back its say, e.g. after the strap is re-worn the other way up.
+    function clearManualSign() { signManual = false; sign = 0; return sign; }
 
     // Which axis is carrying the breath: the one with the most band-passed power.
     function pick() {
@@ -995,9 +1070,16 @@
       };
     }
 
-    return { push, estimate, resolveSign, pick,
-      seconds, band, get sign() { return sign; },
-      reset() { axes[0].length = 0; axes[1].length = 0; axes[2].length = 0; pending = [[], [], []]; sign = 0; } };
+    return { push, estimate, resolveSign, setSign, calibrateInhaling, clearManualSign, pick,
+      seconds, band, get sign() { return sign; }, get signManual() { return signManual; },
+      reset() {
+        axes[0].length = 0; axes[1].length = 0; axes[2].length = 0;
+        pending = [[], [], []];
+        // A manual orientation SURVIVES a reset: it describes how the strap is worn, not
+        // the contents of the buffer, and losing it on every reconnect would mean
+        // re-calibrating several times a sit.
+        if (!signManual) sign = 0;
+      } };
   }
 
   return {

@@ -622,6 +622,62 @@ const VizCore = require('./public/viz-core.js');
 }
 
 /*
+ * AND THE AXIS MUST HOLD STILL.
+ *
+ * Reported immediately after auto-ranging shipped: "the entire line seemed to sort of sink
+ * and raise a little bit almost arbitrarily... it feels like the axes are unstable."
+ * Correct, and it is the direct cost of recomputing the range every frame — the same range
+ * is applied to the whole visible history, so any change to it moves every past sample.
+ * A history plot whose recorded past appears to move is worse than one with a poor scale.
+ */
+{
+  const dt = 1 / 60;
+  const r = (min, max) => ({ min, max, span: max - min });
+
+  // First frame adopts the target outright: there is nothing to be stable relative to.
+  assert.deepStrictEqual(VizCore.settleRange(null, r(0.2, 0.5), dt), r(0.2, 0.5));
+  assert.strictEqual(VizCore.settleRange(null, null, dt), null);
+
+  // WIDENING IS INSTANT. A sample outside the range would be clipped, and silently
+  // flattening a real excursion against the edge is worse than the axis nudging.
+  const wide = VizCore.settleRange(r(0.2, 0.5), r(0.1, 0.9), dt);
+  assert.deepStrictEqual(wide, r(0.1, 0.9), 'a range must widen at once, never clip');
+
+  // NARROWING IS SLOW. One frame must barely move it.
+  let cur = r(0.1, 0.9);
+  const oneFrame = VizCore.settleRange(cur, r(0.4, 0.6), dt);
+  assert.ok(oneFrame.min - cur.min < 0.01 && cur.max - oneFrame.max < 0.01,
+    `a single frame must barely narrow the range (moved ${(oneFrame.min - cur.min).toFixed(4)})`);
+
+  /* But it MUST converge eventually, or one spike would widen the axis for the rest of
+     the sit. The release time constant is 1/rate ≈ 17s by design, so 90 seconds is the
+     window that demonstrates convergence — a shorter check would be asserting a faster
+     release than the stability this exists for can afford. */
+  for (let i = 0; i < 60 * 90; i++) cur = VizCore.settleRange(cur, r(0.4, 0.6), dt);
+  assert.ok(Math.abs(cur.min - 0.4) < 0.02 && Math.abs(cur.max - 0.6) < 0.02,
+    `it must still converge given time (got ${cur.min.toFixed(3)}..${cur.max.toFixed(3)})`);
+
+  /* THE MEASUREMENT THAT MATTERS: how far a drawn point moves between frames when the
+     underlying data is steady but its percentiles jitter, as real sampled data does.
+     This is what "the line sinks and raises" actually is. */
+  let held = null, worst = 0, prevY = null;
+  let seed = 21;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  for (let f = 0; f < 600; f++) {
+    const jitter = 0.02 * (rnd() - 0.5);
+    held = VizCore.settleRange(held, r(0.30 + jitter, 0.50 + jitter), dt);
+    const y = VizCore.inRange(0.40, held);       // a fixed value, i.e. a recorded sample
+    if (prevY != null) worst = Math.max(worst, Math.abs(y - prevY));
+    prevY = y;
+  }
+  assert.ok(worst < 0.02,
+    `a recorded sample must not jump between frames while the data is steady —`
+    + ` worst frame-to-frame move was ${(worst * 100).toFixed(1)}% of the band`);
+  console.log(`✓ the axis holds still: widens instantly, narrows slowly, and a recorded`
+    + ` sample moves at most ${(worst * 100).toFixed(2)}% of the band between frames`);
+}
+
+/*
  * A LINE THAT IS NOT DRAWN MUST NOT BE IN THE KEY.
  *
  * Reported as "the two flat lines": TP9 and TP10 artifact-flagged for a whole sit and

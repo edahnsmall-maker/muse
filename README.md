@@ -825,6 +825,47 @@ line stays steady, and sits in the middle of the band.
 The cost is that vertical position now shows *change*, not level, so the Flow key says
 so. Two lines crossing is not two values becoming equal.
 
+**And the range is held across frames, not recomputed each one.** Reported straight after
+the rescaling shipped: *"the entire line seemed to sort of sink and raise a little bit
+almost arbitrarily… it feels like the axes are unstable."* Exactly right — the same range
+applies to the whole visible history, so recomputing it every frame moves every past
+sample, and a history plot whose recorded past appears to move is worse than one with a
+poor scale. Fast attack, slow release, borrowed from audio gain control: the range
+**widens instantly** (never clip a real excursion) and **narrows at ~6%/s**, a ~17-second
+time constant. `test-viz.js` measures the thing that was actually complained about — how
+far a fixed recorded sample moves between frames while the data is steady but its
+percentiles jitter — and holds it under 2% of the band.
+
+### Which way is the in-breath
+
+The strap's accelerometer **cannot know**, and `polar.js` says so outright: the strap can
+be worn either way up, magnitude is blind to sign, so which direction is inhale is
+*inferred* by correlating against RSA (heart rate rises on inhalation). A wrong inference
+draws a perfectly good signal upside down — and nothing in the data looks wrong, which is
+why it could be neither noticed nor corrected. Reported as exactly that question: *"is it
+possible that the graph is inverted even if the data is good?"* Yes.
+
+Two fixes:
+
+- **You are the reference.** When the breath reading comes from the chest, the Breath row
+  carries a small `in?` control. Press it **while breathing in** and the orientation is
+  set from you, latched so the per-tick inference cannot overwrite it, and remembered —
+  it describes how the strap is worn, which does not change between sits. It refuses if
+  pressed near the turnaround, where the signal is close to zero and its sign is noise; a
+  mistimed press would otherwise latch a coin flip and then be trusted. (The guard is a
+  third of the typical excursion, set by measurement rather than taste: the band-pass and
+  1s smoothing shift the phase ~70° on a 5s breath, so at the raw zero crossing the
+  filtered value is still 0.57 of amplitude.)
+- **Hysteresis on the inference.** `resolveSign` runs every tick against a weak, lagging,
+  noisy reference. At the bare threshold the inferred sign could flip between ticks — a
+  trace inverting every few seconds, which is worse than a consistently wrong one,
+  because a consistent one can at least be read backwards. Establishing a sign now takes
+  the ordinary threshold; overturning an established one takes clearly stronger evidence.
+
+No control is offered for the RSA reading: its direction is known from physiology, so
+there is nothing to flip and a button suggesting otherwise would invite breaking a
+correct signal.
+
 ### Iris records the sit, not the viewing
 
 Iris lays down one ring per interval, growing outward, so the finished disc is the whole

@@ -796,4 +796,127 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
   console.log('\u2713 looksLikeGravity accepts a body at rest and rejects mis-scaled decodes');
 }
 
+/*
+ * THE ORIENTATION CAN BE SET BY THE PERSON, and once set it stays set.
+ *
+ * Asked: "is it possible that the belly band accelerometer graph is inverted even if the
+ * data is good?" Yes — by design, and the file says so: the strap can be worn either way
+ * up, magnitude is blind to sign, so which direction is inhale is INFERRED by correlating
+ * against RSA. A wrong inference draws a perfectly good signal upside down, and nothing
+ * in the data looks wrong, so it could be neither noticed nor corrected.
+ */
+{
+  const HZ = 50, OUT = 5;
+  // A clean 5s breath on axis 1, with the chest moving NEGATIVE on inhale — i.e. the
+  // strap worn the other way up from whatever the inference happens to prefer.
+  const feed = (ab, seconds, phase = 0) => {
+    for (let i = 0; i < seconds * HZ; i++) {
+      const t = i / HZ;
+      const v = -300 * Math.sin(2 * Math.PI * (t + phase) / 5);
+      ab.push([{ x: 20, y: v, z: 980 }]);
+    }
+  };
+
+  // 1) A manual sign survives the per-tick inference, which is the whole point: without
+  //    the latch, resolveSign would overwrite the correction on the next tick and the
+  //    button would be indistinguishable from broken.
+  {
+    const ab = Polar.AccelBreath();
+    feed(ab, 60);
+    ab.setSign(-1);
+    assert.strictEqual(ab.sign, -1);
+    assert.strictEqual(ab.signManual, true);
+    // A reference that would push it the other way must be ignored.
+    const ref = [];
+    for (let i = 0; i < 60 * OUT; i++) ref.push(-Math.sin(2 * Math.PI * (i / OUT) / 5));
+    ab.resolveSign(ref);
+    assert.strictEqual(ab.sign, -1,
+      'a sign set by the person must not be overwritten by the RSA inference');
+    // And it survives a reset: it describes how the strap is WORN, not the buffer, so
+    // losing it on every reconnect would mean re-calibrating several times a sit.
+    ab.reset();
+    assert.strictEqual(ab.sign, -1, 'a manual orientation must survive a reset');
+    ab.clearManualSign();
+    assert.strictEqual(ab.sign, 0, 'and giving the inference its say again clears it');
+    assert.strictEqual(ab.signManual, false);
+  }
+
+  // 2) One-press calibration: pressed mid-inhale, it orients so that NOW reads as
+  //    inhaling. More reliable than asking someone whether a trace looks upside down,
+  //    which is the same question one step removed.
+  {
+    const ab = Polar.AccelBreath();
+    // Stop where the axis is clearly displaced, then calibrate as if inhaling.
+    feed(ab, 61.25);                      // a quarter period past 60s: near an extreme
+    const before = ab.estimate();
+    const res = ab.calibrateInhaling();
+    assert.strictEqual(res.ok, true, `calibration should succeed mid-breath: ${res.reason}`);
+    const after = ab.estimate();
+    assert.ok(after.amount > 0,
+      `after calibrating while inhaling, the reading must say inhaled (got ${after.amount})`);
+    assert.strictEqual(after.signKnown, true, 'and the direction is now known');
+    // The MAGNITUDE is untouched — this flips the reading, it does not rescale it.
+    if (before.amount != null) {
+      assert.ok(Math.abs(Math.abs(after.amount) - Math.abs(before.amount)) < 1e-9,
+        'flipping the sign must not change how much the chest has moved');
+    }
+    void before;
+  }
+
+  // 3) It REFUSES at the turnaround. There the signal is near zero and its sign is
+  //    noise, so a mistimed press would latch a coin flip and then be trusted.
+  {
+    const ab = Polar.AccelBreath();
+    /* 60.3s, not 60. The band-pass and 1s smoothing shift the phase by about 70
+       degrees on a 5s breath, so the FILTERED turnaround is not at the raw zero
+       crossing — measured, the filtered value there is still 0.57 of amplitude. This is
+       where the signal the calibration actually reads is near zero. */
+    feed(ab, 60.3);
+    const res = ab.calibrateInhaling();
+    assert.strictEqual(res.ok, false,
+      'pressing at the turnaround must refuse rather than latch a coin flip');
+    assert.match(res.reason, /turnaround/i, `and say why: ${res.reason}`);
+    assert.strictEqual(ab.sign, 0, 'and leave the orientation unset');
+    const empty = Polar.AccelBreath().calibrateInhaling();
+    assert.strictEqual(empty.ok, false, 'and with no data at all it refuses too');
+  }
+
+  // 4) HYSTERESIS: an established sign takes more evidence to overturn than to set.
+  //    resolveSign runs every tick against a weak, lagging, noisy reference; at the bare
+  //    threshold the inferred sign flips between ticks, which draws a breath trace that
+  //    inverts every few seconds — worse than a consistently wrong sign, because a
+  //    consistent one can at least be read backwards.
+  {
+    const ab = Polar.AccelBreath();
+    feed(ab, 60);
+    const inPhase = [];
+    for (let i = 0; i < 60 * OUT; i++) inPhase.push(-Math.sin(2 * Math.PI * (i / OUT) / 5));
+    ab.resolveSign(inPhase);
+    const settled = ab.sign;
+    assert.notStrictEqual(settled, 0, 'a clean reference must settle the sign');
+    /* A reference too weak to ESTABLISH a sign must also be too weak to overturn one.
+       Calibrated rather than guessed: the coherent part is scaled down until a fresh
+       tracker declines to settle at all (verified below), because with 300 samples the
+       random part averages away and even a small coherent component correlates
+       strongly — an earlier version of this test used 0.35 amplitude against 0.9 noise
+       and still cleared the threshold comfortably. */
+    const weak = [];
+    let seed = 5;
+    const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+    for (let i = 0; i < 60 * OUT; i++) {
+      weak.push(0.03 * Math.sin(2 * Math.PI * (i / OUT) / 5) + (rnd() - 0.5));
+    }
+    const fresh = Polar.AccelBreath();
+    feed(fresh, 60);
+    assert.strictEqual(fresh.resolveSign(weak), 0,
+      'precondition: this reference must be too weak to establish a sign at all');
+
+    ab.resolveSign(weak);
+    assert.strictEqual(ab.sign, settled,
+      'a reference too weak to establish a sign must not overturn an established one');
+  }
+  console.log('✓ breath direction can be set by the person, survives the inference and a'
+    + ' reset, refuses at the turnaround, and does not flip on weak evidence');
+}
+
 console.log('\nAll Polar tests passed.');
