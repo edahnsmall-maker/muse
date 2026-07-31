@@ -267,6 +267,11 @@
   .sesRow button { font: inherit; padding: 4px 10px; border-radius: 6px; cursor: pointer;
     background: rgba(255,255,255,.09); color: inherit; border: 1px solid rgba(255,255,255,.16); }
   .sesRow button.danger { opacity: .5; }
+  .sesLabel { width: 100%; max-width: 340px; margin: 4px 0 2px; font: inherit;
+    font-size: 12px; padding: 4px 7px; border-radius: 6px; color: inherit;
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
+  .sesLabel:focus { outline: none; border-color: var(--glass-line-hot);
+    background: rgba(255,255,255,.09); }
   a { color: inherit; }
 
   /* Data visualization — a collapsible graph of everything over time. */
@@ -578,17 +583,17 @@
                bar was already over its budget and wrapped Session onto a second row at
                anything narrower — which is what "it looks all squished" was. This was the
                widest pill in it. -->
-          <span class="pill" id="cueToggle">Cues: on</span>
+          <span class="pill" id="cueToggle">Cues: off</span>
         </span>
       </span>
       <span class="pillGroup">
         <span class="groupLabel">Practice</span>
         <span class="pills">
-          <span class="pill" id="trainToggle">Training: off<kbd>T</kbd></span>
+          <span class="pill" id="trainToggle">Training: off<kbd>&#8679;T</kbd></span>
           <span class="pill" id="trialsLink">Trials</span>
           <span class="pill" id="timerLink">Timer</span>
           <span class="pill" id="notesLink">Notes<kbd>N</kbd></span>
-          <span class="pill" id="voiceNote">Hold to speak<kbd>V</kbd></span>
+          <span class="pill" id="voiceNote">Hold to speak<kbd>V / space</kbd></span>
         </span>
       </span>
       <span class="pillGroup">
@@ -742,7 +747,7 @@ function selectMode(index) {
 // the hold gesture, and it is NOT gated on isTyping(): if a field somehow takes
 // focus mid-recording, the microphone must still be released.
 addEventListener('keyup', (e) => {
-  if (e.key === 'v' || e.key === 'V') stopVoiceNote();
+  if (e.key === 'v' || e.key === 'V' || e.key === ' ') stopVoiceNote();
 });
 
 addEventListener('keydown', (e) => {
@@ -769,7 +774,30 @@ addEventListener('keydown', (e) => {
     return;
   }
   if (e.key === 'm' || e.key === 'M') { e.preventDefault(); openMarkPrompt(); }
-  if ((e.key === 'v' || e.key === 'V') && !e.repeat) { startVoiceNote(); return; }
+  /* SHIFT+T IS TRAINING, because plain T is now "Thinking".
+   * Checked before the tap table, since that table is case-insensitive and would
+   * otherwise swallow it. A once-per-sit action can afford a modifier; a tap you make
+   * every few minutes with your eyes shut cannot. */
+  if (e.shiftKey && (e.key === 'T' || e.key === 't')) {
+    e.preventDefault();
+    setTrainingMode(!trainingMode);
+    return;
+  }
+  /* ARROWS for the four most-used categories: up focusing, down just sitting,
+   * left returned, right thinking. Aliases for the same taps, so nothing downstream
+   * knows which finger produced the mark. preventDefault because arrows scroll. */
+  if (!e.repeat && Probes.TAP_BY_ARROW[e.key]) {
+    e.preventDefault();
+    markTap(Probes.TAP_BY_ARROW[e.key]);
+    return;
+  }
+  /* SPACE also holds to speak, as asked. It is the obvious hold key and needs no aim.
+   * preventDefault or the page scrolls and the button gets re-triggered. */
+  if ((e.key === 'v' || e.key === 'V' || e.key === ' ') && !e.repeat) {
+    if (e.key === ' ') e.preventDefault();
+    startVoiceNote();
+    return;
+  }
   if (e.key === 'n' || e.key === 'N') { openNotes(); return; }
   /* A PENDING PROBE OWNS THE KEYBOARD. Digits answer it, and nothing else may run —
    * otherwise a stray key both answers the probe and triggers a shortcut. */
@@ -788,7 +816,7 @@ addEventListener('keydown', (e) => {
   const tap = Probes.TAP_BY_KBD[e.key.toUpperCase()];
   if (tap && !e.repeat) { markTap(tap); return; }
   // No second lookup: Probes.TAP_BY_KBD above is the only key table for labelling.
-  if (e.key === 't' || e.key === 'T') setTrainingMode(!trainingMode);
+  // T is a TAP now; training is Shift+T, handled above.
   if (e.key === 'Escape') closeSummary();
 });
 
@@ -1413,7 +1441,12 @@ cueToggleEl.addEventListener('click', () => {
   cueToggleEl.textContent = `Cues: ${on ? 'on' : 'off'}`;
   cueToggleEl.classList.toggle('active', on);
 });
-cueToggleEl.classList.add('active');
+/* The pill starts matching the engine's own default, which is off — see the CueEngine
+   construction below. Set at construction rather than switched off here, because `const
+   cueEngine` is declared further down and `const` does not hoist: calling setEnabled here
+   threw "Cannot access 'cueEngine' before initialization" and blanked the page. */
+cueToggleEl.textContent = 'Cues: off';
+cueToggleEl.classList.remove('active');
 summaryEl.addEventListener('click', (e) => { if (e.target === summaryEl) closeSummary(); });
 
 if (!navigator.bluetooth) {
@@ -1444,7 +1477,9 @@ const tracker = new DSP.AdaptiveNormalizer();
 // how much the band balance churns, and how often it shifts abruptly. Computed
 // only from artifact-free windows, so a jaw clench is never read as a thought.
 const activityTracker = new DSP.ActivityTracker();
-const cueEngine = new Cues.CueEngine({ minIntervalSec: 300 });
+/* OFF BY DEFAULT, as asked. An unrequested interruption during a sit is something to opt
+   into, not out of; the Cues pill turns them on when they are wanted. */
+const cueEngine = new Cues.CueEngine({ minIntervalSec: 300, enabled: false });
 // Per-band normalisers, so each composite is expressed relative to this
 // person's own session rather than an invented absolute scale.
 const bandNorms = {
@@ -1622,8 +1657,33 @@ function renderMarkCount() {
   if (!el) return;
   const n = markerLog.length;
   el.innerHTML = 'press <b>M</b> to mark'
-    + (n ? ` \u00b7 ${n} mark${n === 1 ? '' : 's'}` : '');
+    + (n ? ` \u00b7 ${n} mark${n === 1 ? '' : 's'}` : '')
+    // The probe switch sits here rather than in the bar: it only means anything while
+    // training is on, and this is the training panel.
+    + `<span class="rFix" data-probe-toggle title="Probes interrupt with a question every`
+    + ` few minutes and ask what was happening JUST BEFORE the cue. They catch being gone`
+    + ` without noticing, which a self-caught tap cannot. Off by default.">`
+    + `probes ${probesEnabled ? 'on' : 'off'}</span>`;
 }
+
+/* Delegated from the document, not bound to #armedBar. Two reasons: the panel rebuilds
+   its innerHTML on every render, and binding here would run before `const armedBarEl` is
+   declared — which threw "Cannot access 'armedBarEl' before initialization" and blanked
+   the whole page. `const` does not hoist. */
+document.addEventListener('click', (e) => {
+  if (!e.target.closest || !e.target.closest('[data-probe-toggle]')) return;
+  probesEnabled = !probesEnabled;
+  if (!probesEnabled) {
+    probePending = null;
+    const hud = document.getElementById('probeHud');
+    if (hud) hud.hidden = true;
+  }
+  renderMarkCount();
+  setStatus(probesEnabled
+    ? 'probes on \u2014 a question every few minutes, about the moment before the cue'
+    : 'probes off \u2014 no interruptions');
+  statusLockUntil = Date.now() + 2600;
+});
 
 function setTrainingMode(on) {
   const wasOn = trainingMode;
@@ -1648,7 +1708,7 @@ function setTrainingMode(on) {
   }
   const el = document.getElementById('trainToggle');
   if (el) {
-    el.innerHTML = `Training: ${trainingMode ? 'on' : 'off'}<kbd>T</kbd>`;
+    el.innerHTML = `Training: ${trainingMode ? 'on' : 'off'}<kbd>\u21e7T</kbd>`;
     // The word changed but the pill did not light up, so at a glance — which is the
     // only kind of glance available mid-sit — the bar looked the same either way.
     // Every other stateful pill here carries `.active`; this one was simply missed.
@@ -2665,6 +2725,55 @@ let voiceStartedAt = null;
  * stays open for the rest of the sit. The release has to be remembered, not just acted
  * on, so the start path can check whether it is still wanted. */
 let voiceHeld = false;
+/*
+ * LIVE TRANSCRIPTION, alongside the recording rather than instead of it.
+ *
+ * Asked for: "I would really love to add the feature where I can transcribe a note, not
+ * just record it." notes.csv has carried an empty `transcript` column from the start,
+ * deliberately, as the seam for exactly this — so this fills a designed gap rather than
+ * adding a field.
+ *
+ * THE AUDIO IS STILL THE RECORD. A transcript is a guess about what was said, and the
+ * browser's recogniser is not reliable on a whisper, a Japanese term, or a room with a
+ * fan in it — "kenshō" is not in anyone's language model. So the transcript is additive:
+ * if recognition is unavailable, refused, or wrong, the note is saved with the audio and
+ * an empty transcript, exactly as before. It never blocks or delays the save.
+ */
+const SpeechRec = typeof window !== 'undefined'
+  ? (window.SpeechRecognition || window.webkitSpeechRecognition || null) : null;
+let recogniser = null;
+let voiceTranscript = '';
+
+function startTranscribing() {
+  if (!SpeechRec) return;
+  voiceTranscript = '';
+  try {
+    recogniser = new SpeechRec();
+    recogniser.continuous = true;
+    // Interim results are kept because a short note often ends before the recogniser
+    // commits a final one, and a partial transcript beats none.
+    recogniser.interimResults = true;
+    recogniser.lang = navigator.language || 'en-US';
+    recogniser.addEventListener('result', (e) => {
+      let text = '';
+      for (let i = 0; i < e.results.length; i++) text += `${e.results[i][0].transcript} `;
+      voiceTranscript = text.trim();
+    });
+    // Failures are logged, not surfaced: the note is being saved either way, and an error
+    // banner would suggest the note was lost.
+    recogniser.addEventListener('error', (e) => console.log('[voice] transcription:', e.error));
+    recogniser.start();
+  } catch (err) {
+    console.log('[voice] transcription unavailable:', (err && err.message) || err);
+    recogniser = null;
+  }
+}
+
+function stopTranscribing() {
+  if (!recogniser) return;
+  try { recogniser.stop(); } catch (err) { /* already stopped */ }
+  recogniser = null;
+}
 
 async function startVoiceNote() {
   if (mediaRecorder || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
@@ -2688,7 +2797,7 @@ async function startVoiceNote() {
       mediaRecorder = null;
       voiceChunks = [];
       voiceBtn.classList.remove('rec');
-      voiceBtn.innerHTML = 'Hold to speak<kbd>V</kbd>';
+      voiceBtn.innerHTML = 'Hold to speak<kbd>V / space</kbd>';
       // Under a second is a fumbled press, not a note.
       if (secs < 0.8) { setStatus('too short — hold the button while you speak'); statusLockUntil = Date.now() + 1600; return; }
       await ensureRecording();
@@ -2697,12 +2806,19 @@ async function startVoiceNote() {
         statusLockUntil = Date.now() + 6000;
         return;
       }
+      const transcript = voiceTranscript;
+      voiceTranscript = '';
       await recSession.addNote({ kind: 'voice', audio: blob,
-        mimeType: blob.type, seconds: secs });
-      setStatus(`voice note saved (${secs.toFixed(0)}s)`);
+        mimeType: blob.type, seconds: secs, transcript, text: transcript || null });
+      // Show what it heard, so a bad transcript is visible immediately rather than
+      // discovered in a spreadsheet weeks later.
+      setStatus(transcript
+        ? `voice note saved (${secs.toFixed(0)}s) \u2014 \u201c${escapeHtml(transcript)}\u201d`
+        : `voice note saved (${secs.toFixed(0)}s)`);
       statusLockUntil = Date.now() + 1800;
     });
     mediaRecorder.start();
+    startTranscribing();
     voiceBtn.classList.add('rec');
     voiceBtn.innerHTML = 'Listening\u2026 release to save';
     // Released while the microphone was still opening. Honour it now rather than
@@ -2717,6 +2833,7 @@ async function startVoiceNote() {
 
 function stopVoiceNote() {
   voiceHeld = false;
+  stopTranscribing();
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
 }
 
@@ -3144,7 +3261,8 @@ function renderArmedBar() {
   armedBarEl.innerHTML = '<div class="armedHint">press <b>M</b> to mark</div>'
     + Probes.TAP_CATEGORIES.map((t) =>
     `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
-    + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}</b>${escapeHtml(t.label)}`
+    + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}${t.arrow
+      ? ` ${Probes.ARROW_GLYPH[t.arrow]}` : ''}</b>${escapeHtml(t.label)}`
     + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('');
   ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
   renderMarkCount();       // the hint carries the tally, and was just rebuilt with it
@@ -3192,8 +3310,24 @@ async function answerProbe(key) {
  * Called from the tick, ABOVE the early return — a probe is a wall-clock event and a
  * headband dropout must not stall the schedule.
  */
+/*
+ * PROBES ARE OFF BY DEFAULT, and no longer implied by training mode.
+ *
+ * Asked for directly: "in training mode, I don't want the popups to come up." They were
+ * tied to training on the reasoning that training is where the instrumentation lives —
+ * but that made one switch mean two things, so turning on the tap panel also signed you
+ * up to be interrupted by a question every few minutes. Those are different decisions and
+ * one of them should be rare.
+ *
+ * They are kept, and kept opt-in, because they answer something self-caught taps
+ * structurally cannot: a tap can only ever sample what you NOTICED, so it is blind to
+ * being gone without knowing it. The toggle lives in the training panel, which is where
+ * it is relevant, rather than taking another slot in the bar.
+ */
+let probesEnabled = false;
+
 function updateProbes() {
-  if (!trainingMode || !recArmed) {
+  if (!probesEnabled || !trainingMode || !recArmed) {
     if (!probeHudEl.hidden && !probePending) probeHudEl.hidden = true;
     return;
   }
@@ -3243,9 +3377,22 @@ async function openSessions() {
     const mins = Math.floor((m.durationSec || 0) / 60);
     const secs = Math.round((m.durationSec || 0) % 60);
     const live = recSession && recSession.id === m.id;
+    /* THE MARK COUNT, because "some will be useless" and there was no way to tell.
+       A sit with no marks cannot contribute to any event-locked analysis, and a date
+       plus a duration does not say which those are. Shown plainly, and called out when
+       it is zero rather than left as a quiet "0" to be scanned past. */
+    const marks = m.markCount || 0;
+    const markText = marks
+      ? `${marks} mark${marks === 1 ? '' : 's'}`
+      : '<span style="color:#ffc98a">no marks</span>';
     return `<div class="sesRow" data-id="${escapeHtml(m.id)}">`
       + `<span class="sesWhen">${escapeHtml(d.toLocaleString())}`
-      + `<br><span class="sesMeta">${mins}m ${secs}s \u00b7 ${((m.bytes || 0) / 1e6).toFixed(1)}MB`
+      // Editable in place. A name is worth nothing if adding one is a chore, and this is
+      // the moment you remember what the sit was.
+      + `<br><input class="sesLabel" data-act="label" value="${escapeHtml(m.label || '')}"`
+      + ` placeholder="name or note \u2014 what was this sit?" maxlength="120">`
+      + `<br><span class="sesMeta">${mins}m ${secs}s \u00b7 ${markText}`
+      + ` \u00b7 ${((m.bytes || 0) / 1e6).toFixed(1)}MB`
       + `${live ? ' \u00b7 recording now' : (m.ended ? '' : ' \u00b7 interrupted')}</span></span>`
       + `<button data-act="dl">Download .zip</button>`
       + `<button data-act="rm" class="danger">Delete</button></div>`;
@@ -3255,6 +3402,30 @@ async function openSessions() {
     + ` per-second scores as CSV, your voice notes as audio, and a markdown summary`
     + ` with timestamps.${q && q.quotaBytes ? ` Using ${(q.usageBytes / 1e6).toFixed(0)}MB`
       + ` of about ${(q.quotaBytes / 1e6).toFixed(0)}MB available.` : ''}</p>`;
+
+  /* Names save on blur and on Enter, never on every keystroke: one write per edit rather
+     than one per letter, and no re-render mid-typing to move the caret. */
+  summaryBodyEl.querySelectorAll('.sesLabel').forEach((input) => {
+    const save = async () => {
+      const id = input.closest('.sesRow').dataset.id;
+      const was = input.dataset.saved == null ? input.defaultValue : input.dataset.saved;
+      if (input.value === was) return;
+      try {
+        await Recorder.labelSession(db, id, input.value);
+        input.dataset.saved = input.value;
+        setStatus(input.value ? `named: ${escapeHtml(input.value)}` : 'name cleared');
+      } catch (err) {
+        setStatus(`could not save the name: ${escapeHtml((err && err.message) || 'unknown')}`);
+      }
+      statusLockUntil = Date.now() + 2000;
+    };
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (e) => {
+      // Kept off the global shortcuts, or typing a name would drop marks mid-list.
+      e.stopPropagation();
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+    });
+  });
 
   summaryBodyEl.querySelectorAll('.sesRow button').forEach((btn) => {
     btn.addEventListener('click', async () => {

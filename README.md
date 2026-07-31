@@ -594,17 +594,43 @@ sit afterwards.
 
 | Control | Key | What it does |
 |---|---|---|
-| **Training: on/off** | `T` | the clock, the armed-tap list, and the probe schedule |
+| **Training: on/off** | `⇧T` | the tap panel, and starts recording |
 | **Notes** | `N` | text notes, timestamped or not, with a deletable history |
-| **Hold to speak** | hold `V` | a voice note for as long as it is held |
+| **Hold to speak** | hold `V` or `space` | a voice note, transcribed if the browser can |
 | **Mark** | `M` | freeze the timestamp and open the marker prompt |
 | **Summarize session** | — | generate the report on demand, mid-sit or after |
 | next / previous visual | `]` `[` | step through the seven visuals |
 | — | `F` | fullscreen (no pill — it is a one-off at the start of a sit) |
 | — | `Esc` | close the summary |
 
-Plus the tap-category keys while Training is on (`C A J L R E U K S` — see `probes.js`),
+Plus the tap-category keys while Training is on (`C A J T R E U K S` — see `probes.js`),
 `1`/`2` to grade a tap that offers grades, and `1`–`5` to answer a probe.
+
+**The four arrows are the four common taps**, so they can be reached without finding a
+letter with your eyes shut:
+
+```
+              ↑  focusing (concentrating)
+   ← returned              thinking →
+              ↓  just sitting
+```
+
+They are aliases, not separate categories — same key, same record, so nothing downstream
+knows which finger produced a mark. The rarer ones (kenshō, satori, restless) stay letters:
+a rare mark is worth a deliberate keystroke.
+
+`T` is **Thinking**, because it is the most-pressed category by a distance and the letter
+should match the word you say to yourself. That took `T` away from Training, which moved to
+`⇧T` — a once-per-sit action can afford a modifier; a tap you make every few minutes with
+your eyes shut cannot. Both `test-probes.js` and `test-labels.js` assert that the tap keys
+don't collide with the app's own, and both caught this collision when `T` was reassigned.
+
+**Cues and probes are both off by default.** An unrequested interruption during a sit is
+something to opt into, not out of. Probes used to be implied by Training mode, which made
+one switch mean two things — turning on the tap panel also signed you up for a question
+every few minutes. They now have their own toggle, in the training panel where it is
+relevant, and they are still worth turning on sometimes: a self-caught tap can only sample
+what you *noticed*, so it is structurally blind to being gone without knowing it.
 
 Two collisions worth recording, because both came out of real sits and both are the same
 mistake in different forms:
@@ -759,10 +785,37 @@ only in the shape — calm rising while focus falls, means held equal by constru
 found by `trend` and `pair` and *not* by `level`, while three seeds of pure noise confirm
 nothing at all.
 
+### Voice notes are transcribed
+
+Holding `V` or `space` records audio *and* runs the browser's speech recogniser, and the
+transcript lands in `notes.csv`'s `transcript` column — which has been there, deliberately
+empty, since the beginning as the seam for exactly this.
+
+**The audio is still the record.** A transcript is a guess about what was said, and the
+recogniser is unreliable on a whisper, on a Japanese term, or in a room with a fan —
+"kenshō" is in nobody's language model. So the transcript is additive: if recognition is
+unavailable, refused, or wrong, the note saves with its audio and an empty transcript
+exactly as before, and it never blocks or delays the save. What it heard is shown in the
+status line on release, so a bad transcript is visible immediately rather than discovered
+in a spreadsheet weeks later.
+
+### Saved sessions have names and mark counts
+
+Every row takes a short name — saved on blur or Enter, one write per edit — and shows **how
+many marks the sit contains**, calling out the ones with none in amber rather than showing a
+quiet `0`.
+
+The count is the load-bearing half. *"Some will be useless"* is exactly right: a sit with no
+marks cannot contribute to any event-locked analysis, and a date plus a duration does not
+say which those are. The whole-sit closing reflection deliberately does **not** count — it
+describes the sit rather than a moment in it, and counting it would make a sit with no
+usable epochs look usable. Names reach the export title too, so a folder of archives is
+readable without opening them.
+
 ### Training mode
 
-Turning Training on does three things: shows the tap-category panel, starts the probe
-schedule, and **starts recording**. The recording is the point — every label it collects
+Turning Training on does two things: shows the tap-category panel and **starts
+recording**. It no longer starts the probe schedule — see the note on interruptions above. The recording is the point — every label it collects
 is worthless if nothing is saving them, and a whole sit was once tapped through with
 nothing armed, producing marks that looked identical to saved ones.
 

@@ -171,7 +171,7 @@
       hint: 'still gathered, but holding itself' },
     { key: 'just-sitting', label: 'Just sitting', kbd: 'J',
       hint: 'effortless, no object being held' },
-    { key: 'lost', label: 'Lost in thought', kbd: 'L',
+    { key: 'lost', label: 'Thinking', kbd: 'T',
       hint: 'the moment of noticing you were gone' },
     { key: 'returned', label: 'Returned to the object', kbd: 'R',
       hint: 'back on the breath' },

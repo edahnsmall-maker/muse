@@ -866,6 +866,75 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ record -> store -> panel -> download works end to end (${out.filename}, ${out.size} bytes)`);
   }
 
+  /* 15a2) SAVED SESSIONS: a name you choose, and a mark count.
+   *
+   * Asked for: "would be cool to be able to name them or tag them with a little memorable
+   * note. and see how many markers are in the session (for analysis later). some will be
+   * useless." The count is the load-bearing half — a sit with no marks cannot contribute
+   * to any event-locked analysis, and a date plus a duration does not say which those are.
+   */
+  {
+    const out = await page.evaluate(async () => {
+      const db = await Recorder.open({ name: 'zenbio-name-' + Math.floor(performance.now()) });
+      recDb = db;
+      const withMarks = await Recorder.startSession(db, { startedAt: Date.now() - 600000 });
+      for (let i = 0; i < 3; i++) {
+        await withMarks.addNote({ kind: 'transition', transition: 'lost', anchored: true });
+      }
+      // A whole-sit reflection must NOT count as a mark: it describes the sit, not a
+      // moment in it, so counting it would make a sit with no usable epochs look usable.
+      await withMarks.addNote({ kind: 'text', text: 'closing thoughts', anchored: false });
+      await withMarks.end();
+      const bare = await Recorder.startSession(db, { startedAt: Date.now() - 300000 });
+      await bare.end();
+
+      await openSessions();
+      const rows = Array.from(document.querySelectorAll('.sesRow')).map((r) => ({
+        id: r.dataset.id,
+        text: r.querySelector('.sesMeta').textContent,
+        hasInput: !!r.querySelector('.sesLabel'),
+      }));
+
+      // Name one through the real input, the way a person does.
+      const input = document.querySelector(`.sesRow[data-id="${withMarks.id}"] .sesLabel`);
+      input.value = 'first good sit — rain outside';
+      input.dispatchEvent(new Event('blur'));
+      await new Promise((r) => setTimeout(r, 250));
+      const listed = await Recorder.listSessions(db);
+      const named = listed.find((m) => m.id === withMarks.id);
+      // And it must reach the export, or a named sit is unrecognisable in the lab.
+      const md = Exporter.toMarkdown({ meta: named, rows: [], notes: [] });
+
+      document.getElementById('summary').classList.remove('show');
+      await Recorder.deleteSession(db, withMarks.id);
+      await Recorder.deleteSession(db, bare.id);
+      db.close(); recDb = null;
+      return { rows, marksOf: listed.map((m) => [m.id, m.markCount]),
+        label: named.label, mdFirstLine: md.split('\n')[0],
+        withMarksId: withMarks.id, bareId: bare.id };
+    });
+
+    const counts = new Map(out.marksOf);
+    assert.strictEqual(counts.get(out.withMarksId), 3,
+      `three taps must count as three marks, and the whole-sit note must not count`
+      + ` (got ${counts.get(out.withMarksId)})`);
+    assert.strictEqual(counts.get(out.bareId), 0, 'and a sit with none must count zero');
+    const bareRow = out.rows.find((r) => r.id === out.bareId);
+    assert.match(bareRow.text, /no marks/,
+      `a sit with nothing marked must SAY so rather than showing a quiet 0`
+      + ` (got "${bareRow.text}")`);
+    const markedRow = out.rows.find((r) => r.id === out.withMarksId);
+    assert.match(markedRow.text, /3 marks/, `and a marked one must show its count`);
+    assert.ok(out.rows.every((r) => r.hasInput), 'every row must offer a name field');
+    assert.strictEqual(out.label, 'first good sit — rain outside',
+      `the name must persist (got ${JSON.stringify(out.label)})`);
+    assert.match(out.mdFirstLine, /first good sit/,
+      `and reach the export title, or a named sit is unrecognisable in the lab`
+      + ` (got "${out.mdFirstLine}")`);
+    console.log('✓ saved sessions take a name and show their mark count, calling out the'
+      + ' ones with none');
+  }
+
   // 15b) THE SUMMARY OFFERS THE DATA, not just the prose report.
   //      Asked for directly: "when you see the summarized session, it would be nice to
   //      have it download the the data as well here." The report is what happened, for
@@ -1470,7 +1539,9 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       await ensureRecordingForTest();
       const before = markerLog.length;
       // Real keyboard events, not direct calls: the binding is the thing under test.
-      for (const k of ['r', 'L', 'c']) {
+      // T not L: "Lost in thought" became "Thinking" on T, since it is the category
+      // pressed most and the letter should match the word you say to yourself.
+      for (const k of ['r', 'T', 'c']) {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true }));
         await new Promise((r) => setTimeout(r, 60));
       }
@@ -1497,7 +1568,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     // The practitioner's own vocabulary; probes.js TAP_CATEGORIES is its single
     // authority, and labels.js mirrors it for naming in the export.
     assert.deepStrictEqual(out.kinds, ['returned', 'lost', 'concentrating'],
-      `R L C must record returned/lost/concentrating (got ${out.kinds.join(', ')})`);
+      `R T C must record returned/lost/concentrating (got ${out.kinds.join(', ')})`);
     // Case-insensitive: nobody checks caps lock mid-sit.
     assert.strictEqual(out.kinds.length, 3, 'a held key must not repeat into extra marks');
     assert.ok(out.offsets.every((o) => o >= 40 && o <= 60),
@@ -1555,6 +1626,75 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       + ' still records');
   }
 
+  /* 22a2) ARROWS, SHIFT+T, SPACE, AND CUES OFF. A batch of keyboard changes asked for
+   *       together, all of them about being able to work with your eyes shut.
+   */
+  {
+    const out = await page.evaluate(async () => {
+      sessionStartedAt = Date.now() - 30000;
+      recArmed = false; recSession = null; recError = null;
+      await ensureRecordingForTest();
+      markerLog.clear();
+
+      const press = async (init) => {
+        const e = new KeyboardEvent('keydown', Object.assign({ bubbles: true, cancelable: true }, init));
+        document.dispatchEvent(e);
+        await new Promise((r) => setTimeout(r, 60));
+        return e.defaultPrevented;
+      };
+
+      // The four arrows: up focusing, down just sitting, left returned, right thinking.
+      const prevented = [];
+      for (const k of ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight']) {
+        prevented.push(await press({ key: k }));
+      }
+      const arrowKinds = markerLog.list().map((m) => m.kind);
+
+      // Shift+T is Training; plain T must NOT toggle it, since T is now a tap.
+      const trainBefore = trainingMode;
+      await press({ key: 'T', shiftKey: true });
+      const afterShift = trainingMode;
+      await press({ key: 'T', shiftKey: true });        // back off
+      const beforePlain = markerLog.length;
+      await press({ key: 't' });
+      const plainTapped = markerLog.length - beforePlain;
+      const plainKind = markerLog.list()[markerLog.length - 1].kind;
+
+      const id = recSession && recSession.id;
+      const stored = id ? await Recorder.listNotes(recDb, id) : [];
+      await stopRecording({ summary: false });
+      if (id) await Recorder.deleteSession(recDb, id);
+      markerLog.clear(); setTrainingMode(false);
+      document.getElementById('summary').classList.remove('show');
+      selfRating = null; lastRecSession = null;
+
+      return { prevented, arrowKinds, trainBefore, afterShift,
+        plainTapped, plainKind, cuesOn: cueEngine.enabled,
+        cuePill: document.getElementById('cueToggle').textContent,
+        storedKinds: stored.filter((n) => n.transition).map((n) => n.transition) };
+    });
+
+    assert.deepStrictEqual(out.arrowKinds,
+      ['concentrating', 'just-sitting', 'returned', 'lost'],
+      `the arrows must map up/down/left/right to focusing/just-sitting/returned/thinking`
+      + ` (got ${out.arrowKinds.join(', ')})`);
+    assert.ok(out.prevented.every(Boolean),
+      'and must preventDefault, or the page scrolls under every mark');
+    assert.ok(out.storedKinds.length >= 4, 'arrow taps must be recorded like any other');
+
+    assert.strictEqual(out.trainBefore, false, 'precondition: training starts off');
+    assert.strictEqual(out.afterShift, true, 'Shift+T must toggle Training');
+    assert.strictEqual(out.plainTapped, 1,
+      'plain T must record a tap, not toggle Training — it is the most-pressed category');
+    assert.strictEqual(out.plainKind, 'lost', 'and that tap is Thinking');
+
+    // Cues off by default: an unrequested interruption is opted into, not out of.
+    assert.strictEqual(out.cuesOn, false, 'cues must be OFF on load');
+    assert.match(out.cuePill, /Cues: off/, 'and the pill must say so');
+    console.log('✓ arrows tap the four common categories, Shift+T is Training, plain T is'
+      + ' Thinking, and cues start off');
+  }
+
   // 22b) A MARK MADE WHILE NOTHING IS RECORDING MUST SAY SO.
   //      markerLog.add() always succeeds, so the screen flash fires and the on-screen
   //      count goes up whether or not a session exists. A whole sit was tapped through
@@ -1566,7 +1706,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       recArmed = false; recSession = null; recError = null;
       markerLog.clear();
       const before = markerLog.length;
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'T', bubbles: true }));
       await new Promise((r) => setTimeout(r, 80));
       const unsaved = { status: document.getElementById('status').textContent,
         counted: markerLog.length - before, session: !!recSession };
@@ -1575,7 +1715,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       sessionStartedAt = Date.now() - 20000;
       recArmed = false; recSession = null;
       await ensureRecordingForTest();
-      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'l', bubbles: true }));
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'T', bubbles: true }));
       await new Promise((r) => setTimeout(r, 80));
       const saved = { status: document.getElementById('status').textContent,
         session: !!recSession };
@@ -1773,6 +1913,11 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
 
       setTrainingMode(true);
       const armedVisible = !document.getElementById('armedBar').hidden;
+      // Training on is NOT consent to be interrupted: probes stay off until asked for.
+      updateProbes();
+      const probesOffByDefault = !!probePending;
+      // Opt in through the real control in the training panel, not by setting the flag.
+      document.querySelector('[data-probe-toggle]').click();
       updateProbes();
       // The cue is two notes, the second on a short delay so they read as a pair
       // rather than a chord — so wait for it before counting.
@@ -1798,7 +1943,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
 
       // A MISS is data too — it usually means gone, or asleep — so it must be recorded
       // rather than left hanging.
-      probeTimes = [10, 20]; 
+      probeTimes = [10, 20];
       updateProbes();
       const secondFired = !!probePending;
       if (probePending) probePending.cuedAt = Date.now() - 60000;   // force the timeout
@@ -1812,13 +1957,20 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       await stopRecording({ summary: false });
       if (id) await Recorder.deleteSession(recDb, id);
       probeTimes = []; probeAnswers = []; probePending = null;
-      return { whileOff, armedVisible, fired, answered, missed: !!missed,
+      probesEnabled = false;
+      return { whileOff, armedVisible, probesOffByDefault, fired, answered, missed: !!missed,
         stored: notes.filter((n) => n.kind === 'probe').map((n) => ({
           r: n.response, l: n.latencySec, missed: n.missed, at: n.probeAtSec })) };
     });
 
     assert.strictEqual(out.whileOff.fired, false,
       'with Training off, no probe may fire — probes must be opt-in');
+    /* AND TRAINING ALONE IS NOT CONSENT TO BE INTERRUPTED. Reported: "in training mode, I
+       don't want the popups to come up." One switch was meaning two things — turning on
+       the tap panel also signed you up for a question every few minutes. Probes are now
+       separately opt-in and off by default. */
+    assert.strictEqual(out.probesOffByDefault, false,
+      'probes must be OFF until asked for, even with training on');
     assert.ok(out.armedVisible, 'Training on must show which key records what');
     assert.ok(out.fired.pending && out.fired.hud, 'an overdue probe must fire and show');
     assert.strictEqual(out.fired.options, 5, 'five one-tap options');

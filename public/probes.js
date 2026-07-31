@@ -116,7 +116,7 @@
    */
   const TAP_CATEGORIES = [
     {
-      key: 'concentrating', kbd: 'C', label: 'Concentrating',
+      key: 'concentrating', kbd: 'C', label: 'Concentrating', arrow: 'ArrowUp',
       hint: 'gathering attention, with effort — starting to focus',
       grades: null,
     },
@@ -126,17 +126,19 @@
       grades: null,
     },
     {
-      key: 'just-sitting', kbd: 'J', label: 'Just sitting',
+      key: 'just-sitting', kbd: 'J', label: 'Just sitting', arrow: 'ArrowDown',
       hint: 'effortless, nothing being done, no object being held',
       grades: null,
     },
     {
-      key: 'lost', kbd: 'L', label: 'Lost in thought',
+      // T, not L, and named "Thinking": it is the most-pressed category by a distance,
+      // and the letter should match the word you say to yourself.
+      key: 'lost', kbd: 'T', label: 'Thinking', arrow: 'ArrowRight',
       hint: 'gone — press when you notice, the mark is the noticing',
       grades: null,
     },
     {
-      key: 'returned', kbd: 'R', label: 'Returned to the object',
+      key: 'returned', kbd: 'R', label: 'Returned to the object', arrow: 'ArrowLeft',
       hint: 'back on the breath or whatever you are holding',
       grades: null,
     },
@@ -167,6 +169,27 @@
 
   const TAP_BY_KEY = TAP_CATEGORIES.reduce((m, t) => { m[t.key] = t; return m; }, {});
   const TAP_BY_KBD = TAP_CATEGORIES.reduce((m, t) => { m[t.kbd] = t; return m; }, {});
+  /*
+   * ARROWS for the four most-used categories, asked for so the common taps can be reached
+   * without finding a letter with your eyes shut:
+   *
+   *          up = concentrating (focusing)
+   *   left = returned            right = thinking
+   *        down = just sitting
+   *
+   * Aliases, not separate categories — the same key, the same record, so nothing
+   * downstream has to know which finger produced a mark. The four with arrows are the
+   * four you press most; the rarer ones (kenshō, satori, restless) stay letters, since a
+   * rare mark is worth a deliberate keystroke.
+   */
+  const TAP_BY_ARROW = TAP_CATEGORIES.reduce((m, t) => {
+    if (t.arrow) m[t.arrow] = t;
+    return m;
+  }, {});
+  // The glyph to show beside a category, so the panel can teach the mapping.
+  const ARROW_GLYPH = {
+    ArrowUp: '\u2191', ArrowDown: '\u2193', ArrowLeft: '\u2190', ArrowRight: '\u2192',
+  };
 
   const DEFAULTS = {
     minGapSec: 90,      // never two probes closer than this
@@ -319,7 +342,7 @@
 
   return {
     RESPONSES, RESPONSE_BY_KEY, RESPONSE_BY_KBD,
-    TAP_CATEGORIES, TAP_BY_KEY, TAP_BY_KBD,
+    TAP_CATEGORIES, TAP_BY_KEY, TAP_BY_KBD, TAP_BY_ARROW, ARROW_GLYPH,
     DEFAULTS, schedule, dueProbe, windowFor, unitsFromProbes, metaAwarenessGap,
     seededRandom,
   };

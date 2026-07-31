@@ -179,8 +179,11 @@
   function toMarkdown({ meta, rows = [], notes = [], noteFiles = {} }) {
     const started = new Date(meta.startedAt);
     const L = [];
-    L.push(`# Session ${stamp(started)}`);
+    // The name goes in the TITLE, so a folder of exports is readable without opening
+    // them and the lab shows something you recognise.
+    L.push(`# ${meta.label ? `${meta.label} — ` : 'Session '}${stamp(started)}`);
     L.push('');
+    if (meta.label) L.push(`- **Name** ${meta.label}`);
     L.push(`- **Started** ${started.toLocaleString()}`);
     L.push(`- **Duration** ${clock(meta.durationSec)} (${Math.round(meta.durationSec || 0)}s)`);
     L.push(`- **Recorded** ${(((meta.bytes || 0) / 1e6)).toFixed(1)} MB`);
@@ -372,7 +375,10 @@
         // make, and the first real hypothesis this data can test.
         quadrant: quadrantOf(n),
         text: n.text || '',
-        transcript: '',
+        // Filled in when the browser's speech recogniser produced one while the note was
+        // being spoken. Still blank when it did not — an absent transcript is honest, and
+        // a wrong one would be worse than none since it is the searchable field.
+        transcript: n.transcript || '',
       })), ['offsetSec', 'clock', 'epochMs', 'absoluteTime', 'anchored', 'kind',
         'markKind', 'transition', 'trialKey', 'condition', 'blockIndex',
         'response', 'latencySec', 'tapCategory', 'grade',

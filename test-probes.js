@@ -77,8 +77,12 @@ const A = require('./public/analysis.js');
   const restless = P.TAP_BY_KEY.restless;
   assert.ok(restless.grades && restless.grades.length === 2,
     'restlessness has degrees worth telling apart');
-  // Keys must not collide with the app's existing bindings.
-  for (const taken of ['M', 'T', 'N', 'V', 'F']) {
+  /* Keys must not collide with the app's existing bindings.
+   *
+   * T came OFF this list: it is now `lost` / "Thinking", which is the most-pressed
+   * category by a distance and should match the word you say to yourself. Training moved
+   * to Shift+T — a once-per-sit action can afford a modifier, a mid-sit tap cannot. */
+  for (const taken of ['M', 'N', 'V', 'F']) {
     assert.ok(!kbds.includes(taken), `${taken} is already bound elsewhere`);
   }
   console.log(`✓ ${P.TAP_CATEGORIES.length} armed tap categories with grades: ${kbds.join(' ')}`);

@@ -114,8 +114,9 @@ const Labels = require('./public/labels.js');
   }
   assert.ok(Labels.TRANSITION_BY_KEY.returned && Labels.TRANSITION_BY_KEY.lost,
     'noticing you were gone and re-establishing attention are different events');
-  // Keys must not collide with the app's existing shortcuts.
-  for (const taken of ['M', 'T', 'N', 'V', 'F']) {
+  /* Keys must not collide with the app's existing shortcuts. T is no longer reserved:
+     it is now "Thinking", the most-pressed category, and Training moved to Shift+T. */
+  for (const taken of ['M', 'N', 'V', 'F']) {
     assert.ok(!kbds.includes(taken), `${taken} is already bound elsewhere in the app`);
   }
   /* THE TWO MODULES MUST AGREE.

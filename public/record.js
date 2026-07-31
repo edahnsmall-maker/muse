@@ -238,10 +238,48 @@
     return Session(db, id, full);
   }
 
+  /*
+   * Sessions newest first, each with a COUNT OF ITS MARKS.
+   *
+   * Asked for: "see how many markers are in the session (for analysis later). some will
+   * be useless." Exactly right — a sit with no marks cannot contribute to any
+   * event-locked analysis, and there is no way to tell from a date and a duration. The
+   * count makes the useless ones visible at a glance instead of after exporting them.
+   *
+   * Counted from the notes rather than kept as a running total on the session, because a
+   * total maintained in two places drifts, and this list is opened rarely enough that
+   * reading the index costs nothing.
+   */
   async function listSessions(db) {
-    const tx = db.transaction([STORE_SESSIONS], 'readonly');
+    const tx = db.transaction([STORE_SESSIONS, STORE_NOTES], 'readonly');
     const all = await promisify(tx.objectStore(STORE_SESSIONS).getAll());
-    return all.sort((a, b) => b.startedAt - a.startedAt);
+    const notes = await promisify(tx.objectStore(STORE_NOTES).getAll());
+    const counts = new Map();
+    for (const n of notes || []) {
+      if (!n || n.sessionId == null) continue;
+      // What counts as a mark: anything that names a moment. Probe answers included —
+      // they are labelled moments too — but not the closing whole-sit reflection, which
+      // describes the sit rather than a point in it.
+      const isMark = n.kind === 'transition' || n.kind === 'mark' || n.kind === 'probe'
+        || n.kind === 'tap-grade' || n.transition || n.tapCategory || n.markKind;
+      if (!isMark || n.anchored === false) continue;
+      counts.set(n.sessionId, (counts.get(n.sessionId) || 0) + 1);
+    }
+    return all
+      .map((m) => Object.assign({}, m, { markCount: counts.get(m.id) || 0 }))
+      .sort((a, b) => b.startedAt - a.startedAt);
+  }
+
+  // A short memorable note on a sit, so a list of dates becomes a list of sits you
+  // remember. Stored on the session's own record and carried into the export.
+  async function labelSession(db, sessionId, label) {
+    const tx = db.transaction([STORE_SESSIONS], 'readwrite');
+    const store = tx.objectStore(STORE_SESSIONS);
+    const meta = await promisify(store.get(sessionId));
+    if (!meta) return null;
+    meta.label = String(label == null ? '' : label).slice(0, 120);
+    await promisify(store.put(meta));
+    return meta.label;
   }
 
   /*
@@ -324,7 +362,7 @@
   }
 
   return {
-    open, startSession, listSessions, loadSession, deleteSession, quota, persist,
+    open, startSession, listSessions, labelSession, loadSession, deleteSession, quota, persist,
     deleteNote, listNotes,
     DB_NAME, DB_VERSION, FLUSH_MS,
     STORE_SESSIONS, STORE_CHUNKS, STORE_NOTES,
