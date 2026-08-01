@@ -63,9 +63,16 @@
    * The wording is the practitioner's own, deliberately. Rewriting it into clinical
    * language would make the labels easier to publish and harder to give honestly.
    */
+  /*
+   * `poles` is the 1-end and the 5-end in two words, shown beside each row so a digit
+   * means something at a glance. Naming all five points is not enough when only the digits
+   * are on screen: "Pleasant 2/5" is readable, "Tone 2/5" is not, and the anchor for 2 was
+   * a tooltip away — which is no use at all on a phone.
+   */
   const DIMENSIONS = [
     {
       key: 'focus',
+      poles: ['waterfall', 'one-pointed'],
       label: 'Focus',
       question: 'Where was attention?',
       // 1 is the waterfall end: not merely unfocused, actively pummelled.
@@ -79,6 +86,7 @@
     },
     {
       key: 'effort',
+      poles: ['effortless', 'forcing'],
       label: 'Effort',
       question: 'How much work was it?',
       anchors: [
@@ -91,6 +99,7 @@
     },
     {
       key: 'pull',
+      poles: ['transparent', 'swept'],
       label: 'Pull',
       question: 'Did thoughts grab you?',
       // NOT how much thinking there was. Whether it took you.
@@ -104,8 +113,14 @@
     },
     {
       key: 'tone',
-      label: 'Tone',
-      question: 'What was the emotional colour?',
+      poles: ['difficult', 'luminous'],
+      /* "TONE" WAS NOT CLEAR, and the digits beside it said nothing. Reported: "tone with
+       * the numbers isn't really clear what the numbers indicate to me." A dimension label
+       * has to imply which end is 1 — "Tone 2/5" could mean anything, "Pleasant 2/5"
+       * cannot. The KEY stays `tone`, so every label already recorded and every export
+       * column keeps working; only what a person reads changes. */
+      label: 'Pleasant',
+      question: 'How pleasant was it? 1 difficult, 5 luminous',
       anchors: [
         'difficult — grief, fear, irritation',
         'uneasy — restless, tight',
@@ -179,6 +194,8 @@
       hint: 'stopped working at it again' },
     { key: 'restless', label: 'Restless', kbd: 'U',
       hint: 'unsettled, fidgety, agitated' },
+    { key: 'drowsy', label: 'Drowsy', kbd: 'D',
+      hint: 'dull and sinking — looks like calm in the signal, and is not' },
     { key: 'kensho', label: 'Kenshō', kbd: 'K',
       hint: 'a glimpse — recorded, never inferred' },
     { key: 'satori', label: 'Satori', kbd: 'S',

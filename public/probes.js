@@ -156,6 +156,16 @@
       ],
     },
     {
+      /* DROWSY, asked for and a real gap. Dullness is not restlessness and it is not
+       * absorption, but on the EEG side it is the state most easily mistaken for calm —
+       * theta and alpha both rise as you fade — so a score built on alpha cannot tell
+       * settling from nodding off. This is the label that makes that distinction
+       * testable, and without it a drowsy sit gets filed as a good one. */
+      key: 'drowsy', kbd: 'D', label: 'Drowsy',
+      hint: 'dull, sinking, fading — not calm, and the two look alike in the signal',
+      grades: null,
+    },
+    {
       key: 'kensho', kbd: 'K', label: 'Kenshō',
       hint: 'a glimpse. Rare — recorded, never inferred, and never claimed by the app',
       grades: null,

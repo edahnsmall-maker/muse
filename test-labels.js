@@ -91,13 +91,29 @@ const Labels = require('./public/labels.js');
   assert.match(line, /absorbed/, 'the quadrant belongs in the summary — it is the finding');
   // Partial summarises partially, without inventing the rest.
   const partial = Labels.summarise({ tone: 2 });
-  assert.match(partial, /Tone 2\/5/);
+  /* Reads "Pleasant", not "Tone". The key stays `tone` so recorded labels and export
+     columns keep working; only the word a person reads changed, because "Tone 2/5" does
+     not say which end 2 is near and "Pleasant 2/5" does. */
+  assert.match(partial, /Pleasant 2\/5/);
   assert.ok(!/Focus/.test(partial), 'an unreported dimension must not appear');
   assert.ok(!/absorbed|drifting|struggling|concentrating/.test(partial),
     'and no quadrant without both of its axes');
   assert.strictEqual(Labels.summarise({}), null);
   assert.strictEqual(Labels.summarise(null), null);
-  console.log('✓ summaries report only what was actually reported');
+  /* EVERY DIMENSION MUST CARRY ITS POLES, since the closing screen shows digits and the
+     anchor for a digit is otherwise a hover away — no use at all on a phone. Checked
+     against the anchors rather than as free text, so the short form cannot drift away from
+     the scale it is labelling. */
+  for (const d of Labels.DIMENSIONS) {
+    assert.ok(Array.isArray(d.poles) && d.poles.length === 2,
+      `${d.key} must name its 1-end and its 5-end for display`);
+    assert.strictEqual(d.poles[0], d.anchors[0].split(' \u2014')[0],
+      `${d.key}'s low pole must come from its own anchor for 1 (got "${d.poles[0]}")`);
+    assert.strictEqual(d.poles[1], d.anchors[4].split(' \u2014')[0],
+      `${d.key}'s high pole must come from its own anchor for 5 (got "${d.poles[1]}")`);
+  }
+  console.log('✓ summaries report only what was actually reported, and every scale names'
+    + ' both of its ends');
 }
 
 // 5) Transitions: one keystroke each, distinct keys, and `returned` separate from

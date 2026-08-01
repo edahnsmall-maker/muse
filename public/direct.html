@@ -41,8 +41,16 @@
      occur. The max-height is only a backstop against a short window. */
   #readout { position: absolute; right: 4vmin; top: 11vmin;
     max-height: calc(100vh - 11vmin - 96px); overflow-y: auto;
-    width: 250px; padding: 15px 16px;
-    text-align: right; color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums;
+    /* 274, not 250. Left-aligning the rows means the three columns need fixed widths to
+       line up, and measured they need 90 + 64 + 93 plus gaps — which did not fit 250 and
+       wrapped the wider values onto a second line. Widths taken from the real widest
+       label ("HRV (RMSSD)", 89px) and value ("deeply settled", 93px) rather than guessed. */
+    width: 274px; padding: 15px 16px;
+    /* LEFT-ALIGNED, as asked. The panel sits at the right of the SCREEN, which is why
+       its contents were right-aligned too — but that makes every row start at a different
+       x and a column of labels becomes something to scan rather than read. The panel's
+       position on screen and the alignment inside it are separate decisions. */
+    text-align: left; color: var(--text-muted); font-size: 13px; font-variant-numeric: tabular-nums;
     line-height: 1.9; text-shadow: 0 1px 8px rgba(0,0,0,.7);
     background: linear-gradient(180deg, var(--glass), rgba(5, 8, 18, .34));
     border: 1px solid var(--glass-line); border-radius: 18px;
@@ -181,7 +189,16 @@
   /* Note composer, inside the overlay panel. */
   #dimGrid { margin-top: 18px; display: flex; flex-direction: column; gap: 7px; }
   .dimRow { display: flex; align-items: center; gap: 5px; }
-  .dimLabel { width: 54px; flex: none; font-size: 12px; opacity: .75; cursor: help; }
+  .dimLabel { width: 66px; flex: none; font-size: 12px; opacity: .75; cursor: help; }
+  /* The 1-end and the 5-end, so a digit means something without hovering. Quieter than
+     the digits themselves: they orient the row, they are not what you are choosing. */
+  .dimPole { font-size: 10px; opacity: .42; white-space: nowrap; }
+  /* FIXED WIDTH on the low pole so the digit columns line up down the grid. The words
+     differ in length ("waterfall" against "transparent"), and without this each row's 1
+     started somewhere else — which turns a grid you can scan into four separate rows.
+     An explicit `.lo` class, NOT `:first-of-type`: the row's first span is .dimLabel, so
+     :first-of-type matched that instead and silently did nothing. */
+  .dimPole.lo { width: 74px; text-align: right; flex: none; }
   .dimDot { min-height: 26px; min-width: 26px; justify-content: center; font-size: 11px;
     padding: 0 8px; border-radius: 8px; }
   /* The chosen anchor, in words. A digit alone drifts in meaning between sits; the
@@ -299,7 +316,7 @@
   .legendItem .swatch { width: 8px; height: 8px; border-radius: 50%; display: inline-block;
     box-shadow: 0 0 9px currentColor; }
   .tierMark, #tierKey { display: none; }
-  #viewSwitch { display: flex; gap: 6px; justify-content: flex-end; margin-bottom: 11px; padding-bottom: 10px;
+  #viewSwitch { display: flex; gap: 6px; justify-content: flex-start; margin-bottom: 11px; padding-bottom: 10px;
     border-bottom: 1px solid rgba(255,255,255,.07); }
   /* FIXED HEIGHT, and this is load-bearing rather than cosmetic.
      #readout is anchored by its BOTTOM with a content-driven height, so any change
@@ -434,16 +451,21 @@
      it was a fixed 34px, so any text value containing a space ("73 bpm", "30 ms",
      "6/min in") wrapped inside its own cell onto a second line. The label column
      gives up the space instead. */
-  .rRow { display: grid; grid-template-columns: minmax(56px, 1fr) 64px minmax(34px, max-content);
-    align-items: center; gap: 9px; justify-content: flex-end; min-height: 27px; }
-  .rLabel { opacity: .72; }
+  /* Label first at a FIXED width, then the bar, then the value — so all three columns
+     line up down the panel instead of each row being packed toward the right edge. */
+  .rRow { display: grid; grid-template-columns: 90px 64px minmax(34px, 1fr);
+    align-items: center; gap: 8px; justify-content: start; min-height: 27px; }
+  /* Never wraps: a two-line label breaks the one-row-per-metric invariant the readout
+     depends on, and an ellipsis is a smaller loss than a row that changes height.
+     (`//` is not a CSS comment — writing one here silently swallowed this whole rule.) */
+  .rLabel { opacity: .72; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rBar { width: 64px; height: 5px; border-radius: 5px; background: rgba(255,255,255,.11);
     overflow: hidden; flex: none; }
   .rBar i { display: block; height: 100%; border-radius: 5px; transition: width .25s linear;
     box-shadow: 0 0 10px currentColor; }
   /* nowrap keeps a value on one line; max-width + ellipsis stops an unexpectedly
      long one (a raw BLE error message, say) running off the edge of the panel. */
-  .rVal { min-width: 26px; max-width: 128px; text-align: right; color: rgba(255,255,255,.92);
+  .rVal { min-width: 26px; max-width: 128px; text-align: left; color: rgba(255,255,255,.92);
     font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rRow.primary .rLabel { color: rgba(255,255,255,.95); opacity: 1; }
 
@@ -1077,21 +1099,41 @@ function openSummary() {
   const stats = Summary.summarize(sessionLog);
   if (!stats) {
     summaryTitleEl.textContent = 'Nothing to summarise yet';
-    /* THE DATA IS STILL OFFERED HERE, and that matters more than it looks.
-       "Nothing to summarise" means too little live signal for a sparkline — it does NOT
-       mean nothing was recorded. A sit where the headband dropped early still has raw
-       chunks, notes and taps in the database, and this branch was the one dead end from
-       which none of it was reachable: the only button was Close. */
+    /* SAY WHICH THING WAS MISSING, because there are two and they have different fixes.
+     *
+     * Reported: "I sat for a minute or two and recorded and it said there was nothing to
+     * summarise but I could still download the data. Is that right?" It is right, and the
+     * message was not. This screen appears when sessionLog has no scored rows, and
+     * sessionLog is only written when computeCalm() returns something — i.e. when the
+     * HEADBAND is delivering EEG. So the usual cause is no headband signal, not a short
+     * sit, and "sit for a little while first" pointed at the wrong thing entirely.
+     *
+     * The data is still offered because the archive is not empty: marks, notes, and any
+     * strap data were all recorded. That was the one dead end from which none of it was
+     * reachable, so the two facts belong on screen together. */
     const haveData = summarySessionId() != null;
-    summaryBodyEl.innerHTML = '<div class="subtle">Sit for a little while first — the summary needs at least a few seconds of signal.'
-      + (haveData ? '<br>What was recorded is still saved, and can be downloaded.' : '')
+    const noEeg = !sessionLog.length;
+    const why = noEeg
+      ? (museConnected()
+        ? 'The headband is connected but has not produced a usable second of EEG —'
+          + ' every window was artifact-flagged. Check that it is sitting snugly and that'
+          + ' the contacts are on skin.'
+        : 'The headband was not sending data during this sit, so there are no scores to'
+          + ' summarise. The summary is built from EEG; nothing else here needs it.')
+      : 'There is signal but not enough of it yet — a few more seconds and this will fill in.';
+    summaryBodyEl.innerHTML = `<div class="subtle">${why}`
+      + (haveData ? '<br><br>Everything else <b>was</b> saved — your marks, your notes, and'
+        + ' the heart strap if it was on. It is all in the download.' : '')
       + '</div><div style="margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'
-      + (haveData ? '<span class="pill" id="sumData">Download data (.zip)</span>' : '')
+      + (haveData ? '<span class="pill" id="sumData">Download data (.zip)</span>'
+        + '<span class="pill" id="sumLab">Open in analysis lab</span>' : '')
       + '<span class="pill" id="sumClose">Close</span></div>';
     summaryEl.classList.add('show');
     document.getElementById('sumClose').addEventListener('click', closeSummary);
     const dataEl = document.getElementById('sumData');
     if (dataEl) dataEl.addEventListener('click', () => downloadSummaryData(dataEl));
+    const labEl = document.getElementById('sumLab');
+    if (labEl) labEl.addEventListener('click', () => openInLab(labEl));
     return;
   }
   if (selfRating == null) {
@@ -1110,11 +1152,19 @@ function openSummary() {
       /* And the four dimensions, which are the labels the analysis actually needs.
        * All optional: a partial report is a report, and requiring four answers
        * would produce four guesses instead of one observation. */
+      /* THE POLES ARE ON SCREEN, not in a tooltip. Reported of the last row: "tone with
+       * the numbers isn't really clear what the numbers indicate to me" — and it was true
+       * of all four. Every point is named in labels.js, but only the digits were visible
+       * and the names were a hover away, which is no use on a phone and no use with your
+       * eyes half shut at the end of a sit. So each row now reads
+       * "<low> 1 2 3 4 5 <high>", and the chosen anchor still appears in words after. */
       + '<div id="dimGrid">' + Labels.DIMENSIONS.map((d) =>
         `<div class="dimRow"><span class="dimLabel" title="${escapeHtml(d.question)}">${d.label}</span>`
+        + `<span class="dimPole lo">${escapeHtml(d.poles[0])}</span>`
         + [1, 2, 3, 4, 5].map((n) =>
           `<span class="pill dimDot" data-dim="${d.key}" data-val="${n}"`
           + ` title="${escapeHtml(d.anchors[n - 1])}">${n}</span>`).join('')
+        + `<span class="dimPole">${escapeHtml(d.poles[1])}</span>`
         + '<span class="dimWord" data-word="' + d.key + '"></span></div>').join('') + '</div>'
       + '<textarea id="sumNote" style="margin-top:16px" placeholder="What was it like? (optional)"></textarea>'
       + '<div style="margin-top:16px"><span class="pill" id="sumDone">Save and show me</span>'
@@ -1702,9 +1752,16 @@ function setTrainingMode(on) {
    * the one thing that ends a recording.
    */
   if (trainingMode && !wasOn && !recArmed && !recError) {
-    startRecording();
-    setStatus('training on · recording started');
-    statusLockUntil = Date.now() + 2600;
+    /* Awaited via then, and the message only claims success if recording actually
+       started. startRecording refuses the first press when no device is connected, so
+       announcing "recording started" unconditionally would have been a lie in exactly the
+       situation the refusal exists to catch — and it would have overwritten the refusal's
+       own message, which is the one worth reading. */
+    startRecording().then(() => {
+      if (!recArmed) return;      // refused: its own message and tone stand
+      setStatus('training on · recording started');
+      statusLockUntil = Date.now() + 2600;
+    });
   }
   const el = document.getElementById('trainToggle');
   if (el) {
@@ -2864,8 +2921,50 @@ Recorder.quota().then((q) => { recQuota = q; });
 
 const recBtnEl = document.getElementById('recBtn');
 
+/*
+ * REFUSE TO RECORD NOTHING.
+ *
+ * Asked for after losing a sit to exactly this: "if I hit record and there's no
+ * connection, let's have an error pop up and say 'please connect, nothing to record' so I
+ * don't make that mistake again."
+ *
+ * With no device attached, arming looks identical to a real recording — the button counts
+ * up, marks flash, the tally rises — and produces an archive with no signal in it. The
+ * only thing that distinguishes the two is knowing whether you connected, which is the
+ * thing you have just forgotten.
+ *
+ * A SECOND PRESS RECORDS ANYWAY, and that matters: a notes-only sit is a legitimate thing
+ * to want, and a hard refusal would make the app argue with someone who meant it. The
+ * escape hatch is stated in the same message, so it is a warning rather than a wall.
+ */
+let recRefusedAt = 0;
+const RECORD_OVERRIDE_SEC = 8;
+
+function nothingToRecord() {
+  return !museConnected() && !strapConnected();
+}
+
 async function startRecording() {
   if (recArmed) return;
+  if (nothingToRecord()) {
+    const insisting = Date.now() - recRefusedAt < RECORD_OVERRIDE_SEC * 1000;
+    if (!insisting) {
+      recRefusedAt = Date.now();
+      setStatus('Please connect — there is nothing to record.<br>'
+        + '<span style="opacity:.7;font-size:12px">Press Connect, or press Record again to'
+        + ' keep notes only.</span>');
+      statusLockUntil = Date.now() + 7000;
+      // Two low notes, distinct from every other cue in the app, so a refusal is audible
+      // with your eyes already shut.
+      tone(330, 130);
+      setTimeout(() => tone(247, 220), 150);
+      renderRecBtn();
+      return;
+    }
+    recRefusedAt = 0;
+    setStatus('recording notes only — no device is connected');
+    statusLockUntil = Date.now() + 4000;
+  }
   recArmed = true;
   recGeneration++;
   recError = null;

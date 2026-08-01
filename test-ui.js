@@ -36,6 +36,22 @@ const ARM_WITHOUT_RESET = `
     renderRecBtn();
     return !!recSession;
   };
+  /*
+   * startRecording() now REFUSES the first press when no device is connected — the guard
+   * asked for after a whole sit was recorded against nothing. No device can be connected
+   * in a headless browser, so every test that simply wants a recording would otherwise be
+   * testing the refusal instead.
+   *
+   * This takes the documented escape hatch rather than reaching around it: the real app
+   * records on a second press within a few seconds, so the helper marks the refusal as
+   * already given and presses once. A test wanting to check the GUARD calls
+   * startRecording() directly, twice, and asserts both halves.
+   */
+  window.forceRecord = async () => {
+    recRefusedAt = Date.now();
+    await startRecording();
+    return !!recArmed;
+  };
 `;
 
 // Poll for a condition rather than sleeping a fixed amount. The page's own tick
@@ -1134,6 +1150,13 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const idleStarted = !!recSession;
       const idleLabel = document.getElementById('recBtn').textContent;
 
+      /* THE FIRST PRESS IS REFUSED with nothing connected — the guard asked for after a
+         sit was lost to exactly that. The second press within a few seconds records
+         anyway, because a notes-only sit is a legitimate thing to want and a hard wall
+         would argue with someone who meant it. Both halves are exercised here. */
+      await startRecording();
+      const refusedFirst = { armed: recArmed, session: !!recSession,
+        status: document.getElementById('status').textContent };
       await startRecording();
       pushSamples(1, [5, 6, 7, 8]);
       const armedHasSession = !!recSession;
@@ -1162,7 +1185,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
 
       document.getElementById('summary').classList.remove('show');
       if (id) await Recorder.deleteSession(db, id);
-      return { idleStarted, idleLabel, armedHasSession, liveLabel, liveClass, afterStop,
+      return { idleStarted, idleLabel, refusedFirst, armedHasSession, liveLabel, liveClass, afterStop,
         afterStopCaptured, endedFlag: stored && stored.meta.ended,
         capturedSamples: stored ? stored.eeg[1].length : null };
     });
@@ -1170,7 +1193,15 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(out.idleStarted, false,
       'samples arriving with recording OFF must not start a session — that was the bug');
     assert.strictEqual(out.idleLabel, 'Record', 'the idle button must invite you to start');
-    assert.ok(out.armedHasSession, 'pressing Record must open a session');
+    assert.strictEqual(out.refusedFirst.armed, false,
+      'with no device connected, Record must REFUSE rather than capture nothing —'
+      + ' an empty archive is indistinguishable from a real one until you open it');
+    assert.match(out.refusedFirst.status, /connect/i,
+      `and must say what to do about it (got "${out.refusedFirst.status}")`);
+    assert.match(out.refusedFirst.status, /notes only/i,
+      'while naming the escape hatch, so it is a warning rather than a wall');
+    assert.ok(out.armedHasSession,
+      'and a second press within the window must record anyway');
     assert.match(out.liveLabel, /^Stop · \d+:\d\d$/,
       `a live button must offer Stop and show elapsed time (got "${out.liveLabel}")`);
     assert.ok(out.liveClass, 'and be visually distinct while live');
@@ -1465,7 +1496,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       // replaced and this test would look for its notes in the wrong place. The
       // sessions it creates are deleted at the end.
       const runSit = async () => {
-        await startRecording();
+        await forceRecord();
         // Enough of a log for summarize() to return stats.
         for (let i = 0; i < 6; i++) sessionLog.push({ t: i, calm: 0.4 + i * 0.05, noise: 0 });
         if (recSession) recSession.pushRow({ t: 0, calm: 0.5 });
@@ -1601,7 +1632,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         button: document.getElementById('recBtn').textContent };
 
       // Now start again immediately. This must actually record.
-      await startRecording();
+      await forceRecord();
       await new Promise((r) => setTimeout(r, 250));
       const restarted = { armed: recArmed, session: !!recSession,
         id: recSession && recSession.id,
@@ -1668,7 +1699,12 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       document.getElementById('summary').classList.remove('show');
       selfRating = null; lastRecSession = null;
 
-      return { prevented, arrowKinds, trainBefore, afterShift,
+      const beforeD = markerLog.length;
+      await press({ key: 'd' });
+      const drowsyRecorded = markerLog.length === beforeD + 1
+        && markerLog.list()[markerLog.length - 1].kind === 'drowsy';
+
+      return { prevented, arrowKinds, trainBefore, afterShift, drowsyRecorded,
         plainTapped, plainKind, cuesOn: cueEngine.enabled,
         cuePill: document.getElementById('cueToggle').textContent,
         storedKinds: stored.filter((n) => n.transition).map((n) => n.transition) };
@@ -1687,12 +1723,64 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(out.plainTapped, 1,
       'plain T must record a tap, not toggle Training — it is the most-pressed category');
     assert.strictEqual(out.plainKind, 'lost', 'and that tap is Thinking');
+    // Drowsy is markable. Dullness is not restlessness and not absorption, and on the EEG
+    // side it is the state most easily mistaken for calm — theta and alpha both rise as you
+    // fade — so without this label a drowsy sit gets filed as a good one.
+    assert.ok(out.drowsyRecorded, 'D must record Drowsy');
 
     // Cues off by default: an unrequested interruption is opted into, not out of.
     assert.strictEqual(out.cuesOn, false, 'cues must be OFF on load');
     assert.match(out.cuePill, /Cues: off/, 'and the pill must say so');
     console.log('✓ arrows tap the four common categories, Shift+T is Training, plain T is'
       + ' Thinking, and cues start off');
+  }
+
+  /* 21d) "NOTHING TO SUMMARISE" MUST NAME THE REAL CAUSE.
+   *
+   * Reported: "I sat for a minute or two and recorded and it said there was nothing to
+   * summarise but I could still download the data. Is that right?" It is right — the
+   * archive holds marks, notes and strap data — but the message said "sit for a little
+   * while first", which blames duration. The real cause is almost always no EEG:
+   * sessionLog is written only when computeCalm() returns something, so a headband that
+   * was not delivering means no scored rows however long you sat.
+   */
+  {
+    const out = await page.evaluate(async () => {
+      const db = await Recorder.open({ name: 'zenbio-nosum-' + Math.floor(performance.now()) });
+      recDb = db;
+      sessionLog.length = 0;                 // the actual condition: no scored rows
+      selfRating = 4;
+      const sess = await Recorder.startSession(db, { startedAt: Date.now() - 120000 });
+      await sess.addNote({ kind: 'transition', transition: 'lost', anchored: true });
+      await sess.end();
+      lastRecSession = { id: sess.id };
+      recSession = null; recArmed = false;
+
+      openSummary();
+      const body = document.getElementById('summaryBody').textContent;
+      const res = {
+        title: document.getElementById('summaryTitle').textContent,
+        body,
+        hasData: !!document.getElementById('sumData'),
+        hasLab: !!document.getElementById('sumLab'),
+      };
+      closeSummary();
+      await Recorder.deleteSession(db, sess.id);
+      db.close(); recDb = null; lastRecSession = null; selfRating = null;
+      return res;
+    });
+
+    assert.match(out.title, /Nothing to summarise/, 'precondition: the no-stats branch');
+    assert.match(out.body, /headband/i,
+      `the message must name the headband as the missing piece, not blame the length of the`
+      + ` sit (got: "${out.body.slice(0, 160)}")`);
+    assert.doesNotMatch(out.body, /Sit for a little while first/,
+      'and must not say "sit for a little while first" — that points at the wrong thing');
+    assert.match(out.body, /marks|notes/i,
+      'it must say what WAS saved, since the download is being offered');
+    assert.ok(out.hasData && out.hasLab,
+      'and both the download and the lab handoff must be reachable from here');
+    console.log('✓ "nothing to summarise" names the missing headband and says what was kept');
   }
 
   // 22b) A MARK MADE WHILE NOTHING IS RECORDING MUST SAY SO.
@@ -1744,7 +1832,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   //     ANCHOR TEXT — a digit alone drifts in meaning between sits.
   {
     const out = await page.evaluate(async () => {
-      await startRecording();
+      await forceRecord();
       for (let i = 0; i < 6; i++) sessionLog.push({ t: i, calm: 0.5, noise: 0 });
       const id = recSession && recSession.id;
       await stopRecording();
@@ -1810,7 +1898,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const realTone = window.tone;
       window.tone = (hz) => tones.push(hz);
 
-      await startRecording();
+      await forceRecord();
       const id = recSession && recSession.id;
       await startTrial('test-proto');
       const started = { hud: !document.getElementById('trialHud').hidden,
@@ -2376,9 +2464,10 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       // Turning training ON now starts a recording (see setTrainingMode), so this test
       // has to put that back or it leaks an armed recorder into everything after it.
       const autoArmed = recArmed;
+      const autoStatus = document.getElementById('status').textContent;
       await stopRecording({ summary: false });
       recArmed = false; recSession = null; lastRecSession = null; selfRating = null;
-      return { r, on, off, autoArmed, hintText: hint && hint.textContent,
+      return { r, on, off, autoArmed, autoStatus, hintText: hint && hint.textContent,
         hintFirst, clockGone: !document.getElementById('trainClock') };
     });
 
@@ -2397,11 +2486,18 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.match(out.hintText || '', /press\s*M\s*to mark/i,
       `the armed panel must carry the mark hint (got ${JSON.stringify(out.hintText)})`);
     assert.ok(out.hintFirst, 'and it must be at the TOP, above the categories');
-    // Asked for: "when you hit training, maybe it auto records." Training exists to
-    // gather data, and every label it collects is worthless if nothing is saving them.
-    assert.ok(out.autoArmed,
-      'turning Training on must start recording — a sit tapped through with nothing'
-      + ' armed produces marks that look identical to saved ones and are not kept');
+    /* Training tries to start recording — "when you hit training, maybe it auto records",
+       and every label it collects is worthless if nothing is saving them.
+       But with NO DEVICE CONNECTED it must not: that is precisely the case the Record
+       guard exists for, and arming here would recreate the lost sit by a different route.
+       So the requirement is that it surfaces the refusal rather than silently arming or
+       silently doing nothing. There is no device in a headless browser, so this is the
+       branch under test. */
+    assert.strictEqual(out.autoArmed, false,
+      'with nothing connected, Training must NOT arm a recording that would capture'
+      + ' nothing — that is the sit that got lost');
+    assert.match(out.autoStatus, /connect/i,
+      `and must say why, rather than claiming "recording started" (got "${out.autoStatus}")`);
     console.log('✓ four panels drag, grips survive re-renders, Training highlights,'
       + ' and the mark hint heads the word panel');
   }
@@ -2417,7 +2513,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       window.tone = (hz) => chimes.push(hz);
 
       // Start recording, THEN set a timer — the order a person actually uses.
-      await startRecording();
+      await forceRecord();
       const id = recSession && recSession.id;
       const armedBefore = recArmed;
       document.getElementById('summary').classList.remove('show');

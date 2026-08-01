@@ -785,6 +785,24 @@ only in the shape — calm rising while focus falls, means held equal by constru
 found by `trend` and `pair` and *not* by `level`, while three seeds of pure noise confirm
 nothing at all.
 
+### Record refuses to record nothing
+
+Pressing Record with no device connected shows **"Please connect — there is nothing to
+record"** with two low notes, and does not arm. With nothing attached, arming looks
+identical to a real recording — the button counts up, marks flash, the tally rises — and
+produces an archive with no signal in it. The only thing distinguishing them is knowing
+whether you connected, which is exactly what you have just forgotten. A whole sit was lost
+to this.
+
+**A second press within eight seconds records anyway**, and the message says so. A
+notes-only sit is a legitimate thing to want, and a hard refusal would make the app argue
+with someone who meant it — so it is a warning, not a wall.
+
+Turning on Training tries to start recording too, and therefore hits the same guard. It
+only claims *"recording started"* if recording actually started; otherwise the refusal's
+own message stands, since announcing success in the one case the guard exists to catch
+would be the lie the guard was built to prevent.
+
 ### Voice notes are transcribed
 
 Holding `V` or `space` records audio *and* runs the browser's speech recogniser, and the
@@ -798,6 +816,18 @@ unavailable, refused, or wrong, the note saves with its audio and an empty trans
 exactly as before, and it never blocks or delays the save. What it heard is shown in the
 status line on release, so a bad transcript is visible immediately rather than discovered
 in a spreadsheet weeks later.
+
+### The metrics panel reads left to right
+
+The panel sits at the right of the *screen*, and its contents used to be right-aligned to
+match — which made every row start at a different x, so a column of labels was something to
+scan rather than read. Position on screen and alignment inside are separate decisions.
+
+Left-aligning needs fixed column widths for the three columns to line up, and those widths
+came from measuring the real widest label (`HRV (RMSSD)`, 89px) and value (`deeply settled`,
+93px) rather than guessing. They did not fit the old 250px panel and wrapped the wider
+values onto a second line — caught by the existing "rows stay on one line" test — so the
+panel is 274px now.
 
 ### Saved sessions have names and mark counts
 
