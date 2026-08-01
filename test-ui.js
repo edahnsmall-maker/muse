@@ -1110,6 +1110,140 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       + ` numbers do not use it`);
   }
 
+  /* 15a3) THE TWO FAILURES REPORTED TOGETHER: "open in lab button doesn't work after i stop
+   *       recording and fill out the form. also the dates/times don't look right. i just
+   *       recorded this right now, 8/1 957 am EST" — against a row stamped 7/31, 1:59 PM.
+   *
+   *       One cause. Turning Training on starts recording and turning it off deliberately
+   *       does not stop it, so a recording armed the previous afternoon was still armed:
+   *       one twenty-hour session whose start time is honestly yesterday. Raw EEG is ~3.7MB
+   *       a minute, so that archive is over 4GB — which is why the handoff did nothing.
+   *
+   *       Three things are asserted here: the button never fails silently, a blocked popup
+   *       leaves a usable link, and a session too long to be one sit says so.
+   */
+  {
+    // (i) Nothing recorded: the button must SAY nothing was recorded, not sit there.
+    const silent = await page.evaluate(async () => {
+      recSession = null; lastRecSession = null;
+      const btn = document.createElement('span');
+      document.body.appendChild(btn);
+      btn.textContent = 'Open in analysis lab';
+      await openInLab(btn);
+      const said = document.getElementById('status').textContent;
+      btn.remove();
+      return { said, label: btn.textContent };
+    });
+    assert.match(silent.said, /nothing to hand over|not recorded/i,
+      `a dead-looking button must explain itself (status said "${silent.said}")`);
+    assert.strictEqual(silent.label, 'Open in analysis lab',
+      'and the button must be left as it was found');
+
+    /* (ii) A BLOCKED POPUP must leave a real link. Everything in openInLab is awaited, so by
+     *      the time window.open is reached the click is over and popup blockers stop it —
+     *      silently, returning null, which from the outside is exactly a broken button. */
+    const blocked = await page.evaluate(async () => {
+      const db = await Recorder.open({ name: 'zenbio-lab-' + Math.floor(performance.now()) });
+      recDb = db;
+      sessionStartedAt = Date.now() - 60000;
+      recArmed = true; recError = null;
+      await ensureRecording();
+      for (let ch = 0; ch < 4; ch++) recSession.pushEeg(ch, [1, 2, 3]);
+      recSession.pushRow({ t: 0, calm: 0.5 });
+      await stopRecording({ summary: false });
+
+      // The summary needs somewhere to put the fallback link, as the real screen has.
+      const host = document.createElement('div');
+      host.innerHTML = '<div id="labFallback"></div>';
+      document.body.appendChild(host);
+      const realOpen = window.open;
+      window.open = () => null;                 // exactly what a popup blocker does
+      const btn = document.createElement('span');
+      btn.textContent = 'Open in analysis lab';
+      document.body.appendChild(btn);
+      await openInLab(btn);
+      window.open = realOpen;
+      const out = { said: document.getElementById('status').textContent,
+        link: document.querySelector('#labFallback a')
+          ? { href: document.querySelector('#labFallback a').getAttribute('href'),
+              target: document.querySelector('#labFallback a').target,
+              text: document.querySelector('#labFallback a').textContent } : null };
+      btn.remove(); host.remove();
+      return out;
+    });
+    assert.ok(blocked.link, 'a blocked popup must leave a clickable link behind');
+    assert.strictEqual(blocked.link.href, 'lab.html');
+    assert.strictEqual(blocked.link.target, '_blank',
+      'opening the lab must not navigate away from a sit that may still be recording');
+    assert.match(blocked.said, /blocked the new tab/,
+      `and must say why the tab did not appear (said "${blocked.said}")`);
+
+    /* (iii) A SESSION TOO LONG TO BE ONE SIT must say so where its date is shown. This is
+     *       what made a correct timestamp look like a bug: the row said yesterday afternoon
+     *       because that is genuinely when the recording started. */
+    const flagged = await page.evaluate(async () => {
+      const real = Recorder.listSessions;
+      Recorder.listSessions = async () => ([
+        { id: 'long', startedAt: Date.now() - 20 * 3600 * 1000, durationSec: 20 * 3600,
+          bytes: 4.4e9, markCount: 3, ended: true },
+        { id: 'short', startedAt: Date.now() - 1800 * 1000, durationSec: 1500,
+          bytes: 9e7, markCount: 5, ended: true },
+      ]);
+      await openSessions();
+      await new Promise((r) => setTimeout(r, 300));
+      const rows = Array.from(document.querySelectorAll('.sesRow')).map((r) => ({
+        id: r.dataset.id, text: r.textContent.replace(/\s+/g, ' ') }));
+      Recorder.listSessions = real;
+      closeSummary();
+      return rows;
+    });
+    const long = flagged.find((r) => r.id === 'long');
+    const short = flagged.find((r) => r.id === 'short');
+    assert.ok(long && short, `both rows must render (got ${flagged.map((r) => r.id).join(',')})`);
+    assert.match(long.text, /longer than one sit/,
+      `a 20-hour session must be called out (row read "${long.text}")`);
+    assert.match(long.text, /not when you sat/,
+      'and must explain that its start time is when recording began');
+    assert.match(long.text, /20\.0 hours/, 'stating the length that triggered it');
+    assert.ok(!/longer than one sit/.test(short.text),
+      `a normal 25-minute sit must NOT be flagged (row read "${short.text}")`);
+
+    /* (iv) AND IT MUST NOT HAPPEN AGAIN: a recording with no data arriving stops itself.
+     *      Ten minutes, not one — a BLE dropout or a re-seated headband is normal and must
+     *      not end a sit. */
+    const runaway = await page.evaluate(async () => {
+      const db = await Recorder.open({ name: 'zenbio-run-' + Math.floor(performance.now()) });
+      recDb = db;
+      sessionStartedAt = Date.now() - 3600 * 1000;
+      recArmed = true; recError = null;
+      await ensureRecording();
+      for (let ch = 0; ch < 4; ch++) recSession.pushEeg(ch, [1, 2, 3]);
+
+      // A two-minute gap: normal, and must be left alone.
+      lastDataAt = Date.now() - 2 * 60 * 1000;
+      checkRunawayRecording();
+      await new Promise((r) => setTimeout(r, 60));
+      const afterShortGap = recArmed;
+
+      // Eleven minutes: nobody is wearing it.
+      lastDataAt = Date.now() - 11 * 60 * 1000;
+      checkRunawayRecording();
+      await new Promise((r) => setTimeout(r, 400));
+      return { afterShortGap, stopped: !recArmed,
+        said: document.getElementById('status').textContent.replace(/\s+/g, ' ') };
+    });
+    assert.strictEqual(runaway.afterShortGap, true,
+      'a two-minute signal gap must not end a sit — dropouts and re-seating are normal');
+    assert.strictEqual(runaway.stopped, true,
+      'eleven minutes with no signal at all must stop and package the sit');
+    assert.match(runaway.said, /stopped on its own/,
+      `and must say it did (status read "${runaway.said}")`);
+    assert.match(runaway.said, /no signal for 11 minutes/, 'with the reason, not just the fact');
+
+    console.log('✓ the lab handoff explains itself and leaves a link when the popup is blocked;'
+      + ' an over-long session is flagged; and a recording with no signal stops itself');
+  }
+
   // 15b) THE SUMMARY OFFERS THE DATA, not just the prose report.
   //      Asked for directly: "when you see the summarized session, it would be nice to
   //      have it download the the data as well here." The report is what happened, for

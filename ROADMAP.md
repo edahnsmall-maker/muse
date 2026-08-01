@@ -448,6 +448,94 @@ is what they were seeing.
 - [ ] Decide the SNR threshold below which a channel is drawn on a fixed axis, from
       recorded sits rather than synthetic noise.
 
+## Spoken keywords as markers: where the translation should happen (2026-08-01)
+
+Asked: *"If I leave a voice note and the voice note has words like thinking, which basically
+act as kinda markers, how does that... where does that translation from text into marker
+happen?"* Deferred deliberately, on the grounds that the data is being saved and can be
+correlated later. Mostly true — one gap was closed immediately, see below.
+
+### There are four clocks, not one
+
+This is the crux, and it is why the answer is not "grep the transcript".
+
+1. **The state** — when the mind was actually wandering. Unobservable.
+2. **The noticing** — when you became aware of it.
+3. **The press** — space going down. This is what `offsetSec` records.
+4. **The word** — when "thinking" was actually spoken, somewhere inside the utterance.
+
+A keyed tap collapses 2 and 3 into one event with one latency, which is the whole reason the
+clip library can align on it: *the mark is the noticing*. A voice note adds a longer and more
+variable gap between 3 and 4 — you press, you compose a sentence, and the keyword arrives one
+to five seconds later. Mixing voice-derived marks and tap-derived marks into the same epoch
+average without accounting for that would blur the alignment the clip library exists to
+resolve, and it would blur it *invisibly*, because both would look like marks.
+
+### The one thing that could not wait
+
+The audio is saved and the note's start is timestamped, but the transcript was collapsed to a
+single flat string — so there was **no record of where in the utterance a word fell**. That is
+only observable live: recovering it later means re-transcribing the audio with a tool that
+emits word timings.
+
+So the recogniser's output is now stamped on arrival and exported as `transcripts.csv`, one row
+per revision, carrying both clocks (into the note, and into the sit). Snapshots rather than
+diffs, because interim results get *revised* — the recogniser changes its mind about earlier
+words, so a running transcript is not append-only and a diff computed live would be wrong in
+exactly the cases that matter. Precision is about one recogniser event, not one word, and the
+README says so.
+
+### Where the translation should happen: the lab, not the app
+
+- **Not live in the app.** A keyword firing a mark mid-sit means the app acting on a guess
+  about speech while you are sitting, and a false positive would be indistinguishable from a
+  deliberate tap forever after.
+- **Not at save time either**, for the same reason: it bakes an inference into the record.
+- **At ingest in the lab, as a derived and clearly-labelled artefact.** The lab already
+  re-derives spans, blocks and clips from notes.csv; voice-derived marks belong in the same
+  layer, where they can be recomputed when the rules improve. `notes.csv` has carried a
+  `transcript` column for a while and nothing reads it yet, so the seam already exists.
+
+### Keyword spotting is a proposal engine, not a marker source
+
+Naive matching fails in both directions, and the failures are not rare:
+
+- *"I wasn't really thinking about anything"* — negation.
+- *"thinking about how nice it is to not be thinking"* — two mentions, one event, and the
+  second is about the first.
+- *"I'd been gone for a while"* / *"came back from somewhere"* — clearly a Thinking mark, no
+  keyword at all.
+- *"I should press T more often"* — meta-commentary about the protocol, not an event in it.
+
+So the output should be **proposals you confirm**, not marks. A review screen listing each
+candidate with its timestamp, the sentence around it, and accept/reject — which also generates
+exactly the labelled data needed to find out how good the matching is.
+
+### Provenance is non-negotiable
+
+A voice-derived mark must be distinguishable from a keyed tap **everywhere downstream**, with
+its own `source` field, and every analysis must be runnable three ways: taps only, voice only,
+both. The reason is the four clocks above — if voice marks have a systematically larger and
+noisier latency, pooling them attenuates any real effect, and if they are pooled invisibly
+there is no way to discover that is what happened.
+
+### Build order, when it comes
+
+- [ ] Read `transcripts.csv` in the lab and render each voice note's transcript on the
+      timeline at the word level.
+- [ ] A keyword/phrase table per tap category, including negation handling — most cheaply as
+      "no `not`/`wasn't`/`didn't` within N words before the keyword", which is crude and
+      testable.
+- [ ] A review screen that proposes marks and records accept/reject. The accept/reject log is
+      the actual deliverable of this step, not the marks.
+- [ ] `source: 'voice' | 'tap' | 'probe'` on every mark, and a filter in the clip library and
+      the search.
+- [ ] MEASURE the latency difference: for sits with both, compare the epoch average locked to
+      taps against the one locked to voice keywords. If the voice-locked average is flatter
+      and broader, that is the latency showing up, and it quantifies the cost of pooling.
+- [ ] Only then consider re-transcribing the saved audio offline with a word-timing model, if
+      the browser recogniser's one-event precision turns out to be the limit.
+
 ## Phase 2 — the real phone app
 
 **Goal:** each person at the center runs this on their own phone, no laptop

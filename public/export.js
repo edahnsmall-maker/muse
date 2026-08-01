@@ -14,11 +14,17 @@
  *   session.md      human-readable. Date, duration, markers and voice notes with
  *                   timestamps. The thing to actually read.
  *   metrics.csv     the 1Hz derived rows — opens directly in Excel.
- *   notes.csv       one row per note, with an EMPTY transcript column. Voice notes
- *                   are deliberately not transcribed on-device: a transcript would
- *                   be a guess about what was said, and transcription is not
- *                   time-critical, so it happens later with a real tool. This file
- *                   is the seam for that.
+ *   notes.csv       one row per note. The `transcript` column carries what the
+ *                   browser's recogniser heard while the note was being spoken, and
+ *                   is blank when it heard nothing — an absent transcript is honest
+ *                   and a wrong one would be worse, since it is the searchable field.
+ *                   (This file's comment used to say transcripts were deliberately
+ *                   NOT generated on-device. That changed when live transcription was
+ *                   added; the audio is still the authority on what was said.)
+ *   transcripts.csv when a voice note has one: the recogniser's running transcript
+ *                   stamped with WHEN it reported each state. This is the only record
+ *                   of where in an utterance a word fell — see the note on spoken
+ *                   keywords in ROADMAP.
  *   eeg-ch*.f32     raw EEG, little-endian Float32. NOT CSV: 256Hz x 4 channels
  *                   over 40 minutes is 2.4M samples per channel, past Excel's
  *                   ~1,048,576 row limit, and a 60MB text file besides.
@@ -173,8 +179,9 @@
 
   /*
    * The human-readable half. Voice notes are listed with their timestamp, their
-   * length and their filename, so the audio can be found without hunting — and
-   * with the transcript line left blank rather than filled with a guess.
+   * length and their filename, so the audio can be found without hunting, with
+   * whatever the recogniser heard alongside — clearly attributed to it, because the
+   * audio remains the authority on what was actually said.
    */
   function toMarkdown({ meta, rows = [], notes = [], noteFiles = {} }) {
     const started = new Date(meta.startedAt);
@@ -265,7 +272,8 @@
     L.push('| File | What |');
     L.push('|---|---|');
     L.push('| `metrics.csv` | 1 row/second of derived scores — opens in Excel |');
-    L.push('| `notes.csv` | one row per note, with an empty `transcript` column to fill in |');
+    L.push('| `notes.csv` | one row per note, with whatever the recogniser heard in `transcript` |');
+    L.push('| `transcripts.csv` | that transcript over time: when the recogniser reported each revision |');
     L.push('| `eeg-ch0..3.f32` | raw EEG, little-endian Float32, 256Hz. Too many rows for Excel — read with numpy/node |');
     L.push('| `acc.csv` | accelerometer, mG, 50Hz |');
     L.push('| `rr.csv` | beat-to-beat intervals, ms |');
@@ -403,6 +411,41 @@
       for (let i = 0; i < acc.length; i++) lines.push(`${(i / hz).toFixed(3)},${acc[i].join(',')}`);
       files.push({ name: 'acc.csv', bytes: utf8(lines.join('\n') + '\n') });
     }
+    /* THE TRANSCRIPT OVER TIME, as its own file rather than a column.
+     *
+     * A column would have to hold a JSON blob, which is unreadable in a spreadsheet and
+     * awkward everywhere else. One row per revision keeps it greppable: `grep -i thinking
+     * transcripts.csv` gives every moment the recogniser thought it heard the word, with
+     * both clocks attached.
+     *
+     * TWO time columns on purpose. `atSec` is into the note, which is what places a word
+     * inside an utterance; `offsetSec` is into the sit, which is what lines it up against
+     * the EEG. Deriving one from the other later means knowing which note a row belongs to
+     * and looking its start up — a join nobody should have to do to answer "when was this
+     * said". */
+    const timelineRows = [];
+    for (const n of notes) {
+      const tl = n.transcriptTimeline;
+      if (!Array.isArray(tl) || !tl.length) continue;
+      const base = n.anchored === false ? null : (n.offsetSec || 0);
+      for (const seg of tl) {
+        timelineRows.push({
+          noteId: n.id,
+          atSec: seg.atSec == null ? '' : seg.atSec.toFixed(2),
+          offsetSec: base == null ? '' : (base + (seg.atSec || 0)).toFixed(2),
+          clock: base == null ? '' : clock(base + (seg.atSec || 0)),
+          epochMs: n.at == null ? '' : Math.round(n.at + (seg.atSec || 0) * 1000),
+          truncated: n.transcriptTruncated ? 'yes' : '',
+          text: seg.text || '',
+        });
+      }
+    }
+    if (timelineRows.length) {
+      files.push({ name: 'transcripts.csv',
+        bytes: utf8(toCsv(timelineRows,
+          ['noteId', 'atSec', 'offsetSec', 'clock', 'epochMs', 'truncated', 'text'])) });
+    }
+
     if (rr.length) {
       const lines = ['tSec,rrMs'];
       let t = 0;
@@ -430,10 +473,16 @@
         `acc.csv is accelerometer in mG at ${meta.accHz || 50}Hz.`,
         'rr.csv is beat-to-beat intervals in milliseconds.',
         'metrics.csv is one row per second of whatever the app computed at the time.',
-        'notes.csv has one row per note; the transcript column is intentionally empty.',
+        'notes.csv has one row per note. The transcript column holds what the',
+        "browser's speech recogniser heard live, and is blank when it heard nothing.",
+        'The audio file is the authority on what was said; the transcript is a guess',
+        'at it, kept because it is the field you can search.',
         '',
-        'Voice notes are NOT transcribed. The recording is what was said; a',
-        'transcript generated on-device would be a guess about it.',
+        'transcripts.csv, when present, is that transcript over TIME: one row each',
+        'time the recogniser revised what it thought it had heard, stamped with when.',
+        'Interim results get revised, so later rows may contradict earlier ones — that',
+        'is the record, not a bug. Use it to place a spoken word inside a note; the',
+        'accuracy is about one recogniser event, not one word.',
       ].join('\n')),
     });
     return { files, noteFiles };

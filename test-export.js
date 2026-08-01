@@ -304,4 +304,111 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
 }
 
 fs.rmSync(tmp, { recursive: true, force: true });
+/* ---- THE TRANSCRIPT OVER TIME -------------------------------------------------
+ *
+ * Asked, about spoken keywords acting as markers: "how does that... where where does that
+ * translation from text into marker happen?... all the data is being saved and I assume the
+ * voice notes have time stamps on them."
+ *
+ * Nearly. The note's START was timestamped and the audio kept, but the transcript was one
+ * flat string — so nothing recorded WHERE in a five-second utterance the word "thinking"
+ * fell, which is a five-second error bar on the alignment the clip library exists to
+ * resolve. That is only observable live, so it is captured now even though the translation
+ * itself is still a design question.
+ */
+{
+  const t0 = new Date('2026-08-01T07:00:00').getTime();
+  const notes = [
+    { id: 1, kind: 'voice', at: t0 + 120000, offsetSec: 120, seconds: 4.2,
+      transcript: 'i noticed i was thinking about the drive',
+      transcriptTimeline: [
+        { atSec: 0.6, text: 'i noticed' },
+        { atSec: 1.4, text: 'i noticed i was' },
+        // The recogniser REVISES: "sinking" becomes "thinking". Both are the record.
+        { atSec: 2.1, text: 'i noticed i was sinking' },
+        { atSec: 2.9, text: 'i noticed i was thinking about' },
+        { atSec: 3.8, text: 'i noticed i was thinking about the drive' },
+      ] },
+    // An UNANCHORED note is about the sit, not a moment, so it has no session offset — and
+    // must not be given one, since that would place a reflection at a time nobody claimed.
+    { id: 2, kind: 'voice', at: t0 + 300000, offsetSec: 300, anchored: false, seconds: 2,
+      transcript: 'good sit', transcriptTimeline: [{ atSec: 0.9, text: 'good sit' }] },
+    // A voice note the recogniser heard nothing from must produce no rows at all.
+    { id: 3, kind: 'voice', at: t0 + 400000, offsetSec: 400, seconds: 1.5, transcript: '' },
+  ];
+  const { files } = Exporter.buildFiles({
+    meta: { startedAt: t0, durationSec: 600, bytes: 1e6, ended: true, eegHz: 256 },
+    eeg: [[1], [2], [], []], acc: [], rr: [],
+    rows: [{ t: 0, epochMs: t0, calm: 0.5 }], notes,
+  }, {});
+  const byName = {};
+  for (const f of files) byName[f.name] = Buffer.from(f.bytes).toString('utf8');
+
+  assert.ok(byName['transcripts.csv'], 'a note with a timeline must produce transcripts.csv');
+  const lines = byName['transcripts.csv'].trim().split('\n');
+  const header = lines[0].split(',');
+  for (const col of ['noteId', 'atSec', 'offsetSec', 'clock', 'epochMs', 'text']) {
+    assert.ok(header.includes(col), `transcripts.csv needs a ${col} column (got ${header.join(',')})`);
+  }
+  assert.strictEqual(lines.length - 1, 6, `one row per revision, 5 + 1 (got ${lines.length - 1})`);
+
+  const rows = lines.slice(1).map((l) => {
+    // Text is the last field and is quoted; the leading columns are plain numbers.
+    const parts = l.split(',');
+    return { noteId: parts[0], atSec: Number(parts[1]), offsetSec: parts[2], clock: parts[3],
+      epochMs: parts[4], text: l.slice(l.indexOf(parts[5]) + parts[5].length + 1) };
+  });
+
+  /* BOTH CLOCKS. atSec places the word in the utterance; offsetSec places it against the
+     EEG. The whole point is that neither has to be derived from the other by hand. */
+  const thinking = rows.find((r) => /thinking/.test(r.text));
+  assert.ok(thinking, 'the row where "thinking" first appears must be findable by grep');
+  assert.strictEqual(thinking.atSec, 2.9, 'stamped where in the note it was heard');
+  assert.strictEqual(thinking.offsetSec, '122.90',
+    'and where in the SIT — note start 120s plus 2.9s into the note');
+  assert.strictEqual(thinking.epochMs, String(t0 + 122900),
+    'and in wall-clock ms, so alignment never depends on two files agreeing about zero');
+
+  // The revision is preserved rather than tidied away. A pipeline that assumed the
+  // transcript only ever grows would mis-time exactly the words it revised.
+  assert.ok(rows.some((r) => /sinking/.test(r.text)),
+    'a revised interim result must be kept — later rows may contradict earlier ones');
+
+  // Unanchored: no session offset, because it describes no moment.
+  const general = rows.filter((r) => r.noteId === '2');
+  assert.strictEqual(general.length, 1);
+  assert.strictEqual(general[0].offsetSec, '',
+    'an unanchored note must get no session offset, only its in-note time');
+  assert.strictEqual(general[0].atSec, 0.9, 'which it still has');
+
+  // No timeline, no rows — and no empty ones standing in for a note that produced nothing.
+  assert.ok(!rows.some((r) => r.noteId === '3'),
+    'a note the recogniser heard nothing from must contribute no rows');
+
+  // And the archive explains the file, including the thing most likely to trip someone up.
+  assert.match(byName['README.txt'], /transcripts\.csv/, 'the README must describe the new file');
+  assert.match(byName['README.txt'], /revised/i,
+    'and warn that interim results get revised, so later rows may contradict earlier ones');
+  assert.match(byName['README.txt'], /about one recogniser event, not one word/,
+    'and be honest about the precision it actually offers');
+  // The stale claim that transcripts are never generated on-device must be gone: it stopped
+  // being true when live transcription shipped, and a README that lies is worse than none.
+  assert.ok(!/NOT transcribed/.test(byName['README.txt']),
+    'the README must not still claim voice notes are never transcribed');
+  assert.match(byName['session.md'], /transcripts\.csv/,
+    'and the file manifest in session.md must list it');
+
+  // A session with no voice notes must not carry an empty file.
+  const { files: plain } = Exporter.buildFiles({
+    meta: { startedAt: t0, durationSec: 60, bytes: 1e3, ended: true, eegHz: 256 },
+    eeg: [[1], [2], [], []], acc: [], rr: [], rows: [{ t: 0, epochMs: t0, calm: 0.5 }],
+    notes: [{ id: 1, kind: 'text', at: t0, offsetSec: 0, text: 'typed' }],
+  }, {});
+  assert.ok(!plain.some((f) => f.name === 'transcripts.csv'),
+    'no timelines means no file, rather than a header with nothing under it');
+
+  console.log(`✓ the transcript is exported over TIME: ${lines.length - 1} rows, both clocks,`
+    + ' revisions preserved, and absent when there is nothing to say');
+}
+
 console.log('\nAll export tests passed.');

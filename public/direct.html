@@ -1133,7 +1133,9 @@ function openSummary() {
       + '</div><div style="margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap">'
       + (haveData ? '<span class="pill" id="sumData">Download data (.zip)</span>'
         + '<span class="pill" id="sumLab">Open in analysis lab</span>' : '')
-      + '<span class="pill" id="sumClose">Close</span></div>';
+      + '<span class="pill" id="sumClose">Close</span></div>'
+      // Filled in only if the browser blocks the new tab — see openInLab.
+      + '<div id="labFallback" style="margin-top:10px;font-size:13px"></div>';
     summaryEl.classList.add('show');
     document.getElementById('sumClose').addEventListener('click', closeSummary);
     const dataEl = document.getElementById('sumData');
@@ -1284,7 +1286,8 @@ function showSummaryStats(stats) {
     + (summarySessionId() != null
       ? '<span class="pill" id="sumData">Download data (.zip)</span>'
         + '<span class="pill" id="sumLab">Open in analysis lab</span>' : '')
-    + `<span class="pill" id="sumClose">Close</span></div>`;
+    + `<span class="pill" id="sumClose">Close</span></div>`
+    + '<div id="labFallback" style="margin-top:10px;font-size:13px"></div>';
   summaryEl.classList.add('show');
   document.getElementById('sumClose').addEventListener('click', closeSummary);
   document.getElementById('sumDownload').addEventListener('click', () => downloadReport(stats));
@@ -1403,7 +1406,17 @@ function summarySessionId() {
  */
 async function openInLab(btn) {
   const id = summarySessionId();
-  if (id == null || !recDb) return;
+  /* NEVER RETURN SILENTLY. Reported as "open in lab button doesn't work after i stop
+   * recording and fill out the form" — and a bare `return` here is indistinguishable from a
+   * dead button. There are two ways to get here with nothing to hand over, and they have
+   * different fixes, so they say different things. */
+  if (id == null || !recDb) {
+    setStatus(id == null
+      ? 'nothing to hand over — this sit was not recorded, so there is no session to open'
+      : 'storage is not open, so the sit cannot be packaged — reload and try Download data');
+    statusLockUntil = Date.now() + 7000;
+    return;
+  }
   const label = btn.textContent;
   btn.textContent = 'Packaging…';
   btn.classList.add('active');
@@ -1434,10 +1447,31 @@ async function openInLab(btn) {
             + ' the file into the lab, or serve the page over http://localhost.'
           : ' — use Download data and drop the file into the lab instead.'));
     }
-    // A new tab, so a sit that is still recording is not torn down by navigating away.
-    window.open('lab.html', '_blank', 'noopener');
-    setStatus('handed to the analysis lab');
-    statusLockUntil = Date.now() + 2500;
+    /* A NEW TAB, so a sit that is still recording is not torn down by navigating away —
+     * and a LINK when the browser refuses to open one.
+     *
+     * This is the other half of "the button doesn't work". Everything above is awaited:
+     * reading every raw chunk back out of IndexedDB, CRC-32ing it, zipping it, writing it
+     * to the lab's store. By the time window.open is reached, the click that started it is
+     * long over, so the call is no longer inside a user gesture and popup blockers stop it.
+     * Silently — window.open returns null and nothing happens, which from the outside is
+     * exactly a broken button.
+     *
+     * A blocked popup cannot be un-blocked from script, so the answer is to put a real link
+     * on screen and let the next click be the gesture. Offered either way: if the tab did
+     * open, the link is harmless; if it did not, it is the whole fix. */
+    let opened = null;
+    try { opened = window.open('lab.html', '_blank', 'noopener'); } catch (err) { opened = null; }
+    const link = document.getElementById('labFallback');
+    if (link) {
+      link.innerHTML = '<a href="lab.html" target="_blank" rel="noopener"'
+        + ' style="color:#7dd3fc">Open the analysis lab \u2192</a>';
+    }
+    setStatus(opened
+      ? 'handed to the analysis lab'
+      : 'packaged and waiting in the lab \u2014 your browser blocked the new tab, so use the'
+        + ' "Open the analysis lab" link');
+    statusLockUntil = Date.now() + (opened ? 2500 : 9000);
   } catch (err) {
     setStatus(`could not hand it over: ${escapeHtml((err && err.message) || 'unknown')}`);
     statusLockUntil = Date.now() + 8000;
@@ -2861,9 +2895,38 @@ const SpeechRec = typeof window !== 'undefined'
 let recogniser = null;
 let voiceTranscript = '';
 
+/*
+ * WHEN EACH WORD ARRIVED, not just what the words were.
+ *
+ * Asked about spoken keywords acting as markers — saying "thinking" in a note and having it
+ * count the way pressing T does — with the reasonable assumption that the data for it is
+ * already being kept. Nearly: the audio is saved and the note's START is timestamped, but
+ * the transcript was collapsed to one flat string, so there was nothing to say WHERE in the
+ * utterance a word fell. On a five-second note that is a five-second error bar on the very
+ * alignment the clip library exists to resolve, and the marker translation itself has to
+ * wait for design work that has not been done.
+ *
+ * This is the part that could not wait, because it is only observable live. The recogniser
+ * emits results as it goes; stamping each one on arrival costs nothing and gives a bound on
+ * when a word was spoken — "the recogniser had not reported this word before t, and had by
+ * t" — accurate to about one event interval.
+ *
+ * SNAPSHOTS, not diffs. Interim results get REVISED: the recogniser changes its mind about
+ * earlier words, so a running text is not append-only and a diff computed live would be
+ * wrong in exactly the cases that matter. Storing what it believed at each moment leaves the
+ * interpretation to the analysis, which can afford to be careful about it.
+ *
+ * Bounded, because a stuck recogniser firing continuously must not grow a note without
+ * limit. The cap is far above any real note — a few seconds of speech produces tens of
+ * events, not hundreds — and it is recorded rather than silently applied.
+ */
+const TRANSCRIPT_SNAPSHOT_CAP = 200;
+let voiceTimeline = [];
+
 function startTranscribing() {
   if (!SpeechRec) return;
   voiceTranscript = '';
+  voiceTimeline = [];
   try {
     recogniser = new SpeechRec();
     recogniser.continuous = true;
@@ -2875,6 +2938,17 @@ function startTranscribing() {
       let text = '';
       for (let i = 0; i < e.results.length; i++) text += `${e.results[i][0].transcript} `;
       voiceTranscript = text.trim();
+      // Stamped against the note's own clock, so it needs no reconciliation with the
+      // session clock later — the note already carries its offset into the sit.
+      if (voiceTimeline.length < TRANSCRIPT_SNAPSHOT_CAP && voiceTranscript) {
+        const atSec = voiceStartedAt ? (Date.now() - voiceStartedAt) / 1000 : 0;
+        const last = voiceTimeline[voiceTimeline.length - 1];
+        // Only when the belief actually changed. The recogniser re-fires with identical
+        // text often enough that keeping every event would triple the size for nothing.
+        if (!last || last.text !== voiceTranscript) {
+          voiceTimeline.push({ atSec: Number(atSec.toFixed(2)), text: voiceTranscript });
+        }
+      }
     });
     // Failures are logged, not surfaced: the note is being saved either way, and an error
     // banner would suggest the note was lost.
@@ -2924,9 +2998,15 @@ async function startVoiceNote() {
         return;
       }
       const transcript = voiceTranscript;
+      const timeline = voiceTimeline;
       voiceTranscript = '';
+      voiceTimeline = [];
       await recSession.addNote({ kind: 'voice', audio: blob,
-        mimeType: blob.type, seconds: secs, transcript, text: transcript || null });
+        mimeType: blob.type, seconds: secs, transcript, text: transcript || null,
+        // See startTranscribing: when the recogniser first reported each state of the
+        // transcript, which is the only record of WHERE in the note a word fell.
+        transcriptTimeline: timeline,
+        transcriptTruncated: timeline.length >= TRANSCRIPT_SNAPSHOT_CAP });
       // Show what it heard, so a bad transcript is visible immediately rather than
       // discovered in a spreadsheet weeks later.
       setStatus(transcript
@@ -3046,6 +3126,63 @@ async function startRecording() {
   await ensureRecording();
   renderRecBtn();
   if (recSession) { setStatus('recording'); statusLockUntil = Date.now() + 1500; }
+}
+
+/*
+ * A RECORDING THAT NOBODY IS SITTING FOR MUST STOP ITSELF.
+ *
+ * Reported as two symptoms with one cause: "open in lab button doesn't work after i stop
+ * recording and fill out the form. also the dates/times don't look right. i just recorded
+ * this right now, 8/1 957 am EST" — against a session stamped 7/31, 1:59 PM.
+ *
+ * The date was not wrong. Turning Training on starts recording and turning it off
+ * deliberately does not stop it, so a recording armed yesterday afternoon was still armed
+ * this morning: one session spanning twenty hours, whose start time is honestly yesterday
+ * and which contains two sits with a night in between. Two consequences, both bad:
+ *
+ *   - The session boundary is the unit every analysis is built on. A sit that begins when
+ *     you first opened the app and ends whenever you next remember to press stop is not a
+ *     sit, and no amount of care downstream recovers the boundary.
+ *   - It is enormous. Raw EEG is about 3.7MB per minute, so twenty hours is over 4GB. The
+ *     handoff reads every chunk back, CRC-32s it and zips it, which is why "open in lab"
+ *     did nothing: it was never going to finish, and the archive would not fit in the
+ *     lab's storage if it had.
+ *
+ * So: no data for a while means nobody is wearing it. Stop, package, keep the sit. Ten
+ * minutes rather than one, because a BLE dropout, an adjusted headband, or a stretch of
+ * genuinely awful contact are all normal and none of them should end a sit. Silent —
+ * `summary: false` — because by definition you are not at the screen, and a summary
+ * demanding attention on your return is not the point; the sit is saved and listed.
+ *
+ * The hard cap is separate and much longer. A sit really can run three hours, and someone
+ * who sits that long should not have it truncated; but nothing in this practice runs six,
+ * and past that the likeliest explanation is a forgotten recording.
+ */
+const RECORD_IDLE_STOP_SEC = 600;      // no data at all for ten minutes
+const RECORD_MAX_SEC = 6 * 3600;       // and an outer limit regardless
+let runawayHandled = false;
+
+function checkRunawayRecording() {
+  if (!recArmed || !recSession) { runawayHandled = false; return; }
+  if (runawayHandled) return;
+  const idleSec = lastDataAt ? (Date.now() - lastDataAt) / 1000 : 0;
+  const ranSec = (Date.now() - (recSession.meta.startedAt || Date.now())) / 1000;
+  let why = null;
+  // lastDataAt of 0 means nothing ever arrived; the notes-only mode is a deliberate choice
+  // and must not be stopped for being quiet.
+  if (lastDataAt && idleSec > RECORD_IDLE_STOP_SEC) {
+    why = `no signal for ${Math.round(idleSec / 60)} minutes`;
+  } else if (ranSec > RECORD_MAX_SEC) {
+    why = `it has been running for ${(ranSec / 3600).toFixed(1)} hours`;
+  }
+  if (!why) return;
+  runawayHandled = true;
+  stopRecording({ summary: false }).then(() => {
+    setStatus(`Recording stopped on its own \u2014 ${escapeHtml(why)}.<br>`
+      + '<span style="opacity:.7;font-size:12px">The sit is saved. Press Record to start a'
+      + ' new one.</span>');
+    statusLockUntil = Date.now() + 12000;
+  });
 }
 
 async function stopRecording({ summary = true } = {}) {
@@ -3526,8 +3663,10 @@ async function openSessions() {
     return;
   }
   if (!list.length) {
-    summaryBodyEl.innerHTML = '<p style="opacity:.7">Nothing saved yet. Connect the headband and'
-      + ' a session starts recording on its own \u2014 there is no record button.</p>';
+    // Copy that stopped being true when the Record pill was added, and a screen that
+    // describes a behaviour the app no longer has is worse than one that says nothing.
+    summaryBodyEl.innerHTML = '<p style="opacity:.7">Nothing saved yet. Connect a device and'
+      + ' press <b>Record</b> \u2014 or turn Training on, which starts recording for you.</p>';
     return;
   }
   const q = recQuota;
@@ -3544,12 +3683,27 @@ async function openSessions() {
     const markText = marks
       ? `${marks} mark${marks === 1 ? '' : 's'}`
       : '<span style="color:#ffc98a">no marks</span>';
+    /* SAY WHEN A SESSION IS TOO LONG TO BE ONE SIT.
+     *
+     * Reported as "the dates/times don't look right. i just recorded this right now" against
+     * a row stamped the previous afternoon. The timestamp was correct and the session was
+     * not: a recording armed the day before had never stopped, so the row honestly showed
+     * when it began and looked like a bug. Once a duration crosses a couple of hours the
+     * start time stops meaning "when I sat down", and the row has to say so, because
+     * everything downstream treats a session as one sit. */
+    const longSit = (m.durationSec || 0) > 2 * 3600;
+    const longNote = longSit
+      ? `<br><span style="color:#ffc98a">${(m.durationSec / 3600).toFixed(1)} hours \u2014 longer`
+        + ' than one sit. Recording probably ran on after you finished, so the start time above'
+        + ' is when it began, not when you sat. Analysis treats a session as one sit.</span>'
+      : '';
     return `<div class="sesRow" data-id="${escapeHtml(m.id)}">`
       + `<span class="sesWhen">${escapeHtml(d.toLocaleString())}`
       // Editable in place. A name is worth nothing if adding one is a chore, and this is
       // the moment you remember what the sit was.
       + `<br><input class="sesLabel" data-act="label" value="${escapeHtml(m.label || '')}"`
       + ` placeholder="name or note \u2014 what was this sit?" maxlength="120">`
+      + longNote
       + `<br><span class="sesMeta">${mins}m ${secs}s \u00b7 ${markText}`
       + ` \u00b7 ${((m.bytes || 0) / 1e6).toFixed(1)}MB`
       + `${live ? ' \u00b7 recording now' : (m.ended ? '' : ' \u00b7 interrupted')}</span></span>`
@@ -3939,6 +4093,7 @@ setInterval(() => {
   });
 
   const stale = Date.now() - lastDataAt > 2000;
+  checkRunawayRecording();
   const statusLocked = Date.now() < statusLockUntil;
   if (statusLocked) {
     /* a transient message (visual mode name / a cue) owns the status line */
