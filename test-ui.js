@@ -1197,6 +1197,18 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       closeSummary();
       return rows;
     });
+    /* THE DEVICE CLOCK, SHOWN. "the date and time still off... off by a day and an hour and a
+       half from what i'm seeing" — the app stamps Date.now() and renders it with the device's
+       timezone, and has no independent source of time to check either against. So it shows
+       what it is working from, next to the times it produced. */
+    const clock = await page.evaluate(() => document.getElementById('summaryBody').textContent);
+    assert.match(clock, /this device's clock/i,
+      'the saved list must name the clock its timestamps came from');
+    assert.match(clock, /UTC[+-]\d\d:\d\d/,
+      `and the UTC offset, so a wrong timezone is visible (got "${clock.slice(0, 200)}")`);
+    assert.match(clock, /off by the same amount/i,
+      'and say a constant offset moves every label and no interval — the data stays usable');
+
     const long = flagged.find((r) => r.id === 'long');
     const short = flagged.find((r) => r.id === 'short');
     assert.ok(long && short, `both rows must render (got ${flagged.map((r) => r.id).join(',')})`);
@@ -1229,8 +1241,14 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       lastDataAt = Date.now() - 11 * 60 * 1000;
       checkRunawayRecording();
       await new Promise((r) => setTimeout(r, 400));
-      return { afterShortGap, stopped: !recArmed,
+      const out = { afterShortGap, stopped: !recArmed,
         said: document.getElementById('status').textContent.replace(/\s+/g, ' ') };
+      /* PUT THE CLOCK BACK. lastDataAt is a module global and the guard runs on the 250ms
+         tick, so leaving it eleven minutes stale auto-stops the recording of every test that
+         follows — which is how this broke a later assertion about mark wording rather than
+         anything to do with marks. */
+      lastDataAt = Date.now();
+      return out;
     });
     assert.strictEqual(runaway.afterShortGap, true,
       'a two-minute signal gap must not end a sit — dropouts and re-seating are normal');
@@ -1242,6 +1260,129 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
 
     console.log('✓ the lab handoff explains itself and leaves a link when the popup is blocked;'
       + ' an over-long session is flagged; and a recording with no signal stops itself');
+  }
+
+  /* 15a4) THE MARKER EDITOR MUST SAY WHAT EACH MARK WAS, and take a note about the whole sit.
+   *
+   *       Asked for as: "i need a way to leave a general comment about a recording, bc there
+   *       might be overall patterns to that recording, not just for the markers. also, when i
+   *       get to the area when i give context around the markers, it would be good to know
+   *       what the marker was."
+   *
+   *       The second half was worse than missing. Every tap IS in that list, but its kind is a
+   *       tap category ('lost', 'returned') while the dropdown offered only the M-mark
+   *       vocabulary (Note, Sound, Body). Setting a <select> to a value it has no option for
+   *       silently leaves it on the first entry, so a Thinking tap and a Just-sitting tap both
+   *       displayed as "Note" — and touching the dropdown would have written that lie back
+   *       over the real category.
+   */
+  {
+    const out = await page.evaluate(async () => {
+      const db = await Recorder.open({ name: 'zenbio-mk-' + Math.floor(performance.now()) });
+      recDb = db;
+      sessionStartedAt = Date.now() - 300000;
+      recArmed = true; recError = null; selfRating = 4;
+      markerLog.clear();
+      sitNoteId = null; sitNoteText = '';
+      // The runaway guard is live and the previous test left lastDataAt eleven minutes stale,
+      // which stopped this recording mid-test. Fresh signal, so the sit stays armed.
+      lastDataAt = Date.now();
+      await ensureRecording();
+      const sessionId = recSession.id;
+
+      // Two taps of DIFFERENT categories, through the real path, plus one M-mark.
+      await markTap(Probes.TAP_BY_KEY.lost);
+      await markTap(Probes.TAP_BY_KEY['just-sitting']);
+      openMarkPrompt();
+      document.getElementById('markNote').value = 'a door slammed';
+      commitMark();
+      await new Promise((r) => setTimeout(r, 150));
+
+      sessionLog.length = 0;
+      for (let t = 0; t < 60; t++) sessionLog.push({ t, calm: 0.5, focus: 0.5, thinking: 0.4,
+        drowsy: 0.2, artifact: 0, levels: [0.4, 0.5, 0.5, 0.4] });
+      showSummaryStats(Summary.summarize(sessionLog));
+
+      const rows = Array.from(document.querySelectorAll('.markRow')).map((r) => ({
+        id: Number(r.dataset.id),
+        what: r.querySelector('.markWhat') ? r.querySelector('.markWhat').textContent.trim() : null,
+        hasPicker: !!r.querySelector('[data-role="kind"]'),
+        pickerValue: r.querySelector('[data-role="kind"]') ? r.querySelector('[data-role="kind"]').value : null,
+      }));
+      const markerKinds = Markers.KINDS.map((k) => k.key);
+
+      // Type context into the FIRST tap, and a general note about the sit.
+      const first = document.querySelector('.markRow [data-role="note"]');
+      first.value = 'same thought as yesterday, about the drive';
+      first.dispatchEvent(new Event('input'));
+      const box = document.getElementById('sitNote');
+      box.value = 'restless throughout, warmer room than usual';
+      box.dispatchEvent(new Event('blur'));
+      await new Promise((r) => setTimeout(r, 1200));
+
+      // recDb, not `db`: openRecordingSession calls Recorder.open() itself and replaces the
+      // handle, so the notes went to the app's own database rather than the one opened here.
+      const notes = await Recorder.listNotes(recDb, sessionId);
+      const md = Summary.toMarkdown(Summary.summarize(sessionLog), {
+        markers: markerLog.list(), samples: sessionLog });
+      const kinds = markerLog.list().map((m) => m.kind);
+      return { rows, kinds, markerKinds,
+        notes: notes.map((n) => ({ kind: n.kind, transition: n.transition, text: n.text,
+          comment: n.comment, anchored: n.anchored, offsetSec: n.offsetSec })),
+        md };
+    });
+
+    // (i) EACH TAP SHOWS ITS OWN LABEL, and they differ from each other.
+    const labels = out.rows.filter((r) => r.what).map((r) => r.what);
+    assert.strictEqual(labels.length, 2, `both taps must show a label (got ${JSON.stringify(out.rows)})`);
+    assert.ok(/Thinking/.test(labels.join(' ')), `the T tap must read "Thinking" (got ${labels.join(' | ')})`);
+    assert.ok(/Just sitting/.test(labels.join(' ')), `and the J tap "Just sitting" (got ${labels.join(' | ')})`);
+    assert.notStrictEqual(labels[0], labels[1],
+      'two different taps must not display identically — they both read "Note" before this');
+
+    // (ii) AND NO PICKER, because reclassifying a tap into another vocabulary is corruption,
+    //      not an edit. The M-mark keeps its picker, since it genuinely is uncategorised.
+    assert.strictEqual(out.rows.filter((r) => r.hasPicker).length, 1,
+      'only the M-mark may offer a kind picker');
+    const picker = out.rows.find((r) => r.hasPicker);
+    assert.ok(out.markerKinds.includes(picker.pickerValue),
+      `the picker must show a value it actually has (got "${picker.pickerValue}",`
+      + ` options ${out.markerKinds.join(', ')})`);
+    // The tap categories survived being rendered — the old code could overwrite them.
+    assert.ok(out.kinds.includes('lost') && out.kinds.includes('just-sitting'),
+      `tap categories must survive the editor (got ${out.kinds.join(', ')})`);
+
+    // (iii) CONTEXT TYPED ON A TAP MUST REACH notes.csv, not only the on-screen list.
+    const tapNote = out.notes.find((n) => n.transition === 'lost');
+    assert.ok(tapNote, `the tap must be in storage (notes: ${JSON.stringify(out.notes)})`);
+    assert.strictEqual(tapNote.comment, 'same thought as yesterday, about the drive',
+      `the comment must be written through to the stored note (got ${JSON.stringify(tapNote)})`);
+    assert.strictEqual(tapNote.text, 'Thinking',
+      "and must not overwrite the tap's own label — what you pressed and what you said about"
+      + ' it are different claims');
+
+    // (iv) THE GENERAL NOTE about the whole sit: stored, and UNANCHORED, because a note about
+    //      the sit has no moment and writing 0 would place it at the opening second.
+    const general = out.notes.find((n) => n.anchored === false);
+    assert.ok(general, `a general note must be stored (notes: ${JSON.stringify(out.notes)})`);
+    assert.strictEqual(general.text, 'restless throughout, warmer room than usual');
+    assert.strictEqual(general.kind, 'text');
+
+    // (v) And it must be reachable from the marker area even with no marks at all, which is
+    //     the common case for someone who only taps arrows.
+    const noMarks = await page.evaluate(() => {
+      markerLog.clear();
+      showSummaryStats(Summary.summarize(sessionLog));
+      return { box: !!document.getElementById('sitNote'),
+        text: document.getElementById('summaryBody').textContent.replace(/\s+/g, ' ') };
+    });
+    assert.ok(noMarks.box, 'the general note must be offered even when there are no marks');
+    assert.match(noMarks.text, /arrow/i,
+      'and the empty state must mention tapping arrows, not only pressing M');
+    await page.evaluate(() => { closeSummary(); recArmed = false; });
+    console.log(`✓ the marker editor names each mark (${labels.join(', ')}), writes context`
+      + ' through to notes.csv without overwriting the tap label, and takes a general note'
+      + ' about the whole sit');
   }
 
   // 15b) THE SUMMARY OFFERS THE DATA, not just the prose report.

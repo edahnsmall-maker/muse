@@ -126,9 +126,15 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
   assert.strictEqual(noteFiles[1], 'notes/voice-07m30s-1.m4a');
 
   const md = Buffer.from(files.find((f) => f.name === 'session.md').bytes).toString('utf8');
-  // The transcript line must be present and EMPTY: a slot to fill in, never a
-  // guess at what was said.
-  assert.match(md, /- Transcript: *$/m, 'the markdown must leave an empty transcript slot');
+  /* The transcript line carries what the recogniser heard, and says so plainly when it heard
+   * nothing. This assertion used to require the line to be EMPTY — a slot to fill in, never a
+   * guess at what was said — which was right until live transcription shipped. A guess you
+   * can read and correct beats a blank you have to reconstruct from audio, and the audio file
+   * named on the line above is still the authority. */
+  assert.match(md, /- Transcript: (?!\s*$)/m,
+    'the markdown transcript line must carry something rather than being a blank to fill in');
+  assert.match(md, /- Transcript: _\(nothing recognised\)_/,
+    'and must say so explicitly when the recogniser produced nothing, not just trail off');
   assert.match(md, /notes\/voice-07m30s-1\.m4a/, 'and point at the audio file by name');
   assert.match(md, /07:30/, 'a note must be findable by its clock time');
   assert.match(md, /dropped in suddenly/, 'a typed mark must appear as text');
@@ -137,8 +143,8 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
     'the summary must report what the app claimed at the time, so it can be audited');
 
   const notesCsv = Buffer.from(files.find((f) => f.name === 'notes.csv').bytes).toString('utf8');
-  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,transition,trialKey,condition,blockIndex,response,latencySec,tapCategory,grade,focus,effort,pull,tone,quadrant,seconds,audioFile,text,transcript$/m,
-    'notes.csv must expose the label columns and an empty transcript column');
+  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,transition,trialKey,condition,blockIndex,response,latencySec,tapCategory,grade,focus,effort,pull,tone,quadrant,seconds,audioFile,text,comment,transcript$/m,
+    'notes.csv must expose the label columns, the after-the-fact comment, and the transcript');
   assert.match(notesCsv, /2026-07-27T13:12:30\.000Z|2026-07-27T06:12:30/,
     'and an absolute timestamp, so notes can be aligned to an external recording');
   assert.ok(notesCsv.trim().split('\n').length === 3, 'one header plus one row per note');

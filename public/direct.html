@@ -404,6 +404,9 @@
   .markRow { display: flex; gap: 8px; align-items: center; width: 100%;
     max-width: 620px; margin-bottom: 8px; }
   .markRow .stamp { font-variant-numeric: tabular-nums; opacity: .6; font-size: 12px; min-width: 42px; }
+  /* A tap's own label, where an M-mark has a picker. Fixed width so the note fields below
+     each other line up — a ragged column of inputs is hard to read down. */
+  .markRow .markWhat { font-size: 12px; min-width: 132px; opacity: .92; }
   .markRow select, .markRow input { font: inherit; font-size: 13px; padding: 7px 10px;
     border-radius: 8px; border: none; background: rgba(255,255,255,.10);
     color: rgba(255,255,255,.92); }
@@ -1323,43 +1326,157 @@ function showSummaryStats(stats) {
 // Annotate marks AFTER the sit. This is the half of the marker feature that
 // deliberately does not happen during meditation: the timestamp had to be
 // captured live, the words did not.
+/*
+ * A GENERAL NOTE ABOUT THE WHOLE SIT, offered here as well as on the rating screen.
+ *
+ * Asked for directly: "i need a way to leave a general comment about a recording, bc there
+ * might be overall patterns to that recording, not just for the markers... that would also be
+ * a good time to put a general note." The rating screen has always had a box, but it appears
+ * BEFORE the numbers and is gone by the time you are reading the marks — which is exactly
+ * when a pattern across the whole sit becomes obvious.
+ *
+ * Stored UNANCHORED, which the export already understands: a note about the sit has no moment,
+ * and `offsetSec` is written blank rather than 0, because 0 would place a reflection about the
+ * whole sit at its opening second and that is a claim nobody made.
+ *
+ * One note per sit, amended in place rather than appended, so re-opening the summary and
+ * adding a sentence does not leave two half-notes to reconcile later.
+ */
+let sitNoteId = null;
+let sitNoteText = '';
+let sitNoteTimer = null;
+
+function renderSitNote() {
+  return `<div style="margin-top:22px;width:100%;max-width:560px">`
+    + `<div class="subtle" style="margin-bottom:6px">About the whole sit — patterns, conditions,`
+    + ` anything that was true of all of it rather than of one moment.</div>`
+    + `<textarea id="sitNote" rows="3" placeholder="e.g. restless throughout, warmer room than usual,`
+    + ` third sit today">${escapeHtml(sitNoteText)}</textarea>`
+    + `<div class="subtle" id="sitNoteState" style="font-size:11px;margin-top:4px;opacity:.6"></div>`
+    + `</div>`;
+}
+
+function wireSitNote() {
+  const box = document.getElementById('sitNote');
+  if (!box) return;
+  const state = document.getElementById('sitNoteState');
+  const say = (t) => { if (state) state.textContent = t; };
+  // Debounced, because saving on every keystroke means a transaction per character. Two
+  // seconds is short enough that closing the screen mid-thought does not lose the sentence,
+  // and `blur` catches the case where it does.
+  const save = async () => {
+    const text = box.value.trim();
+    sitNoteText = text;
+    const sess = recSession || lastRecSession;
+    if (!sess) { say('not recording — this note cannot be saved'); return; }
+    try {
+      if (sitNoteId == null) {
+        if (!text) return;                 // nothing typed yet; do not create an empty note
+        sitNoteId = await sess.addNote({ kind: 'text', anchored: false, text });
+      } else if (recDb) {
+        await Recorder.updateNote(recDb, sitNoteId, { text });
+      }
+      say(text ? 'saved' : 'saved (empty)');
+    } catch (err) {
+      say(`could not save: ${(err && err.message) || 'unknown'}`);
+    }
+  };
+  box.addEventListener('input', () => {
+    say('…');
+    clearTimeout(sitNoteTimer);
+    sitNoteTimer = setTimeout(save, 2000);
+  });
+  box.addEventListener('blur', () => { clearTimeout(sitNoteTimer); save(); });
+}
+
 function renderMarkerEditor() {
   const marks = markerLog.list();
   if (!marks.length) {
     return `<div class="subtle" style="margin-top:18px">`
-      + `No marked moments this sit. Press <b>M</b> during a sit to flag and describe anything `
-      + `worth remembering — a noise, a wave of fear, catching yourself thinking. Each one goes `
-      + `into the report next to what the data was doing at that moment.`
-      + `</div>`;
+      + `No marked moments this sit. Tap an <b>arrow</b> or a letter key during a sit to record `
+      + `what just happened — thinking, returned, just sitting — or press <b>M</b> to flag and `
+      + `describe anything worth remembering. Each one goes into the report next to what the `
+      + `data was doing at that moment.`
+      + `</div>` + renderSitNote();
   }
   const kinds = Markers.KINDS.map((k) => `<option value="${k.key}">${k.label}</option>`).join('');
   const rows = marks.map((m) => {
     const mm = Math.floor(m.tSec / 60), ss = Math.round(m.tSec % 60);
+    /* SAY WHAT THE MARK WAS. Reported as "when i get to the area when i give context around
+     * the markers, it would be good to know what the marker was" — and it was worse than
+     * missing. Every tap IS in this list, but its kind is a tap category ('lost',
+     * 'returned', ...) while the dropdown offered only the M-mark vocabulary (Note, Sound,
+     * Body, ...). Setting a select to a value it has no option for silently leaves it on the
+     * first entry, so a Thinking tap and a Just-sitting tap both displayed as "Note" — and
+     * touching the dropdown would have overwritten the real category with that lie.
+     *
+     * So a tap shows its own label as TEXT and has no dropdown at all: you pressed a specific
+     * thing, and reclassifying it into a different vocabulary is not an edit, it is a
+     * corruption. Only an M-mark, which genuinely is an uncategorised "something happened",
+     * gets the picker. */
+    const tap = Probes.TAP_BY_KEY[m.kind];
+    const what = tap
+      ? `<span class="markWhat" title="${escapeHtml(tap.hint || '')}">`
+        + `${tap.arrow ? escapeHtml(Probes.ARROW_GLYPH[tap.arrow] || '') + ' ' : ''}`
+        + `${escapeHtml(tap.label)}</span>`
+      : `<select data-role="kind">${kinds}</select>`;
     return `<div class="markRow" data-id="${m.id}">`
       + `<span class="stamp">${mm}:${String(ss).padStart(2, '0')}</span>`
-      + `<select data-role="kind">${kinds}</select>`
-      + `<input data-role="note" placeholder="what was happening?" value="${(m.note || '').replace(/"/g, '&quot;')}">`
+      + what
+      + `<input data-role="note" placeholder="what was happening?" value="${escapeHtml(m.note || '')}">`
       + `<input data-role="dur" placeholder="secs" style="width:70px" value="${m.durationSec || ''}">`
       + `<span class="pill" data-role="del" title="remove this mark">×</span>`
       + `</div>`;
   }).join('');
   return `<div style="margin-top:20px;width:100%;display:flex;flex-direction:column;align-items:center">`
-    + `<div class="subtle" style="margin-bottom:10px">Your marked moments — say what each one was.</div>`
-    + rows + `</div>`;
+    + `<div class="subtle" style="margin-bottom:10px">Your marked moments — what each one was,`
+    + ` and anything worth adding.</div>`
+    + rows + renderSitNote() + `</div>`;
 }
 
 function wireMarkerEditor() {
+  wireSitNote();
   summaryBodyEl.querySelectorAll('.markRow').forEach((row) => {
     const id = Number(row.dataset.id);
     const m = markerLog.list().find((x) => x.id === id);
     const kindSel = row.querySelector('[data-role="kind"]');
-    if (kindSel && m) kindSel.value = m.kind;
-    kindSel.addEventListener('change', () => markerLog.setKind(id, kindSel.value));
+    // Absent for a tap, deliberately — see renderMarkerEditor. Guarded rather than assumed:
+    // the previous version called addEventListener on it unconditionally.
+    if (kindSel) {
+      if (m) kindSel.value = m.kind;
+      kindSel.addEventListener('change', () => markerLog.setKind(id, kindSel.value));
+    }
     const note = row.querySelector('[data-role="note"]');
     const dur = row.querySelector('[data-role="dur"]');
     const save = () => {
       const d = parseFloat(dur.value);
-      markerLog.annotate(id, note.value.trim() || null, Number.isFinite(d) ? d : null);
+      const text = note.value.trim() || null;
+      markerLog.annotate(id, text, Number.isFinite(d) ? d : null);
+      /* AND WRITE IT THROUGH TO STORAGE. The marker list feeds the on-screen summary and the
+       * markdown report; `notes.csv` is what the lab reads. Annotating only the former is how
+       * context typed at the end of a sit would have gone missing from the one file that
+       * matters for analysis. Debounced, since this fires per keystroke. */
+      const mk = markerLog.list().find((x) => x.id === id);
+      if (!mk || mk.noteId == null || !recDb) return;
+      clearTimeout(row.__saveTimer);
+      row.__saveTimer = setTimeout(() => {
+        /* THE COMMENT GOES IN ITS OWN FIELD, and `text` is not touched for a tap.
+         *
+         * A first version wrote the comment into `text`, which overwrote the tap's own label —
+         * "Thinking" became "same thought as yesterday". Caught by the test, and it is exactly
+         * the distinction worth keeping: `text` is what you pressed, written the instant the
+         * key went down; `comment` is what you said about it minutes later at the summary.
+         * Collapsing them loses which is which, and the tap category is the label the whole
+         * analysis keys off.
+         *
+         * An M-mark is different — its `text` IS the note you typed at the time, and editing
+         * that note here is editing the same field. */
+        const patch = Probes.TAP_BY_KEY[mk.kind]
+          ? { comment: text, durationSec: mk.durationSec }
+          : { text, comment: text, durationSec: mk.durationSec };
+        Recorder.updateNote(recDb, mk.noteId, patch)
+          .catch(() => { /* the on-screen mark and the report still have it */ });
+      }, 800);
     };
     note.addEventListener('input', save);
     dur.addEventListener('input', save);
@@ -1743,7 +1860,9 @@ function commitMark() {
   // against millions of samples — so it is written immediately, not at the end.
   if (recSession) {
     recSession.addNote({ kind: 'mark', markKind: m.kind, text: note,
-      durationSec: m.durationSec });
+      durationSec: m.durationSec }).then((noteId) => {
+      if (noteId != null) markerLog.setNoteId(m.id, noteId);
+    });
   }
   pendingMark = null;
   markPromptEl.classList.remove('show');
@@ -3121,6 +3240,9 @@ async function startRecording() {
    */
   selfRating = null;
   timerDone = false;
+  // A new sit gets a new general note, or the previous sit's comment would be amended.
+  sitNoteId = null;
+  sitNoteText = '';
   markerLog.clear();
   resetProbes(timerEndAt ? (timerEndAt - Date.now()) / 1000 : 1800);
   await ensureRecording();
@@ -3238,7 +3360,7 @@ let pendingGrade = null;   // { noteId, category, until }
 
 async function markTap(tap) {
   const tSec = sessionTSec();
-  markerLog.add(tSec, { kind: tap.key, note: null });
+  const mark = markerLog.add(tSec, { kind: tap.key, note: null });
   renderMarkCount();
   markFlashEl.classList.add('on');
   setTimeout(() => markFlashEl.classList.remove('on'), 60);
@@ -3250,6 +3372,8 @@ async function markTap(tap) {
     // the value here is cheaper than two vocabularies that can disagree.
     noteId = await recSession.addNote({ kind: 'transition', transition: tap.key,
       tapCategory: tap.key, text: tap.label, anchored: true });
+    // So context typed at the summary reaches notes.csv and not just the report.
+    if (noteId != null) markerLog.setNoteId(mark.id, noteId);
   }
   if (tap.grades && noteId != null) {
     pendingGrade = { noteId, category: tap.key, until: Date.now() + 4000 };
@@ -3670,6 +3794,26 @@ async function openSessions() {
     return;
   }
   const q = recQuota;
+  /* THE DEVICE CLOCK, SHOWN, because the app has no other one.
+   *
+   * Reported as "the date and time still off... off by a day and an hour and a half from what
+   * i'm seeing". Every timestamp in this app is Date.now() rendered with the device's
+   * timezone; there is no independent source of time, and nothing in here can detect a wrong
+   * clock. What it CAN do is show what it is working from, next to the times it produced, so
+   * a three-hour timezone error stops being a mystery about the app and becomes a visible
+   * fact about the machine. The reassurance belongs here too: a constant offset moves every
+   * label and no interval, so the data stays usable and can be corrected later. */
+  let tz = 'unknown';
+  try { tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'unknown'; } catch (err) { /* exotic runtime */ }
+  const offMin = -new Date().getTimezoneOffset();
+  const offStr = `${offMin < 0 ? '-' : '+'}${String(Math.floor(Math.abs(offMin) / 60)).padStart(2, '0')}:`
+    + String(Math.abs(offMin) % 60).padStart(2, '0');
+  const clockNote = `<div class="subtle" style="font-size:11px;opacity:.65;margin-bottom:10px">`
+    + `Times below come from this device's clock: <b>${escapeHtml(new Date().toLocaleString())}</b>`
+    + ` &middot; ${escapeHtml(tz)} &middot; UTC${offStr}.<br>If that is not the time where you are,`
+    + ` every time here is off by the same amount — fix the device's clock or timezone. Nothing`
+    + ` is lost either way: every row also carries UTC, so a constant offset can be corrected`
+    + ` afterwards without disturbing a single interval.</div>`;
   const rows = list.map((m) => {
     const d = new Date(m.startedAt);
     const mins = Math.floor((m.durationSec || 0) / 60);
@@ -3710,7 +3854,7 @@ async function openSessions() {
       + `<button data-act="dl">Download .zip</button>`
       + `<button data-act="rm" class="danger">Delete</button></div>`;
   }).join('');
-  summaryBodyEl.innerHTML = rows
+  summaryBodyEl.innerHTML = clockNote + rows
     + `<p class="sesMeta" style="margin-top:14px">Each .zip holds the raw EEG, the`
     + ` per-second scores as CSV, your voice notes as audio, and a markdown summary`
     + ` with timestamps.${q && q.quotaBytes ? ` Using ${(q.usageBytes / 1e6).toFixed(0)}MB`

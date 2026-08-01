@@ -42,13 +42,28 @@
     // tSec = seconds since session start. Returns the created marker.
     // durationSec is optional and describes how long the thing being marked
     // lasted, which the meditator supplies — it is not inferred from data.
-    add(tSec, { kind = 'note', note = null, durationSec = null } = {}) {
+    /*
+     * `noteId` links a marker to the row already written in storage.
+     *
+     * Without it, annotating a mark at the end of a sit could only change the on-screen list
+     * and the report — while `notes.csv`, which is the file the lab reads, kept the empty
+     * original. Two records of one event, disagreeing, with the more authoritative one wrong.
+     */
+    add(tSec, { kind = 'note', note = null, durationSec = null, noteId = null } = {}) {
       const safeT = Number.isFinite(tSec) ? Math.max(0, tSec) : 0;
       const dur = Number.isFinite(durationSec) && durationSec > 0 ? durationSec : null;
-      const m = { id: this.nextId++, tSec: safeT, kind, note, durationSec: dur };
+      const m = { id: this.nextId++, tSec: safeT, kind, note, durationSec: dur, noteId };
       this.markers.push(m);
       this.markers.sort((a, b) => a.tSec - b.tSec);
       return m;
+    }
+
+    // Set after the fact, because the storage write is awaited and the marker has to exist
+    // on screen the instant the key is pressed rather than a transaction later.
+    setNoteId(id, noteId) {
+      const m = this.markers.find((x) => x.id === id);
+      if (m) m.noteId = noteId;
+      return m || null;
     }
 
     annotate(id, note, durationSec) {

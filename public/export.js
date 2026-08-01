@@ -191,7 +191,8 @@
     L.push(`# ${meta.label ? `${meta.label} — ` : 'Session '}${stamp(started)}`);
     L.push('');
     if (meta.label) L.push(`- **Name** ${meta.label}`);
-    L.push(`- **Started** ${started.toLocaleString()}`);
+    L.push(`- **Started** ${started.toLocaleString()} (${tzName()}, UTC${tzOffset(meta.startedAt)})`);
+    L.push(`- **In UTC** ${started.toISOString()}`);
     L.push(`- **Duration** ${clock(meta.durationSec)} (${Math.round(meta.durationSec || 0)}s)`);
     L.push(`- **Recorded** ${(((meta.bytes || 0) / 1e6)).toFixed(1)} MB`);
     if (!meta.ended) {
@@ -223,9 +224,13 @@
           L.push(`### ${when} — voice, ${(n.seconds || 0).toFixed(0)}s`);
           L.push('');
           L.push(`- Audio: \`${file}\``);
-          // Left EMPTY on purpose. Transcription happens later with a real tool;
-          // anything written here by the app would be a guess about what was said.
-          L.push('- Transcript: ');
+          /* WHAT THE RECOGNISER HEARD, attributed to it. This line used to be left blank on
+             the reasoning that a transcript written by the app would be a guess — true, and
+             it stopped being a reason to withhold it once live transcription shipped, because
+             a guess you can read and correct beats a blank you have to fill in from audio.
+             The audio file above remains the authority. */
+          L.push(`- Transcript: ${n.transcript ? n.transcript : '_(nothing recognised)_'}`);
+          if (n.comment) L.push(`- Added afterwards: ${n.comment}`);
         } else if (n.kind === 'transition') {
           const lib = labelsLib();
           const t = lib && lib.TRANSITION_BY_KEY[n.transition];
@@ -233,6 +238,11 @@
           L.push(`### ${when} — ${t ? t.label : n.transition || 'transition'}`);
           L.push('');
           if (t) L.push(`_${t.hint}_`);
+          /* CONTEXT ADDED AT THE SUMMARY. Asked for as knowing "what the marker was" at the
+             point of annotating it — and the other half of that is the annotation reaching
+             the report at all. A tap used to print its label and nothing else, so anything
+             typed about it existed only on a screen that had been closed. */
+          if (n.comment) { L.push(''); L.push(n.comment.split('\n').map((line) => `> ${line}`).join('\n')); }
           L.push('');
         } else {
           const label = n.kind === 'text' ? 'note' : (n.markKind || 'mark');
@@ -240,6 +250,10 @@
           L.push('');
           if (n.text) L.push(n.text.split('\n').map((line) => `> ${line}`).join('\n'));
           else L.push('_(no text)_');
+          if (n.comment && n.comment !== n.text) {
+            L.push('');
+            L.push(n.comment.split('\n').map((line) => `> ${line}`).join('\n'));
+          }
         }
         L.push('');
       }
@@ -329,6 +343,23 @@
    * [{name, bytes}] ready for zip(). Kept separate from the DOM so the layout of
    * an export is testable without a browser.
    */
+  /* The device's own idea of where it is. Both are best-effort: Intl may be absent in an
+     exotic runtime, and the offset is the one in effect AT THE RECORDING, not now — daylight
+     saving means those differ, and using today's offset to describe a sit from March would be
+     a quiet lie. */
+  function tzName() {
+    try {
+      const z = Intl.DateTimeFormat().resolvedOptions().timeZone;
+      return z || 'unknown';
+    } catch (err) { return 'unknown'; }
+  }
+  function tzOffset(at) {
+    const mins = -new Date(at || Date.now()).getTimezoneOffset();
+    const sign = mins < 0 ? '-' : '+';
+    const a = Math.abs(mins);
+    return `${sign}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}`;
+  }
+
   function buildFiles(session, audioBytesById = {}) {
     const { meta, eeg = [[], [], [], []], acc = [], rr = [], rows = [], notes = [] } = session;
     const files = [];
@@ -383,6 +414,12 @@
         // make, and the first real hypothesis this data can test.
         quadrant: quadrantOf(n),
         text: n.text || '',
+        /* CONTEXT ADDED AFTERWARDS, kept separate from `text`.
+         * A tap's `text` is its own category label, written the instant the key went down.
+         * A comment typed at the summary screen is a different claim made at a different
+         * time, and folding it into the same column would destroy the distinction between
+         * what you pressed and what you later said about it. */
+        comment: n.comment || '',
         // Filled in when the browser's speech recogniser produced one while the note was
         // being spoken. Still blank when it did not — an absent transcript is honest, and
         // a wrong one would be worse than none since it is the searchable field.
@@ -391,7 +428,7 @@
         'markKind', 'transition', 'trialKey', 'condition', 'blockIndex',
         'response', 'latencySec', 'tapCategory', 'grade',
         'focus', 'effort', 'pull', 'tone', 'quadrant',
-        'seconds', 'audioFile', 'text', 'transcript'])),
+        'seconds', 'audioFile', 'text', 'comment', 'transcript'])),
     });
     for (let ch = 0; ch < 4; ch++) {
       if (eeg[ch] && eeg[ch].length) files.push({ name: `eeg-ch${ch}.f32`, bytes: f32Bytes(eeg[ch]) });
@@ -461,6 +498,19 @@
         'Meditation session export.',
         '',
         `Started: ${new Date(meta.startedAt).toISOString()} (${new Date(meta.startedAt).toLocaleString()})`,
+        /* THE TIMEZONE THE RECORDING WAS MADE IN, and a warning about what it means.
+         *
+         * Reported as "the date and time still off... it's off by a day and an hour and a
+         * half from what i'm seeing". The app has no clock of its own — every stamp is
+         * Date.now() from the device, rendered with the device's timezone — so a device set
+         * to the wrong zone or a drifted clock makes every LABEL wrong while the data stays
+         * internally consistent. Without the zone written down, a reader a year later cannot
+         * tell a wrong clock from a wrong memory. With it, the offset is recoverable. */
+        `Device timezone: ${tzName()} (UTC${tzOffset(meta.startedAt)})`,
+        'All times come from the device clock at the moment of recording. If that clock or',
+        'timezone was wrong, every displayed time here is wrong by the SAME amount — the',
+        'epochMs and absoluteTime columns are the authority, and a constant offset can be',
+        'applied after the fact without disturbing any interval or ordering.',
         `Duration: ${Math.round(meta.durationSec || 0)}s`,
         '',
         'eeg-ch0..3.f32 are raw little-endian Float32 samples at '

@@ -308,6 +308,33 @@
     return { meta, eeg, acc, rr, rows, notes: notes.sort((a, b) => a.at - b.at) };
   }
 
+  /*
+   * Amend a note that is already written.
+   *
+   * Needed because notes are written the instant they are made — a tap is saved before you
+   * have said anything about it — and the context you want to add arrives at the end of the
+   * sit. Without this, annotating a tap at the summary screen changed only the on-screen
+   * marker list, so the report would carry the context and `notes.csv` would not, which is
+   * the file the lab actually reads.
+   *
+   * A MERGE, not a replace, and it refuses to touch the identity fields. `at`, `offsetSec`
+   * and `sessionId` are what every alignment downstream depends on: the whole reason a tap
+   * is worth having is that its timestamp is the moment you noticed, and an edit screen must
+   * not be able to move it.
+   */
+  async function updateNote(db, noteId, patch) {
+    const tx = db.transaction([STORE_NOTES], 'readwrite');
+    const store = tx.objectStore(STORE_NOTES);
+    const existing = await promisify(store.get(noteId));
+    if (!existing) { await txDone(tx); return null; }
+    const safe = Object.assign({}, patch);
+    for (const locked of ['id', 'sessionId', 'at', 'offsetSec']) delete safe[locked];
+    const merged = Object.assign({}, existing, safe);
+    store.put(merged);
+    await txDone(tx);
+    return merged;
+  }
+
   // Remove a single note. Needed because a typed note is written the moment it is
   // saved, so changing your mind about one has to be possible afterwards.
   async function deleteNote(db, noteId) {
@@ -363,7 +390,7 @@
 
   return {
     open, startSession, listSessions, labelSession, loadSession, deleteSession, quota, persist,
-    deleteNote, listNotes,
+    deleteNote, updateNote, listNotes,
     DB_NAME, DB_VERSION, FLUSH_MS,
     STORE_SESSIONS, STORE_CHUNKS, STORE_NOTES,
   };
