@@ -129,6 +129,34 @@ function createZenVisual(canvas) {
   let flowRanges = [null, null, null, null];
   let flowDt = 0;
 
+  /*
+   * WHEN THE LAST SAMPLE LANDED, and how far apart samples arrive — the two numbers Flow
+   * needs to stop looking like stop motion.
+   *
+   * Reported as "it looks like a stop motion, i assume becuase its sample data by seconds,
+   * but its just choppy". The guess was close. The frame loop is rAF, so it runs at ~60fps,
+   * but `history` gains a sample only when setState is called — once per 250ms tick. So the
+   * PICTURE changed four times a second while the canvas was redrawn sixty times a second:
+   * fifteen identical frames, then a jump. Nothing about the smoothing or the colours could
+   * fix that, because the trace was not moving between samples at all.
+   *
+   * The fix is to scroll the trace by the FRACTION of a sample interval elapsed since the
+   * last one, so the drawn x positions advance every frame. The interval is measured rather
+   * than assumed (a 250ms tick is not a promise, and a busy tab delivers it late), as an EMA
+   * over observed gaps with implausible ones rejected.
+   */
+  let lastPushAt = null;      // performance.now() of the newest history sample
+  let pushIntervalSec = null; // measured spacing between samples, seconds
+
+  /* How far through the current sample interval we are: 0 the instant a sample lands, 1
+   * just before the next. Clamped, so a stalled feed holds the trace still rather than
+   * scrolling it off to the left. Returns 1 when the cadence is not yet known, which
+   * reproduces the pre-scroll mapping exactly instead of guessing at one. */
+  function flowPhase() {
+    if (lastPushAt == null || pushIntervalSec == null) return 1;
+    return Math.max(0, Math.min(1, ((performance.now() - lastPushAt) / 1000) / pushIntervalSec));
+  }
+
   let sessionSec = 0;   // monotonic, for placing blooms along a slow sweep
   let breathPhase = 0;  // integrated radians — see renderBreath
   let patternT = 0;     // seconds accumulated for patterned breathing
@@ -914,7 +942,23 @@ function createZenVisual(canvas) {
 
     const nowX = W * FLOW_NOW_X;
     const n = history.length;
-    const xOf = (i) => nowX - ((n - 1 - i) / (FLOW_MAX - 1)) * nowX;
+    const step = nowX / (FLOW_MAX - 1);   // horizontal distance one sample occupies
+
+    /*
+     * SUB-SAMPLE SCROLL. `phase` is how far through the current sample interval we are,
+     * 0 at the instant a sample lands and 1 just before the next one.
+     *
+     * The newest sample is placed one step to the RIGHT of nowX and the trace is clipped
+     * at nowX, so the line emerges from the right edge continuously instead of a new
+     * segment popping into existence. Check the seam: just before a push, phase -> 1 and
+     * the newest sample sits at exactly nowX; just after, that same sample has aged by one
+     * and phase is 0, which puts it at nowX again. No jump, by construction.
+     *
+     * phase defaults to 1 when the cadence is not yet known, which reproduces the old
+     * mapping exactly (newest at nowX) rather than guessing.
+     */
+    const phase = flowPhase();
+    const xOf = (i) => nowX - ((n - 1 - i) + phase - 1) * step;
 
     // Which four series, and in which colours.
     const composites = seriesMode === 'composites';
@@ -996,6 +1040,14 @@ function createZenVisual(canvas) {
     // channel, four channels deep, composited additively — which is why it
     // blew out to white.
     const baseW = Math.max(1, H * 0.0018);
+
+    /* CLIPPED AT nowX, so the sub-sample scroll above has somewhere to scroll FROM.
+     * The newest sample is drawn one step to the right of this edge and revealed a
+     * fraction at a time. Without the clip the trace would stick out past the head. */
+    c.save();
+    c.beginPath();
+    c.rect(0, 0, nowX, H);
+    c.clip();
 
     // The legend used to be drawn here, for Flow alone. It is now drawn once for
     // every mode at the end of the frame — see the call after the render dispatch.
@@ -1095,8 +1147,28 @@ function createZenVisual(canvas) {
         }
       }
 
-      // The live head: a small bright point, so it reads as being written now.
-      const hy = yOf(n - 1, ch);
+    }
+
+    // Out of the clip: the head glow is a disc centred ON nowX, so half of it falls to
+    // the right of the edge the trace is cut at.
+    c.restore();
+
+    /* THE LIVE HEAD, at nowX, with its height interpolated between the last two samples
+     * by the same phase the trace scrolls by. In its own pass over the channels so that
+     * it can sit outside the clip.
+     *
+     * Interpolating matters as much as the scrolling does: the head is the brightest
+     * thing on screen, and pinning it to the newest sample left it hopping four times a
+     * second while everything behind it slid. At phase 0 it is exactly the sample
+     * arriving at nowX now, and at phase 1 exactly the next one, so it crosses a push
+     * without a step either. */
+    for (let ch = 0; ch < 4; ch++) {
+      const col = colors[ch] || [200, 210, 255];
+      if (!composites && !everFresh[ch]) continue;
+      const yNew = yOf(n - 1, ch);
+      if (yNew == null) continue;
+      const yPrev = n >= 2 ? yOf(n - 2, ch) : yNew;
+      const hy = yPrev == null ? yNew : yPrev + (yNew - yPrev) * phase;
       const hr = Math.max(1.5, baseW * 2.6);
       const headFresh = freshAt(n - 1, ch);
       const hg = c.createRadialGradient(nowX, hy, 0, nowX, hy, hr * 3);
@@ -2316,6 +2388,19 @@ function createZenVisual(canvas) {
         calm: clamp01(state.calm),
       });
       if (history.length > FLOW_MAX) history.shift();
+      /* Sample cadence, measured. Gaps below 20ms are two setState calls inside one tick
+         and say nothing about the cadence; gaps above 2s are a stall, and letting one into
+         the average would make the trace crawl for a minute afterwards. */
+      {
+        const t = performance.now();
+        if (lastPushAt != null) {
+          const gap = (t - lastPushAt) / 1000;
+          if (gap > 0.02 && gap < 2) {
+            pushIntervalSec = pushIntervalSec == null ? gap : pushIntervalSec + 0.25 * (gap - pushIntervalSec);
+          }
+        }
+        lastPushAt = t;
+      }
 
       const events = detector.update({ calm: state.calm, spikes: bands.map((b) => b.spike) });
       if (events.length) spawnEventBlooms(events, performance.now());
@@ -2366,6 +2451,9 @@ function createZenVisual(canvas) {
        test can watch a FIXED value's drawn position move between frames — which is what
        "the lines are jumping" actually is. */
     flowRange(k) { return flowRanges[k] ? Object.assign({}, flowRanges[k]) : null; },
+    /* The sub-sample scroll position and the measured sample cadence, so a test can check
+       that Flow moves between samples without inferring it from drawn coordinates. */
+    flowScroll() { return { phase: flowPhase(), intervalSec: pushIntervalSec }; },
     // Exposed for the tests: what the key currently says, without reading pixels.
     // The drawing is smoke-tested; WHAT it claims is the part worth asserting.
     legendNow() {

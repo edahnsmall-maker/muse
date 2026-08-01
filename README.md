@@ -271,7 +271,7 @@ The eight modes, in cycle order:
 | **Iris** | Your whole session laid down as a rose window — a persistent record that accumulates rather than scrolling away. | Twelve petals, each sensor owning its own quadrant at its real anatomical angle. A live crown scallops with current activity; every 6s that crown is *fossilised* onto a record layer and the radius steps outward, like a growth ring. Nothing is erased, so at the end you're looking at the shape of the entire sit — which minutes were whole and which were broken stay visible. |
 | **Pulse** | A clock hand sweeps a dial once every 24 seconds, resetting at twelve. Each composite metric owns a ring; wherever the hand is now, that ring **bulges** by how much the metric is doing, and the bulge stays and fades as the hand travels on. | So a rising metric reads as a spiral of growth — small at three o'clock, bigger at six, biggest at nine — and a subsiding one reads as the reverse, the whole last revolution legible at a glance. Bulge is mostly *change* against each metric's own slow baseline (flaring is what the eye reads), with a little absolute level mixed back in so sustained calm doesn't look like nothing happening. Calm and Focus grow **inward**, inside the void; Thinking and Drowsy grow **outward** past the rim — so settling reads as the centre filling with light and thinking reads as flaring at the edges. |
 | **Corona** | The same clock sweep as Pulse, but all four metrics packed into the same radius band so they overlap directly, added together, with no crisp edge anywhere. | One corona whose colour and shape vary around the dial rather than four separate readouts. Pulse's dark gaps between rings read as lanes on a track; this has none. Much higher sensitivity, since with no outline to read there is nothing to see unless the shape genuinely moves. Kept **alongside** Pulse: the lanes are more legible, the corona is more beautiful, and which one actually helps someone settle is an open question only comparison answers. |
-| **Flow** | A live trace with a **legend**, thin and sharp where it's being written, dissolving as it ages. "Now" sits at ~74% across, history trailing left. | Follows the **Sensors/Composites switch** — four electrodes or four composites, in the matching colours. A bright point marks the live head; spikes leave marks that fade with the trace. |
+| **Flow** | A live trace with a **legend**, thin and sharp where it's being written, dissolving as it ages. "Now" sits at ~74% across, history trailing left, scrolling continuously between samples rather than jumping four times a second. | Follows the **Sensors/Composites switch** — four electrodes or four composites, in the matching colours. A bright point marks the live head; spikes leave marks that fade with the trace. |
 | **Bloom** | No lines at all. Soft colour gradients emerge, expand, and fade — but only when something significant actually happens. | A per-channel spike (bloom in that channel's colour), or a calm-zone transition: settling (warm) / stirring (cool). |
 | **Field** | One soft wavy band of colour per sensor — the "reference image" look, with real per-channel hue. | Band brightness/thickness = that electrode's alpha share; blur and width grow with calm ("dissolving"). |
 | **Breath** | Austere. One slow gradient breathing in and out. Nothing per-channel, nothing to read or chase. | Your *measured* breathing rate, or one of the guided patterns below. This is the "mirror mode" of the roadmap's Zen framing. |
@@ -940,6 +940,51 @@ per-sensor difference the picture never showed. A legend that is plausible but w
 worse than no legend. `test-viz.js` now checks every legend colour against the constants
 the renderers actually index, which catches the palette half of that drift; the prose
 half is still on whoever edits a renderer.
+
+### Flow scrolls between samples, or it looks like stop motion
+
+Reported as: *"is there a way ot make it so the visual looks less choppy and more smooth?
+it looks like a stop motion, i assume becuase its sample data by seconds, but its just
+choppy"* — and the guess in that sentence was essentially right.
+
+The render loop is `requestAnimationFrame`, so it runs at ~60fps. But Flow draws from a
+history buffer that gains a sample only when `setState` is called, which happens once per
+**250ms tick**. Every other visual is driven by elapsed time and animates continuously;
+Flow's picture was a pure function of the sample list, so **fifteen consecutive frames
+drew exactly the same image and the sixteenth jumped a whole sample width**. No amount of
+smoothing, colour, or line weight can fix that, because between samples the trace was not
+moving at all.
+
+The fix is a sub-sample scroll. Flow measures the interval between arriving samples (an
+EMA over observed gaps, rejecting anything under 20ms as two pushes in one tick and
+anything over 2s as a stall), and offsets every x position by the fraction of that
+interval elapsed since the last one. The newest sample is drawn one step to the **right**
+of the "now" line and the trace is clipped there, so the line emerges from the edge
+continuously instead of a new segment appearing from nothing. The seam is continuous by
+construction: just before a sample lands the newest point sits exactly on the now-line,
+and just after, that same point has aged by one and the phase is zero — which puts it in
+the same place.
+
+The bright live head is interpolated by the same phase, between the last two samples. That
+mattered as much as the scroll: the head is the brightest thing on screen and pinning it
+to the newest sample left it hopping four times a second while everything behind it slid.
+It lands exactly on the trace at the clip edge, because the segment's own value there
+works out to the same interpolation.
+
+`test-visual-smoke.js` measures what the eye was seeing: with **no new data arriving at
+all**, do the drawn x coordinates advance every frame, and by the right amount? One sample
+interval of elapsed time must move the trace by exactly one sample width, and a stalled
+feed must freeze rather than scroll off to the left. Before the fix the per-frame movement
+was zero.
+
+Two things that test got wrong first, both worth knowing:
+
+- It averaged the x of every line vertex, which is not usable — `settleRange` narrows the
+  vertical band frame by frame, values outside it yield a null y, and the vertex *set*
+  changes underneath the average. That read as 1.85x the true drift. It now measures the
+  rightmost vertex, whose position is pure phase.
+- It computed the expected pixel distance from the CSS width, but `createZenVisual` sizes
+  the canvas backing store for the device pixel ratio. Wrong by exactly a factor of two.
 
 ### Traces are scaled to their own range, not to an absolute level
 

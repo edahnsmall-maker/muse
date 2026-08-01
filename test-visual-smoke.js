@@ -37,7 +37,7 @@ function makeCtx() {
   } };
   const ctx = { canvas: null, lineCap: 'butt', imageSmoothingQuality: 'low',
     imageSmoothingEnabled: true, font: '10px sans-serif', textAlign: 'left',
-    textBaseline: 'alphabetic', __ops: [] };
+    textBaseline: 'alphabetic', __ops: [], __calls: [] };
 
   // Validate PROPERTY assignments too, not just method arguments. Canvas
   // state like lineWidth/globalAlpha/fillStyle is set by assignment, so a
@@ -72,6 +72,9 @@ function makeCtx() {
   const record = (name, requirePositive = []) => (...args) => {
     calls.push(name);
     ctx.__ops.push(name);
+    // Arguments too, not just op names — a test that has to measure WHERE something was
+    // drawn (Flow's sub-sample scroll) cannot do it from a list of method names.
+    ctx.__calls.push([name, args]);
     const DRAW_OPS = ['fill', 'stroke', 'fillRect', 'drawImage'];
     if (DRAW_OPS.includes(name) && ctx.filter && ctx.filter !== 'none') blurredDraws++;
     checkNums(name, args);
@@ -363,6 +366,88 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
     assert.ok(!hidden.includes(k), `cycling must not land on hidden mode ${k}`);
   }
   console.log('✓ cycleMode reaches every mode and reports it');
+}
+
+/* ---- Flow must move BETWEEN samples, not four times a second ---------------
+ *
+ * Reported as: "it looks like a stop motion, i assume becuase its sample data by seconds,
+ * but its just choppy". The frame loop is rAF at ~60fps, but `history` gains a sample only
+ * when setState is called — once per 250ms tick. So fifteen consecutive frames drew an
+ * identical picture and the sixteenth jumped a whole sample width.
+ *
+ * This measures the thing the eye was seeing: with NO new data arriving, do the drawn x
+ * positions advance every frame, and by the right amount? One sample interval of elapsed
+ * time must shift the trace by exactly one sample width. Before the fix the shift was 0.
+ */
+{
+  const W = 1280, H = 720;
+  const canvas = makeCanvas(W, H);
+  const v = sandbox.createZenVisual(canvas);
+  const ctx = canvas.getContext();
+  while (v.currentMode().key !== 'flow') v.cycleMode();
+
+  const TICK = 250;                       // the app's real setState cadence, ms
+  const sample = (i) => ({
+    calm: 0.5 + 0.2 * Math.sin(i / 5),
+    noise: 0.1,
+    activity: 0.5,
+    bands: [0, 1, 2, 3].map((k) => ({ level: 0.4 + 0.1 * Math.sin(i / 4 + k), spike: 0, fresh: true })),
+  });
+  // Fill some history at the real cadence so the measured interval settles on it.
+  for (let i = 0; i < 40; i++) {
+    nowMs += TICK;
+    v.setState(sample(i));
+  }
+
+  /* The RIGHTMOST line vertex in one frame — the newest sample, the one whose position is
+   * pure phase. The mean of all vertices was tried first and is not usable: settleRange
+   * narrows the vertical band frame by frame, values outside it yield a null y, and the
+   * vertex SET changes underneath the average. That read as 1.85x the true drift. The
+   * rightmost vertex is always present (a channel is skipped entirely when its newest
+   * sample has no y) and is exactly nowX + (1 - phase) * step. */
+  const headX = () => {
+    ctx.__calls.length = 0;
+    nowMs += 16;
+    const cb = rafCb; rafCb = null;
+    cb(nowMs);
+    const xs = ctx.__calls.filter(([n]) => n === 'moveTo' || n === 'lineTo').map(([, a]) => a[0]);
+    assert.ok(xs.length > 50, `Flow should be drawing a trace to measure (${xs.length} vertices)`);
+    return Math.max(...xs);
+  };
+
+  // No setState inside this loop: every change in x is time, not data.
+  assert.ok(v.flowScroll().intervalSec != null,
+    'the sample cadence must have been measured after 40 samples');
+  const marks = [headX()];
+  for (let f = 0; f < 14; f++) marks.push(headX());
+  const steps = marks.slice(1).map((x, i) => x - marks[i]);
+  assert.ok(steps.every((d) => d < 0),
+    `every frame must move the trace left, with no new data: ${steps.map((d) => d.toFixed(3)).join(', ')}`);
+
+  /* And by the right amount. nowX is 74% of the BACKING-STORE width, which is not W:
+     createZenVisual sizes the canvas for the device pixel ratio, so read it off the canvas
+     rather than assuming (this test first computed it from 1280 and was wrong by exactly
+     that factor of two). One sample occupies nowX/(FLOW_MAX-1); 15 marks are 14 gaps. */
+  const step = (canvas.width * 0.74) / (240 - 1);
+  const gaps = marks.length - 1;
+  const expected = step * (gaps * 16) / TICK;
+  const moved = marks[0] - marks[marks.length - 1];
+  assert.ok(Math.abs(moved - expected) < expected * 0.05,
+    `${gaps * 16}ms of drift should be ${expected.toFixed(2)}px (one sample width is`
+    + ` ${step.toFixed(2)}px), measured ${moved.toFixed(2)}px`);
+
+  // A STALL MUST FREEZE, NOT SLIDE AWAY. The phase is clamped to one interval, so a feed
+  // that stops leaves the trace where it is instead of scrolling it off to the left —
+  // which is what an unclamped fraction of elapsed time would do.
+  nowMs += 5000;
+  const stalled = headX();
+  const stalledAgain = headX();
+  assert.ok(Math.abs(stalledAgain - stalled) < 0.01,
+    `a stalled feed must hold still, not keep scrolling (moved ${(stalledAgain - stalled).toFixed(3)}px)`);
+  assert.deepStrictEqual(badNumbers, [], `Flow scroll produced bad numbers:\n  ${badNumbers.join('\n  ')}`);
+  console.log(`✓ Flow scrolls between samples: ${(-steps[0]).toFixed(2)}px per frame,`
+    + ` ${moved.toFixed(2)}px per ${gaps * 16}ms (one sample = ${step.toFixed(2)}px),`
+    + ` and freezes when the feed stalls`);
 }
 
 console.log('\nAll visual smoke tests passed.');
