@@ -176,6 +176,30 @@
     return peakToPeak(samples) > thresholdUv;
   }
 
+  /*
+   * A CHANNEL CAN FAIL BY BEING TOO QUIET, and until this existed that failure was
+   * reported as a clean reading.
+   *
+   * isArtifact only ever tested the UPPER bound. A channel delivering flat zeros — a
+   * stream that arrives but carries nothing — has a peak-to-peak of 0, which is not
+   * greater than 150, so it passed as clean. Its band powers are then all zero and
+   * alpha/(alpha+beta+1e-9) evaluates to exactly 0, so it was labelled "Beta", marked
+   * fresh, and its level of zero was fed to the visual as a real measurement. That is the
+   * "sensor reads 0" in "it looks like the history lines still drift, esp when the sensor
+   * reads 0 and everything pushes up": a fabricated floor, dragging the axis down and
+   * lifting the whole recorded trace with it.
+   *
+   * 3µV is chosen with room on both sides. The Muse quantises at 0.488µV/LSB, so
+   * quantisation alone spans about 1µV peak-to-peak; resting EEG on an electrode that is
+   * actually touching skin is 10-50µV over a one-second window. Nothing real lives
+   * between those, so this fires only on a channel that is genuinely silent.
+   */
+  const FLAT_PTP_UV = 3;
+  function isFlat(samples, thresholdUv = FLAT_PTP_UV) {
+    if (!samples || !samples.length) return true;
+    return peakToPeak(samples) < thresholdUv;
+  }
+
   // ---- Blink vs jaw discrimination ---------------------------------------
   // Unlike the interpretive scores, these two are genuinely well-characterised
   // and worth treating as measured rather than inferred:
@@ -415,7 +439,7 @@
     PPG_CHARACTERISTICS, PPG_CHANNEL_NAMES, PPG_FREQUENCY, PPG_SAMPLES_PER_PACKET,
     encodeCommand, decode12Bit, decode24Bit, samplesToMicrovolts,
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
-    ARTIFACT_PTP_UV, peakToPeak, isArtifact, pearson, classifyArtifact,
+    ARTIFACT_PTP_UV, peakToPeak, isArtifact, FLAT_PTP_UV, isFlat, pearson, classifyArtifact,
     detectBeats, estimateBreathingPeriod,
     AdaptiveNormalizer, SpikeDetector, ActivityTracker,
   };

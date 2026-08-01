@@ -370,6 +370,59 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       'a healthy channel must carry no advice — a permanent tooltip is a tooltip nobody reads');
     console.log(`✓ a railing electrode reads "No contact" and a noisy one reports its`
       + ` amplitude (${out[0].ptp}µV vs ${out[1].ptp}µV), and says how to fix it`);
+
+    /* 7a3) A SILENT CHANNEL IS ALSO BROKEN, and it used to read as a real measurement.
+     *      The only amplitude test was an upper bound, so a channel delivering flat zeros
+     *      passed as clean; its band powers were all zero, alpha/(alpha+beta+1e-9)
+     *      evaluated to exactly 0, and the readout said "Beta" with a level of 0. That
+     *      fabricated floor is what reached Flow's axis and lifted the whole recorded
+     *      trace. Reported as "the history lines still drift, esp when the sensor reads 0
+     *      and everything pushes up".
+     */
+    const silent = await page.evaluate(async () => {
+      const W = 256;
+      buffers[0].length = 0;
+      for (let i = 0; i < W; i++) buffers[0].push(0);              // dead: flat zeros
+      buffers[1].length = 0;
+      for (let i = 0; i < W; i++) buffers[1].push(-412.5);         // dead: stuck offset
+      buffers[2].length = 0;
+      for (let i = 0; i < W; i++) buffers[2].push(15 * Math.sin((2 * Math.PI * 10 * i) / 256));
+      buffers[3].length = 0;
+      for (let i = 0; i < W; i++) buffers[3].push(15 * Math.sin((2 * Math.PI * 11 * i) / 256));
+      const ch = computeChannelLabels();
+      // The path that actually feeds the visual, so this checks the consequence and not
+      // merely the label.
+      updateBandState(ch);
+      await new Promise((r) => setTimeout(r, 400));               // one readout tick
+      const rows = Array.from(document.querySelectorAll('#readoutRows .rRow')).slice(0, 4)
+        .map((e) => ({ label: e.querySelector('.rLabel').textContent,
+          title: e.getAttribute('title') || '' }));
+      return {
+        labels: ch.map((c) => c.label),
+        pct: ch.map((c) => c.pct),
+        flat: ch.map((c) => !!c.flat),
+        fresh: bandState.map((b) => b.fresh),
+        rows,
+      };
+    });
+    assert.strictEqual(silent.labels[0], 'No signal',
+      `a channel of flat zeros must say so, not report a band (got "${silent.labels[0]}")`);
+    assert.strictEqual(silent.labels[1], 'No signal',
+      `nor must one stuck at a constant offset (got "${silent.labels[1]}")`);
+    assert.strictEqual(silent.pct[0], null,
+      `and it must carry no level — a zero here is the fabricated floor (got ${silent.pct[0]})`);
+    assert.strictEqual(silent.fresh[0], false,
+      'a silent channel must not be marked fresh, or its zero sets the visual axis');
+    assert.strictEqual(silent.fresh[1], false, 'same for the stuck one');
+    assert.ok(silent.fresh[2] && silent.fresh[3],
+      `the two real channels must still read (${silent.labels[2]}, ${silent.labels[3]})`);
+    assert.ok(/Alpha|Beta/.test(silent.labels[2]),
+      `a real 30µV channel must report its band (got "${silent.labels[2]}")`);
+    const flatRow = silent.rows.find((r) => r.label === 'TP9');
+    assert.match(flatRow.title, /flat line/,
+      'and the row must say what a flat line means, which is a connection fault not a fit one');
+    console.log(`✓ a silent channel reads "No signal", carries no level, and cannot reach the`
+      + ` visual as a reading (${silent.labels.join(', ')})`);
   }
 
   // 7b) A DEAD ELECTRODE MUST DRAW NOTHING, not a flat line at mid-range.

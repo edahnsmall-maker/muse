@@ -145,6 +145,9 @@ function createZenVisual(canvas) {
    * than assumed (a 250ms tick is not a promise, and a busy tab delivers it late), as an EMA
    * over observed gaps with implausible ones rejected.
    */
+  let flowDebugOn = false;
+  const flowLastY = [null, null, null, null];
+
   let lastPushAt = null;      // performance.now() of the newest history sample
   let pushIntervalSec = null; // measured spacing between samples, seconds
 
@@ -918,7 +921,7 @@ function createZenVisual(canvas) {
   // fat. There is no `filter` here at all, so it also costs zero blur passes.
   const FLOW_NOW_X = 0.74;
   const FLOW_GROUPS = 26;   // age bands; enough that the ramp reads as smooth
-  const FLOW_SMOOTH = 9;    // samples in the centred smoothing window (~2.2s)
+  const FLOW_SMOOTH = 9;    // equivalent averaging length for a composite, in samples
   /*
    * The SENSOR series is smoothed harder than the composites, and that asymmetry is the
    * point rather than an inconsistency.
@@ -931,6 +934,42 @@ function createZenVisual(canvas) {
    * smoothing is still shorter than any state worth seeing and takes most of that out.
    */
   const FLOW_SMOOTH_SENSORS = 21;   // ~5.2s at 4Hz
+
+  /*
+   * THE SMOOTHING IS CAUSAL AND CACHED PER SAMPLE, and that is the fix for the tick.
+   *
+   * Reported, after the sub-sample scroll went in, as still choppy — "like a battery
+   * analog watch vs. automatic. tick tick". Measured, and the scroll was innocent: an
+   * idle frame moved the line by 0.002% of the band, the frame after a sample arrived
+   * moved it by 0.584%. So the picture was still changing four times a second, in the
+   * vertical direction, and the horizontal scroll had nothing to do with it.
+   *
+   * The cause was a CENTRED smoothing window recomputed every frame. A centred window
+   * needs samples from both sides, and the newest ones do not exist yet, so the value it
+   * produces for a recent sample keeps being revised as its future arrives. Measured on a
+   * steady signal with a converged axis: when one new sample landed, the samples 0-8 back
+   * from the head moved 2.8-3.3% of the band, and everything 10 or more back moved 0.01%.
+   * Half a smoothing window of already-drawn line, jumping every 250ms. Exactly a ticking
+   * second hand: the movement is real, it is just delivered in steps.
+   *
+   * So each sample's smoothed value is now computed ONCE, from the past only, at the
+   * moment it is recorded, and stored on the history entry. Nothing already drawn can
+   * ever move again. A one-pole (exponential) filter rather than a trailing box, because
+   * it is incremental, responds to the newest sample immediately instead of only after
+   * the window fills, and has a gentler impulse response.
+   *
+   * The cost, stated plainly: a causal filter lags. alpha = 2/(N+1) gives the same noise
+   * suppression as averaging N samples, so the sensor trace lags by roughly 11 samples,
+   * about 2.7 seconds. That is a real cost and it is the right trade — 2.7s of lag on a
+   * 60-second history plot is invisible, and a past that revises itself is not.
+   */
+  const emaAlpha = (n) => 2 / (n + 1);
+  function emaStep(prev, value, alpha) {
+    if (value == null) return prev;   // a gap folds in nothing and does not reset the filter
+    if (prev == null) return value;   // start on the first real reading, not on a ramp from 0
+    return prev + alpha * (value - prev);
+  }
+  const flowEma = { levels: [null, null, null, null], metrics: [null, null, null, null], breath: null };
 
   function renderFlow(c, W, H) {
     const bg = c.createLinearGradient(0, 0, 0, H);
@@ -965,16 +1004,14 @@ function createZenVisual(canvas) {
     const colors = composites
       ? VizCore.PULSE_METRICS.map((m) => m.color)
       : VizCore.CHANNEL_COLORS;
-    // A held value for a metric with no inputs, so a null doesn't collapse the
-    // line to the floor and read as a real reading of zero.
+    /* The value cached at record time — see emaStep above. The composites need no
+       walk-back for a metric with no inputs any more: the filter holds its own last value
+       through a gap, so a null yields the held level directly, and stays null only before
+       there has ever been a reading (which draws as a gap rather than a fabricated zero). */
     const rawAt = (i, k) => {
       const h = history[i];
-      if (!composites) return clamp01(h.levels[k]);
-      for (let j = i; j >= 0; j--) {
-        const v = history[j].metrics && history[j].metrics[k];
-        if (v != null) return v;
-      }
-      return null;
+      const cached = composites ? h.sMetrics : h.sLevels;
+      return cached ? cached[k] : null;
     };
     const freshAt = (i, k) => {
       if (composites) return true;
@@ -982,15 +1019,10 @@ function createZenVisual(canvas) {
       return !(h.held && h.held[k]);
     };
 
-    // Smoothed once per frame per series, not per lookup — expandSoft below
-    // stretches the middle of the range to fill the frame, which multiplies
-    // sample-to-sample jitter by the same factor. Without this the trace is
-    // legible as noise rather than as a signal. ~9 samples at ~4Hz is a little
-    // over two seconds, which is shorter than any state worth seeing.
-    const series = [0, 1, 2, 3].map((k) => VizCore.smoothSeries(
-      history.map((_, i) => rawAt(i, k)),
-      composites ? FLOW_SMOOTH : FLOW_SMOOTH_SENSORS
-    ));
+    // Already smoothed, at record time, once. Reading it here rather than filtering per
+    // frame is the whole point: the array below is identical from one frame to the next
+    // except for the one sample that was added.
+    const series = [0, 1, 2, 3].map((k) => history.map((_, i) => rawAt(i, k)));
 
     // expand() is the difference between a trace and a flat line. Every value
     // here is adaptively normalised against the wearer's own baseline, so a real
@@ -1029,6 +1061,10 @@ function createZenVisual(canvas) {
       return flowTop + (flowBottom - flowTop) * (1 - u);
     };
 
+    if (flowDebugOn) {
+      for (let k = 0; k < 4; k++) flowLastY[k] = series[k].map((_, i) => yOf(i, k));
+    }
+
     // BUTT caps, not round: adjacent age groups deliberately share an endpoint,
     // and a round cap there gets drawn twice under additive blending — visible
     // as a string of beads along every line.
@@ -1065,7 +1101,7 @@ function createZenVisual(canvas) {
     if (history.some((h) => h.breath != null)) {
       const mid = H * 0.5;
       const amp = H * 0.15;
-      const breathSeries = VizCore.smoothSeries(history.map((h) => h.breath), 5);
+      const breathSeries = history.map((h) => (h.sBreath === undefined ? h.breath : h.sBreath));
       // The midpoint, so "above" and "below" are readable at a glance.
       c.strokeStyle = 'rgba(180,205,235,0.07)';
       c.lineWidth = 1;
@@ -2375,6 +2411,18 @@ function createZenVisual(canvas) {
         breathAmount: next.breathAmount !== undefined ? next.breathAmount : state.breathAmount,
         bands,
       };
+      /* SMOOTHED HERE, ONCE, FROM THE PAST ONLY — see emaStep. A stale level from a
+         channel that is not reading is fed in as null rather than as a number: it would
+         otherwise both flatten the trace and, worse, set that channel's own axis. */
+      const metricNow = VizCore.PULSE_METRICS.map((m) => (
+        state.metrics[m.key] == null ? null : clamp01(state.metrics[m.key])
+      ));
+      for (let k = 0; k < 4; k++) {
+        flowEma.levels[k] = emaStep(flowEma.levels[k],
+          bands[k].fresh === false ? null : clamp01(bands[k].level), emaAlpha(FLOW_SMOOTH_SENSORS));
+        flowEma.metrics[k] = emaStep(flowEma.metrics[k], metricNow[k], emaAlpha(FLOW_SMOOTH));
+      }
+      flowEma.breath = emaStep(flowEma.breath, state.breathAmount, emaAlpha(5));
       history.push({
         breath: state.breathAmount,
         levels: bands.map((b) => clamp01(b.level)),
@@ -2382,10 +2430,12 @@ function createZenVisual(canvas) {
         spikes: bands.map((b) => clamp01(b.spike)),
         // Composites too, so Flow can graph whichever series the data panel is
         // showing. Held values (not zeros) for metrics with no inputs.
-        metrics: VizCore.PULSE_METRICS.map((m) => (
-          state.metrics[m.key] == null ? null : clamp01(state.metrics[m.key])
-        )),
+        metrics: metricNow,
         calm: clamp01(state.calm),
+        // What Flow actually draws: the smoothed value as of this sample, frozen.
+        sLevels: flowEma.levels.slice(),
+        sMetrics: flowEma.metrics.slice(),
+        sBreath: state.breathAmount == null ? null : flowEma.breath,
       });
       if (history.length > FLOW_MAX) history.shift();
       /* Sample cadence, measured. Gaps below 20ms are two setState calls inside one tick
@@ -2454,6 +2504,11 @@ function createZenVisual(canvas) {
     /* The sub-sample scroll position and the measured sample cadence, so a test can check
        that Flow moves between samples without inferring it from drawn coordinates. */
     flowScroll() { return { phase: flowPhase(), intervalSec: pushIntervalSec }; },
+    /* The y actually drawn for every sample of a series, last frame, in canvas pixels —
+       the only way to measure whether the RECORDED PAST holds still, which is the thing
+       that was reported as drifting. Off unless asked for: this allocates per frame. */
+    flowDebug(on) { flowDebugOn = !!on; },
+    flowTrace(k) { return flowLastY[k] ? flowLastY[k].slice() : null; },
     // Exposed for the tests: what the key currently says, without reading pixels.
     // The drawing is smoke-tested; WHAT it claims is the part worth asserting.
     legendNow() {

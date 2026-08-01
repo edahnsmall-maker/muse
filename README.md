@@ -181,8 +181,8 @@ selected** — so if you pick Focus, the Eclipse void is tracking focus, not cal
 
 - **Sensors view** — the 4 raw electrodes individually (`TP9`/`AF7`/`AF8`/`TP10`),
   each showing whichever band currently dominates at that specific electrode
-  (`Alpha` / `Beta`), or `Noisy` if that channel's own signal is artifact-flagged
-  right now. TP9/TP10 sit near the jaw/ear and will say `Noisy` more often than the
+  (`Alpha` / `Beta`), or `Noisy` / `No contact` / `No signal` if that channel's own
+  signal cannot be trusted right now. TP9/TP10 sit near the jaw/ear and will say `Noisy` more often than the
   frontal pair — that's expected, not a bug.
 - **Composites view** — the interpretive scores (see the table below), each with its
   tier light, plus `Breath` (breaths/min once ~40s of PPG data exists, otherwise
@@ -880,9 +880,20 @@ reported alongside:
 - **Above 600µV — "No contact".** A floating input rails toward the ends of its ±1000µV
   range (Muse is 12-bit at 0.488µV/LSB). This is not noise in any useful sense, and no
   amount of sitting still will fix it: wet the spot behind the ear and reseat the band.
+- **Below 3µV — "No signal".** The other end, and it went undetected for a long time
+  because the amplitude test only had an upper bound. A flat line — zeros or a stuck DC
+  offset — is a connection fault rather than a fit problem: disconnect and reconnect the
+  headband. See the section on the sensor that reads 0 for what this cost.
 
 The figure only shows on a channel that is faulty. Four numbers to ignore for a whole
 sit is how a diagnostic becomes invisible.
+
+**A floating or flat channel also says what to do about it**, on hover, worded for its own
+position — wet the skin and reseat for the ear tips, wipe and push the band down for the
+frontal pair, reconnect for a flat line. Asked directly, of the two ear channels: *"any idea
+why tp 9 and 10 say disconnected?"* The app knew the answer and was keeping it in a source
+comment, where nobody sits reading it. Healthy channels carry no tooltip: a permanent one is
+a tooltip nobody reads.
 
 ### A dead electrode draws nothing
 
@@ -977,6 +988,66 @@ interval of elapsed time must move the trace by exactly one sample width, and a 
 feed must freeze rather than scroll off to the left. Before the fix the per-frame movement
 was zero.
 
+**And that was not the choppiness.** Reported again straight after: *"it's still choppy,
+not smooth"*, then precisely — *"by choppy i mean like a battery analog watch vs.
+automatic. tick tick"*. Measured, and the scroll was innocent: an idle frame moved the line
+by **0.002%** of the band, the frame right after a sample arrived moved it by **0.584%**. A
+290× step function, delivered four times a second. That is a ticking hand exactly.
+
+The real cause was **revision of already-drawn line**, from two independent mechanisms:
+
+1. **A centred smoothing window.** A centred window needs samples from both sides, and for
+   the newest points the later half does not exist yet — so the smoothed value of every
+   sample within half a window of the head kept being *rewritten* as its future arrived.
+   Measured on a steady signal with a converged axis: samples **0–8 back from the head
+   moved 2.8–3.3% of the band** on each new sample, while everything 10 or more back moved
+   0.01%. Half a smoothing window of finished line, jumping every 250ms.
+2. **The axis widening instantly** (see the next section).
+
+Flow now smooths **causally and caches the result per sample at the moment it is
+recorded** — a one-pole filter, incremental, responding to the newest sample immediately
+instead of only once a window fills. Nothing already drawn can move again. The comment
+defending the centred window had read *"an EMA lags, and a lagging trace next to a live
+head that is not lagging looks wrong. A centred window has no phase error."* Both sentences
+are true and the conclusion was still wrong: zero phase error is worth less than an
+immutable past. The lag is real — about **2.7 seconds** for the sensor trace — and is
+invisible on a 60-second history plot in a way that the ticking was not.
+
+`smoothSeries` is gone from `viz-core.js`, with that reversal written where it used to live
+so the phase argument doesn't win again. The property that now matters is measured
+directly: `test-visual-smoke.js` follows **one recorded sample** — not one screen position,
+which slides past different samples and measures the signal's own slope — and holds its
+movement under 0.05% of the band per new sample. It also checks that the push frame is no
+longer special, and that a **real** excursion still rescales the axis, because a frozen
+axis is the opposite bug.
+
+### The sensor that reads 0: a dead channel was reported as a measurement
+
+*"it looks like the history lines still drift, esp when the sensor reads 0 and everything
+pushes up"* — the *"esp when"* was the clue, and it led to a defect well upstream of the
+drawing.
+
+`DSP.isArtifact` only ever tested an **upper** bound: peak-to-peak above 150µV is muscle,
+above 600µV is a floating electrode. There was no lower bound. So a channel delivering a
+**flat line** — zeros, or a stuck DC offset, a stream that arrives carrying nothing — had a
+peak-to-peak of 0, was not greater than 150, and passed as **clean**. Its band powers were
+then all zero, `alpha / (alpha + beta + 1e-9)` evaluated to exactly **0**, and the readout
+labelled it "Beta" with a level of zero. A dead channel reported as a real, confident,
+beta-dominant reading of zero.
+
+That fabricated floor is what reached Flow's axis. Measured: a channel reading zero for
+four seconds moved the whole recorded trace **43% of the band**, and the widening was
+instant, so 6.14% of it landed in a single frame. `DSP.isFlat` now marks it, the readout
+says **"No signal"** with a note that this is a connection fault rather than a fit problem,
+and it is excluded from the axis. The same excursion now moves the past **0.11%**.
+
+The 3µV floor has room on both sides and that is the point: the Muse quantises at
+0.488µV/LSB so quantisation alone spans about 1µV peak-to-peak, and resting EEG on an
+electrode touching skin is 10–50µV over a one-second window. Nothing real lives between
+them, so this fires only on a channel that is genuinely silent. `test-dsp.js` pins both
+ends — one LSB of dither is not a reading, 6µV of implausibly quiet signal still is,
+because the cost of a false "no signal" is throwing away a working channel.
+
 Two things that test got wrong first, both worth knowing:
 
 - It averaged the x of every line vertex, which is not usable — `settleRange` narrows the
@@ -1018,6 +1089,19 @@ poor scale. Fast attack, slow release, borrowed from audio gain control: the ran
 time constant. `test-viz.js` measures the thing that was actually complained about — how
 far a fixed recorded sample moves between frames while the data is steady but its
 percentiles jitter — and holds it under 2% of the band.
+
+**Widening is no longer instant, and that is a reversal.** The old assertion read *"a range
+must widen at once, never clip"*, on the argument that flattening a real excursion against
+the edge of the band is worse than nudging the axis. What that missed is that the axis
+applies to the *whole visible history*, so widening it in one frame moves every recorded
+sample in that frame — measured at **6.14% of the band in a single frame** on a channel
+dipping to zero. Widening now eases too, about 17× faster than narrowing, with the rate
+picked against two stated requirements rather than tuned until it looked right: no single
+frame may move a recorded sample more than ~1% of the band (which caps the rate at 1.0/s
+for the largest plausible jump), and a genuine excursion must be fully on the axis within a
+few seconds (95% in 3s, 98% in 4s at that rate). Until it gets there `inRange` clamps, so
+the excursion draws pressed against the edge. That is local and obviously transient. The
+entire recorded past sliding under it is neither.
 
 ### Which way is the in-breath
 

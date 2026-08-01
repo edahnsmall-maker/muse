@@ -1890,15 +1890,24 @@ function computeChannelLabels() {
      * question about the 150µV threshold, and one sitting at 900µV is not.
      */
     const ptp = DSP.peakToPeak(window);
+    /* SILENT IS ALSO BROKEN — see DSP.isFlat. A channel delivering flat zeros used to be
+     * labelled "Beta" with a level of 0, because the only amplitude test was an upper
+     * bound. Reported through its consequence: the Flow axis being dragged down by a
+     * fabricated floor. `artifact: true` so everything downstream that already knows to
+     * exclude an untrustworthy channel keeps working; the label says which fault it is. */
+    if (DSP.isFlat(window)) {
+      return { name, label: 'No signal', pct: null, artifact: true, ptp,
+        floating: false, flat: true };
+    }
     if (DSP.isArtifact(window)) {
       const floating = ptp > DSP.ARTIFACT_PTP_UV * 4;
       return { name, label: floating ? 'No contact' : 'Noisy', pct: null,
-        artifact: true, ptp, floating };
+        artifact: true, ptp, floating, flat: false };
     }
     const powers = DSP.bandPowers(window, DSP.EEG_FREQUENCY);
     const pct = powers.alpha / (powers.alpha + powers.beta + 1e-9);
     return { name, label: powers.alpha > powers.beta ? 'Alpha' : 'Beta', pct,
-      artifact: false, ptp, floating: false };
+      artifact: false, ptp, floating: false, flat: false };
   });
 }
 
@@ -3926,7 +3935,7 @@ setInterval(() => {
 
   let topRows;
   if (viewMode === 'sensors') {
-    topRows = channels.map(({ name, label, pct, artifact, ptp, floating }, i) => {
+    topRows = channels.map(({ name, label, pct, artifact, ptp, floating, flat }, i) => {
       const c = VizCore.CHANNEL_COLORS[i];
       // The µV figure only when something is wrong: it is a diagnostic, and a healthy
       // channel showing one would be four numbers to ignore for the whole sit.
@@ -3939,7 +3948,11 @@ setInterval(() => {
        * because it genuinely differs: the ear tips dry out and need wetting, while the
        * frontal pair sit on hair or slide up the forehead.
        */
-      const fix = !floating ? null
+      const fix = flat
+        ? `${name} is delivering a flat line — the stream is arriving but carries no signal`
+          + ' at all, which is a connection fault rather than a fit problem. Disconnect the'
+          + ' headband and reconnect it; if it persists, restart the Muse.'
+        : !floating ? null
         : (name === 'TP9' || name === 'TP10')
           ? `${name} is floating, not noisy: the electrode is not touching skin, so the band`
             + ' is reading its own amplifier rather than you. Wet the skin behind that ear'

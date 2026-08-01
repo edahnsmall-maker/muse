@@ -398,38 +398,13 @@ const VizCore = require('./public/viz-core.js');
   console.log('\u2713 expandSoft saturates smoothly instead of clipping flat');
 }
 
-{
-  // smoothSeries: expandSoft multiplies jitter by the same factor it multiplies
-  // signal, so "the line is flat" was fixed straight into "the line is too
-  // jumpy". Smoothing in TIME is the answer, and it must not lag.
-  const f = VizCore.smoothSeries;
-  assert.deepStrictEqual(f([], 5), [], 'empty input is empty output');
-  assert.deepStrictEqual(f([1, 2, 3], 1), [1, 2, 3], 'a window of 1 is a no-op');
-
-  // Alternating jitter on a constant signal must flatten out.
-  const jitter = Array.from({ length: 60 }, (_, i) => (i % 2 ? 0.8 : 0.2));
-  const sm = f(jitter, 9);
-  const mid = sm.slice(10, 50);
-  assert.ok(Math.max(...mid) - Math.min(...mid) < 0.1,
-    `alternating jitter should flatten (span ${(Math.max(...mid) - Math.min(...mid)).toFixed(3)})`);
-
-  // A real ramp must survive, and must NOT be shifted — a centred window has no
-  // phase error, which matters because a lagging trace beside a non-lagging live
-  // head looks wrong.
-  const ramp = Array.from({ length: 100 }, (_, i) => i / 99);
-  const sr = f(ramp, 9);
-  assert.ok(Math.abs(sr[50] - ramp[50]) < 0.01, `a centred window must not shift a ramp (${sr[50]} vs ${ramp[50]})`);
-  assert.ok(sr[80] > sr[50] && sr[50] > sr[20], 'the ramp must still be monotonic');
-
-  // Nulls: neighbours are used where they exist, and a value with no usable
-  // neighbours at all stays null rather than becoming a fabricated number.
-  const withNulls = [null, null, 0.5, null, 0.5, null, null];
-  const sn = f(withNulls, 3);
-  assert.strictEqual(sn[0], null, 'a null with no usable neighbours stays null');
-  assert.ok(sn[3] != null && Math.abs(sn[3] - 0.5) < 1e-9, 'a null between two readings is filled from them');
-  assert.ok(f([null, null, null], 5).every((v) => v === null), 'all-null input stays all-null');
-  console.log('\u2713 smoothSeries removes jitter, keeps the signal, does not lag, and respects nulls');
-}
+/* smoothSeries IS GONE — see the note where it used to live in viz-core.js. Its test
+ * asserted, correctly, that a centred window "does not lag". That property was the reason
+ * it was chosen and the reason it had to go: a centred window revises the smoothed value
+ * of every sample near the head as later samples arrive, which redraws half a window of
+ * already-drawn line four times a second. The replacement is causal and cached per sample
+ * in visual.js, and the property that now matters — the recorded past never moves — is
+ * measured in test-visual-smoke.js instead. */
 
 {
   // legendEntries must name what the renderer is actually drawing, in the same
@@ -638,10 +613,35 @@ const VizCore = require('./public/viz-core.js');
   assert.deepStrictEqual(VizCore.settleRange(null, r(0.2, 0.5), dt), r(0.2, 0.5));
   assert.strictEqual(VizCore.settleRange(null, null, dt), null);
 
-  // WIDENING IS INSTANT. A sample outside the range would be clipped, and silently
-  // flattening a real excursion against the edge is worse than the axis nudging.
-  const wide = VizCore.settleRange(r(0.2, 0.5), r(0.1, 0.9), dt);
-  assert.deepStrictEqual(wide, r(0.1, 0.9), 'a range must widen at once, never clip');
+  /* WIDENING IS FAST BUT NOT INSTANT — a reversal, and the old assertion here read
+   * "a range must widen at once, never clip". The argument was that flattening a real
+   * excursion against the edge of the band is worse than nudging the axis. What that
+   * missed is that the axis applies to the WHOLE visible history, so widening it in one
+   * frame moves every recorded sample in that frame. Measured on a channel reading zero
+   * for a few seconds: 6.14% of the band in a single frame, settling 36% away.
+   * A clipped excursion is local and obviously transient. A sliding past is neither. */
+  let w = r(0.2, 0.5);
+  const wideOne = VizCore.settleRange(w, r(0.1, 0.9), dt);
+  assert.ok(wideOne.min < w.min && wideOne.max > w.max, 'it must widen in the right direction');
+  assert.ok(w.min - wideOne.min < 0.01 && wideOne.max - w.max < 0.01,
+    `a single frame must not widen the axis visibly (moved ${(w.min - wideOne.min).toFixed(4)})`);
+  // The per-frame cap, stated as the requirement it is: for the largest plausible jump,
+  // one frame must move a recorded sample less than 1% of the band.
+  const jump = VizCore.settleRange(r(0.3, 0.7), r(0.0, 1.0), dt);
+  assert.ok(jump.min - 0.3 > -0.01 && jump.max - 0.7 < 0.01,
+    `one frame of a 60%-of-band widening must move under 1% (moved ${(0.3 - jump.min).toFixed(4)})`);
+
+  // But it must get there quickly — a genuine excursion clipped for more than a few
+  // seconds stops reading as transient and starts reading as a wrong scale.
+  for (let i = 0; i < 60 * 4; i++) w = VizCore.settleRange(w, r(0.1, 0.9), dt);
+  assert.ok(Math.abs(w.min - 0.1) < 0.02 && Math.abs(w.max - 0.9) < 0.02,
+    `four seconds must be enough to take on a real excursion (got ${w.min.toFixed(3)}..${w.max.toFixed(3)})`);
+  // And widening must still be much faster than narrowing, or a spike sets the scale for
+  // the rest of the sit.
+  assert.ok((w.min - VizCore.settleRange(w, r(0.1, 0.9), dt).min) >= 0
+    && Math.abs(VizCore.settleRange(r(0.2, 0.5), r(0.1, 0.9), dt).min - 0.2)
+       > Math.abs(VizCore.settleRange(r(0.1, 0.9), r(0.2, 0.5), dt).min - 0.1),
+    'widening must be faster than narrowing');
 
   // NARROWING IS SLOW. One frame must barely move it.
   let cur = r(0.1, 0.9);
@@ -673,7 +673,7 @@ const VizCore = require('./public/viz-core.js');
   assert.ok(worst < 0.02,
     `a recorded sample must not jump between frames while the data is steady —`
     + ` worst frame-to-frame move was ${(worst * 100).toFixed(1)}% of the band`);
-  console.log(`✓ the axis holds still: widens instantly, narrows slowly, and a recorded`
+  console.log(`✓ the axis holds still: widens fast but not instantly, narrows slowly, and a recorded`
     + ` sample moves at most ${(worst * 100).toFixed(2)}% of the band between frames`);
 }
 

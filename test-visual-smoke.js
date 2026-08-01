@@ -450,4 +450,111 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
     + ` and freezes when the feed stalls`);
 }
 
+/* ---- The recorded past must not move ---------------------------------------
+ *
+ * Reported after the sub-sample scroll shipped: "it's still choppy, not smooth. and it
+ * looks like the history lines still drift, esp when the sensor reads 0 and everything
+ * pushes up" — and then, precisely: "by choppy i mean like a battery analog watch vs.
+ * automatic. tick tick".
+ *
+ * That is not a scrolling problem, it is a REVISION problem. Two mechanisms were rewriting
+ * already-drawn line, both only on the frame a sample arrived:
+ *
+ *   1. A centred smoothing window, whose value for any sample within half a window of the
+ *      head kept changing as later samples arrived. Measured: samples 0-8 back moved
+ *      2.8-3.3% of the band per new sample, samples 10+ back moved 0.01%.
+ *   2. The axis widening instantly. Measured on a channel reading zero: 6.14% of the band
+ *      in one frame, settling 36% of the band from where it started.
+ *
+ * So this follows ONE recorded sample — not a screen position, which slides past different
+ * samples and measures the signal's own slope instead — and asserts it holds still.
+ */
+{
+  const canvas = makeCanvas(1280, 720);
+  const v = sandbox.createZenVisual(canvas);
+  while (v.currentMode().key !== 'flow') v.cycleMode();
+  v.flowDebug(true);
+  const BAND = canvas.height * (0.76 - 0.18);   // flowBottom - flowTop, in canvas px
+  const frame = () => { nowMs += 16; const cb = rafCb; rafCb = null; cb(nowMs); };
+  const base = (i, k) => 0.42 + 0.06 * Math.sin(i / 9 + k) + 0.004 * Math.sin(i * 2.3 + k);
+  // 250ms apart, three frames per sample, exactly as the app drives it.
+  const push = (i, ch0) => {
+    nowMs += 250 - 16 * 3;
+    const bands = [ch0 === undefined ? { level: base(i, 0), fresh: true } : ch0,
+      { level: base(i, 1), fresh: true }, { level: base(i, 2), fresh: true },
+      { level: base(i, 3), fresh: true }].map((b) => ({ level: b.level, spike: 0, fresh: b.fresh }));
+    v.setState({ calm: 0.5, noise: 0.1, activity: 0.5, bands });
+    for (let f = 0; f < 3; f++) frame();
+  };
+  // Fill to capacity and let the axis converge, so what follows measures revision only.
+  for (let i = 0; i < 800; i++) push(i);
+
+  /* Follow the sample currently at `idx`. History is at capacity, so each push shifts it
+     down one index — that is what makes this the same sample rather than the same place. */
+  const follow = (pushes, ch0of) => {
+    let idx = 180, prev = v.flowTrace(0)[idx], first = prev, worst = 0;
+    for (let p = 0; p < pushes; p++) {
+      push(900 + p, ch0of ? ch0of(p) : undefined);
+      idx -= 1;
+      const y = v.flowTrace(0)[idx];
+      if (y != null && prev != null) worst = Math.max(worst, Math.abs(y - prev));
+      prev = y;
+    }
+    return { worst: 100 * worst / BAND, net: 100 * Math.abs(prev - first) / BAND };
+  };
+
+  const steady = follow(40);
+  assert.ok(steady.worst < 0.05,
+    `on a steady signal a recorded sample must not move: worst ${steady.worst.toFixed(3)}% of the band`
+    + ' (the centred smoother moved it 2.8-3.3%)');
+  assert.ok(steady.net < 0.5, `and must not drift: net ${steady.net.toFixed(2)}% of the band`);
+
+  /* A CHANNEL THAT IS NOT READING MUST NOT SET ITS OWN AXIS. This is what the app sends
+     after DSP.isFlat: the stale level is still there, with fresh:false. If that zero
+     reaches the range, the whole trace lifts — measured at 43% of the band before. */
+  const dead = follow(60, (p) => (p < 16 ? { level: 0, fresh: false } : undefined));
+  assert.ok(dead.net < 1,
+    `a channel dropping out must not move the recorded past: net ${dead.net.toFixed(2)}% of the band`);
+  assert.ok(dead.worst < 0.05,
+    `nor jump it: worst ${dead.worst.toFixed(3)}% of the band`);
+
+  /* But a REAL excursion must still take the axis with it, eased rather than instantly.
+     If this ever reads zero the axis has stopped adapting, which is the opposite bug. */
+  const spike = follow(40, (p) => (p < 2 ? { level: 1.0, fresh: true } : undefined));
+  assert.ok(spike.net > 0.2,
+    `a real excursion must still rescale the axis (net ${spike.net.toFixed(2)}% of the band)`);
+  assert.ok(spike.worst < 1,
+    `but must ease into it, not jump (worst single push ${spike.worst.toFixed(2)}% of the band)`);
+
+  /* AND THE TICK ITSELF: movement must no longer be concentrated on the frame a sample
+     lands. That ratio was 0.584% against 0.002% — a 290x step function, which is what a
+     ticking hand is. */
+  let onPush = 0, onIdle = 0, nPush = 0, nIdle = 0;
+  {
+    let idx = 180, prev = v.flowTrace(0)[idx];
+    for (let p = 0; p < 40; p++) {
+      nowMs += 250 - 16 * 3;
+      v.setState({ calm: 0.5, noise: 0.1, activity: 0.5,
+        bands: [0, 1, 2, 3].map((k) => ({ level: base(1200 + p, k), spike: 0, fresh: true })) });
+      idx -= 1;
+      frame();
+      { const y = v.flowTrace(0)[idx]; if (y != null && prev != null) { onPush += Math.abs(y - prev); nPush++; } prev = y; }
+      for (let f = 0; f < 2; f++) {
+        frame();
+        const y = v.flowTrace(0)[idx];
+        if (y != null && prev != null) { onIdle += Math.abs(y - prev); nIdle++; }
+        prev = y;
+      }
+    }
+  }
+  const pushPct = 100 * onPush / nPush / BAND, idlePct = 100 * onIdle / nIdle / BAND;
+  assert.ok(pushPct < 0.1,
+    `the frame after a sample arrives must not move the past: ${pushPct.toFixed(4)}% of the band`);
+  v.flowDebug(false);
+  assert.deepStrictEqual(badNumbers, [], `the frozen-past path produced bad numbers:\n  ${badNumbers.join('\n  ')}`);
+  console.log(`✓ the recorded past holds still: steady ${steady.worst.toFixed(3)}%/sample,`
+    + ` dropout net ${dead.net.toFixed(2)}%, push frame ${pushPct.toFixed(4)}% vs idle ${idlePct.toFixed(4)}%`
+    + ` of the band, while a real excursion still rescales (${spike.net.toFixed(2)}%)`);
+}
+
 console.log('\nAll visual smoke tests passed.');

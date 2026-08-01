@@ -172,12 +172,39 @@
    * `rate` is per second and needs dt, so time is passed in rather than read: same rule
    * as everything else in this file.
    */
-  function settleRange(current, target, dtSec, { rate = 0.06 } = {}) {
+  /*
+   * WIDENING IS FAST BUT NOT INSTANT, and that is a reversal with a measurement behind it.
+   *
+   * It used to be instant, on the argument that clipping a real excursion against the edge
+   * of the band is worse than nudging the axis. That argument is not wrong, but it costs
+   * more than it saves: the same range is applied to the WHOLE visible history, so an
+   * instant widening moves every recorded sample in the same frame. Measured on a channel
+   * dipping to zero for a few seconds: a single frame moved the drawn line by 6.14% of the
+   * band, and the trace settled 36% of the band away from where it had been. Reported as
+   * "it looks like the history lines still drift, esp when the sensor reads 0 and
+   * everything pushes up".
+   *
+   * So widening eases too, about seventeen times faster than narrowing. The rate was
+   * picked against two stated requirements rather than tuned until it looked right:
+   *
+   *   1. No single frame may move a recorded sample by more than ~1% of the band. At 60fps
+   *      the per-frame fraction is widenRate/60, so for the largest plausible jump — a
+   *      target 60% of the band away — widenRate must be at most 1.0.
+   *   2. A genuine excursion must be fully on the axis within a few seconds, or it stops
+   *      reading as briefly clipped and starts reading as a wrong scale. At 1.0 the axis
+   *      is 95% of the way there in 3s and 98% in 4s.
+   *
+   * Until it gets there inRange clamps, so the excursion is drawn pressed against the edge
+   * of the band. That is local and obviously transient. The entire recorded past sliding
+   * under it is neither.
+   */
+  function settleRange(current, target, dtSec, { rate = 0.06, widenRate = 1.0 } = {}) {
     if (!target) return current || null;
     if (!current) return { min: target.min, max: target.max, span: target.span };
-    const k = Math.min(1, Math.max(0, (rate * Math.max(0, dtSec)) / 1));
-    // Widening is instant in whichever direction needs it; narrowing eases.
-    const ease = (from, to, widening) => (widening ? to : from + (to - from) * k);
+    const dt = Math.max(0, dtSec);
+    const kNarrow = Math.min(1, Math.max(0, rate * dt));
+    const kWiden = Math.min(1, Math.max(0, widenRate * dt));
+    const ease = (from, to, widening) => from + (to - from) * (widening ? kWiden : kNarrow);
     const min = ease(current.min, target.min, target.min < current.min);
     const max = ease(current.max, target.max, target.max > current.max);
     return { min, max, span: max - min };
@@ -389,36 +416,31 @@
     return 0.5 + 0.5 * Math.tanh((t - 0.5) * knee);
   }
 
-  // Centred moving average over a time series, null-safe and NON-wrapping.
-  //
-  // Needed because expandSoft() amplifies whatever jitter is already there:
-  // stretching the middle third of the range to fill the frame multiplies
-  // sample-to-sample noise by the same factor. Fixing "the line is flat" that
-  // way directly produced "the line is too jumpy". The answer is not less
-  // expansion — it is smoothing in TIME, which removes the jitter and keeps the
-  // real excursions.
-  //
-  // Centred rather than a running EMA on purpose: an EMA lags, and a lagging
-  // trace next to a live head that is not lagging looks wrong. A centred window
-  // has no phase error. Ends use whatever part of the window exists.
-  function smoothSeries(values, window = 5) {
-    if (!Array.isArray(values)) return [];
-    const half = Math.floor(window / 2);
-    if (half < 1) return values.slice();
-    const out = new Array(values.length);
-    for (let i = 0; i < values.length; i++) {
-      let sum = 0, n = 0;
-      for (let k = -half; k <= half; k++) {
-        const v = values[i + k];
-        if (v == null || Number.isNaN(v)) continue;
-        sum += v; n++;
-      }
-      // A run with no usable neighbours at all stays null rather than becoming
-      // a fabricated number.
-      out[i] = n ? sum / n : (values[i] == null ? null : values[i]);
-    }
-    return out;
-  }
+  /*
+   * THERE IS NO smoothSeries HERE ANY MORE, AND THE REASON IT WENT IS THE INTERESTING PART.
+   *
+   * It was a centred moving average, and the comment defending that choice read: "Centred
+   * rather than a running EMA on purpose: an EMA lags, and a lagging trace next to a live
+   * head that is not lagging looks wrong. A centred window has no phase error."
+   *
+   * Both sentences are true and the conclusion was still wrong. A centred window needs
+   * samples from both sides of each point, and for the newest points the later half does
+   * not exist yet — so every time a sample arrived, the smoothed value of every sample
+   * within half a window of the head was REVISED. Measured on a steady signal with a
+   * converged axis: samples 0-8 back from the head moved 2.8-3.3% of the band on each new
+   * sample, while everything 10 or more back moved 0.01%. Redrawn four times a second,
+   * that is a ticking second hand. Reported as exactly that: "like a battery analog watch
+   * vs. automatic. tick tick".
+   *
+   * Zero phase error is worth less than an immutable past. Flow now smooths causally with
+   * a one-pole filter and caches the result on each history sample at the moment it is
+   * recorded (see emaStep in visual.js), so nothing already drawn can move. The lag that
+   * this comment was written to avoid is real — about 2.7s for the sensor trace — and is
+   * invisible on a 60-second history plot in a way that the ticking was not.
+   *
+   * Do not reintroduce a centred smoother for a live trace on the strength of the phase
+   * argument alone. It is the same trap.
+   */
 
   // ---- Smooth deterministic wobble ---------------------------------------
   // Sum of a few sines — no RNG, no per-frame state, and bounded, so it
@@ -717,7 +739,7 @@
   return {
     CHANNEL_COLORS, CHANNEL_LABELS, legendEntries, LEGENDS, legendFor, IRIS_MOOD,
     CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, visibleModes, autoRange, inRange, settleRange, noiseLevel, EventDetector, BloomField, wobble, expand, expandSoft, smoothSeries,
+    MODES, nextMode, visibleModes, autoRange, inRange, settleRange, noiseLevel, EventDetector, BloomField, wobble, expand, expandSoft,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,
   };

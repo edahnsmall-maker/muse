@@ -400,6 +400,17 @@ suspect was innocent:
   changed the range. A safeguard that never fires is worse than none, because it reads
   as protection.
 
+**Postscript, same day.** The smoothing was not enough and the diagnosis above was
+incomplete: reported again as *"like a battery analog watch vs. automatic. tick tick"*.
+Measuring the frames rather than the samples found two mechanisms that were **rewriting
+already-drawn line**, both only on the frame a sample arrived — a centred smoothing window
+(samples 0–8 back from the head moved 2.8–3.3% of the band per new sample) and the axis
+widening instantly (6.14% in one frame). Fixed by smoothing causally and caching per
+sample, and by easing the widening. And the *"esp when the sensor reads 0"* half turned out
+to be a defect upstream of the drawing entirely: the amplitude test had no lower bound, so
+a channel delivering a flat line passed as clean and reported a level of exactly zero. See
+the README sections. A dropout now moves the recorded past 0.11% of the band instead of 43%.
+
 **What is still not handled:** a channel whose *genuine* range is smaller than its own
 noise. There the smoothing helps but cannot win — measured residual jitter 7.6% of the
 band at 9 samples of smoothing, 3.5% at 21. The honest fix is not more smoothing but

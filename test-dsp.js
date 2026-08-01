@@ -115,6 +115,41 @@ function naiveDFT(real) {
   console.log('✓ artifact detection distinguishes clean signal from a blink/jaw-sized transient');
 }
 
+/* 8b) A CHANNEL CAN FAIL BY BEING TOO QUIET, and isArtifact cannot see that: it only ever
+ *     tested the upper bound. A channel delivering flat zeros has a peak-to-peak of 0,
+ *     passed as clean, and then alpha/(alpha+beta+1e-9) evaluated to exactly 0 — so a dead
+ *     channel was reported as a real, beta-dominant reading of zero, and that fabricated
+ *     floor dragged the Flow axis down and lifted the whole recorded trace with it.
+ *     Reported as "the history lines still drift, esp when the sensor reads 0 and
+ *     everything pushes up".
+ */
+{
+  const n = 256;
+  const dead = new Array(n).fill(0);
+  assert.strictEqual(DSP.isArtifact(dead), false,
+    'precondition: the artifact test genuinely cannot see a dead channel');
+  assert.strictEqual(DSP.isFlat(dead), true, 'a channel of flat zeros is not reading');
+  // A stuck DC offset is just as dead as zeros, and just as invisible to a p-p threshold
+  // measured about the mean.
+  assert.strictEqual(DSP.isFlat(new Array(n).fill(-412.5)), true,
+    'a channel stuck at a constant offset is also not reading');
+  // Quantisation alone must not trip it: the Muse steps at 0.488µV/LSB, so a real but very
+  // quiet channel dithers by about 1µV peak-to-peak.
+  const dither = Array.from({ length: n }, (_, i) => (i % 2 ? 0.488 : 0));
+  assert.strictEqual(DSP.isFlat(dither), true,
+    'one LSB of dither is not a reading either — it is below the 3µV floor');
+  // And real EEG must never be called flat. 30µV p-p is resting; 6µV is implausibly quiet
+  // and must still pass, because the cost of a false "no signal" is a channel thrown away.
+  const quiet = Array.from({ length: n }, (_, i) => 3 * Math.sin((2 * Math.PI * 10 * i) / 256));
+  assert.strictEqual(DSP.isFlat(quiet), false,
+    `6µV p-p is quiet but real and must not be discarded (p-p ${DSP.peakToPeak(quiet).toFixed(1)}µV)`);
+  const clean2 = Array.from({ length: n }, (_, i) => 15 * Math.sin((2 * Math.PI * 10 * i) / 256));
+  assert.strictEqual(DSP.isFlat(clean2), false, 'and 30µV p-p certainly must not');
+  assert.strictEqual(DSP.isFlat([]), true, 'no samples at all is not a reading');
+  console.log(`✓ a silent channel is detected as well as a noisy one`
+    + ` (floor ${DSP.FLAT_PTP_UV}µV: 1µV dither out, 6µV signal in)`);
+}
+
 // 9) AdaptiveNormalizer freezes exactly (no drift) when fed a null value, so
 //    an artifact-flagged window can be skipped without disturbing the display.
 {
