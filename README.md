@@ -596,10 +596,10 @@ sit afterwards.
 |---|---|---|
 | **Training: on/off** | `⇧T` | the tap panel, and starts recording |
 | **Notes** | `N` | text notes, timestamped or not, with a deletable history |
-| **Hold to speak** | hold `V` or `space` | a voice note, transcribed if the browser can |
+| **Hold to speak** | hold `space` | a voice note, transcribed if the browser can |
 | **Mark** | `M` | freeze the timestamp and open the marker prompt |
 | **Summarize session** | — | generate the report on demand, mid-sit or after |
-| next / previous visual | `]` `[` | step through the seven visuals |
+| next / previous visual | `V`, or `]` `[` | step through the visuals (`[` goes back) |
 | — | `F` | fullscreen (no pill — it is a one-off at the start of a sit) |
 | — | `Esc` | close the summary |
 

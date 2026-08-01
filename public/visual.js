@@ -891,6 +891,18 @@ function createZenVisual(canvas) {
   const FLOW_NOW_X = 0.74;
   const FLOW_GROUPS = 26;   // age bands; enough that the ramp reads as smooth
   const FLOW_SMOOTH = 9;    // samples in the centred smoothing window (~2.2s)
+  /*
+   * The SENSOR series is smoothed harder than the composites, and that asymmetry is the
+   * point rather than an inconsistency.
+   *
+   * A composite arrives adaptively normalised — it has already been through a smoother and
+   * a running baseline. The per-channel value has not: it is a raw alpha/(alpha+beta) ratio
+   * recomputed from a one-second window four times a second, so its sample-to-sample noise
+   * is a large fraction of its genuine range. Measured after rescaling, one noisy sample
+   * occupied 34% of the band for the sensors against 5% for the composites. ~5s of
+   * smoothing is still shorter than any state worth seeing and takes most of that out.
+   */
+  const FLOW_SMOOTH_SENSORS = 21;   // ~5.2s at 4Hz
 
   function renderFlow(c, W, H) {
     const bg = c.createLinearGradient(0, 0, 0, H);
@@ -932,7 +944,8 @@ function createZenVisual(canvas) {
     // legible as noise rather than as a signal. ~9 samples at ~4Hz is a little
     // over two seconds, which is shorter than any state worth seeing.
     const series = [0, 1, 2, 3].map((k) => VizCore.smoothSeries(
-      history.map((_, i) => rawAt(i, k)), FLOW_SMOOTH
+      history.map((_, i) => rawAt(i, k)),
+      composites ? FLOW_SMOOTH : FLOW_SMOOTH_SENSORS
     ));
 
     // expand() is the difference between a trace and a flat line. Every value
@@ -2348,6 +2361,11 @@ function createZenVisual(canvas) {
       return { rings: irisRing, maxRings: IRIS_MAX_RINGS, depositSec: irisDepositSec(),
         full: irisRing >= IRIS_MAX_RINGS };
     },
+    /* The settled vertical range per Flow series, for measuring axis stability without
+       reading pixels. A recorded sample's position is `1 - inRange(value, range)`, so a
+       test can watch a FIXED value's drawn position move between frames — which is what
+       "the lines are jumping" actually is. */
+    flowRange(k) { return flowRanges[k] ? Object.assign({}, flowRanges[k]) : null; },
     // Exposed for the tests: what the key currently says, without reading pixels.
     // The drawing is smoke-tested; WHAT it claims is the part worth asserting.
     legendNow() {

@@ -348,8 +348,28 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       return texts.filter((t) => /µV/.test(t)).length;
     });
     assert.ok(shown <= 2, `only faulty channels show a µV figure (got ${shown} rows)`);
+
+    /* AND IT MUST SAY WHAT TO DO. Asked, of the two ear channels: "any idea why tp 9 and
+     * 10 say disconnected?" — the app knew (floating, not noisy) and kept the answer in a
+     * source comment. The advice hangs off the row as a title, only when floating, and
+     * only names the fix that applies to that position. */
+    const advice = await page.evaluate(async () => {
+      await new Promise((r) => setTimeout(r, 400));    // one readout tick
+      return Array.from(document.querySelectorAll('#readoutRows .rRow')).slice(0, 4)
+        .map((e) => ({ label: e.querySelector('.rLabel').textContent,
+          title: e.getAttribute('title') || '' }));
+    });
+    const tp9 = advice.find((r) => r.label === 'TP9');
+    const af8 = advice.find((r) => r.label === 'AF8');
+    assert.ok(tp9, `the sensor rows must be on screen to carry advice (got ${advice.map((r) => r.label).join(', ')})`);
+    assert.match(tp9.title, /floating, not noisy/,
+      'a floating channel must explain that it is not merely noisy');
+    assert.match(tp9.title, /behind that ear/,
+      `an ear channel must name the ear fix, not the forehead one (got "${tp9.title}")`);
+    assert.strictEqual(af8 ? af8.title : '', '',
+      'a healthy channel must carry no advice — a permanent tooltip is a tooltip nobody reads');
     console.log(`✓ a railing electrode reads "No contact" and a noisy one reports its`
-      + ` amplitude (${out[0].ptp}µV vs ${out[1].ptp}µV)`);
+      + ` amplitude (${out[0].ptp}µV vs ${out[1].ptp}µV), and says how to fix it`);
   }
 
   // 7b) A DEAD ELECTRODE MUST DRAW NOTHING, not a flat line at mid-range.
@@ -2281,44 +2301,73 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ the bar is 3 labelled groups: ${groups.map((g) => `${g.label} (${g.pills.length})`).join(', ')}`);
   }
 
-  // 27b) V IS THE VOICE NOTE AND NOTHING ELSE.
-  //      V was bound twice inside one keydown handler: to visual.cycleMode and then to
-  //      startVoiceNote. Both ran, and only the voice branch guarded `e.repeat` — so
+  // 27b) V IS THE VISUAL KEY AND NOTHING ELSE; SPACE IS THE MICROPHONE AND NOTHING ELSE.
+  //      V was once bound twice inside one keydown handler: to visual.cycleMode and then
+  //      to startVoiceNote. Both ran, and only the voice branch guarded `e.repeat` — so
   //      holding V to speak walked through every visualisation, one per key-repeat.
-  //      Ordering the branches cannot fix that; the collision itself had to go.
+  //      Ordering the branches cannot fix that; the collision itself had to go, and V has
+  //      since been asked back for the visuals. So this asserts the separation in BOTH
+  //      directions: V must never open the microphone, and space must never move the
+  //      visual. Either one alone would let the collision come back from the other side.
   {
     const out = await page.evaluate(async () => {
       const modeOf = () => visual.currentMode().key;
       const before = modeOf();
-      // Hold V the way the browser reports a held key: one event, then repeats.
+      // Hold V the way the browser reports a held key: one event, then repeats. One tap
+      // advances one visual; the repeats are what used to make it stampede.
       document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', bubbles: true }));
+      const afterOneV = modeOf();
       for (let i = 0; i < 5; i++) {
         document.dispatchEvent(new KeyboardEvent('keydown', { key: 'v', repeat: true, bubbles: true }));
       }
       document.dispatchEvent(new KeyboardEvent('keyup', { key: 'v', bubbles: true }));
-      await new Promise((r) => setTimeout(r, 40));
-      const afterHold = modeOf();
+      // Long enough that a getUserMedia that V had wrongly started would have resolved.
+      await new Promise((r) => setTimeout(r, 400));
+      const micAfterV = mediaRecorder ? mediaRecorder.state : null;
 
-      // `]` and `[` are the cycle keys now, and `[` must go back rather than forward
-      // through six visuals to arrive at the previous one.
+      // `]` and `[` still work, and `[` must go back rather than forward through six
+      // visuals to arrive at the previous one.
+      const beforeNext = modeOf();
       document.dispatchEvent(new KeyboardEvent('keydown', { key: ']', bubbles: true }));
       const afterNext = modeOf();
       document.dispatchEvent(new KeyboardEvent('keydown', { key: '[', bubbles: true }));
       const afterPrev = modeOf();
-      return { before, afterHold, afterNext, afterPrev };
+
+      // Space holds to speak, and must leave the visual exactly where it is.
+      const beforeSpace = modeOf();
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+      for (let i = 0; i < 5; i++) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', repeat: true, bubbles: true }));
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      const micOnSpace = mediaRecorder ? mediaRecorder.state : null;
+      const afterSpace = modeOf();
+      document.dispatchEvent(new KeyboardEvent('keyup', { key: ' ', bubbles: true }));
+      await new Promise((r) => setTimeout(r, 300));
+      return { before, afterOneV, micAfterV, beforeNext, afterNext, afterPrev,
+        beforeSpace, afterSpace, micOnSpace, micAfterRelease: mediaRecorder ? mediaRecorder.state : null };
     });
 
-    assert.strictEqual(out.afterHold, out.before,
-      `holding V must not change the visual — it went ${out.before} -> ${out.afterHold}`);
-    assert.notStrictEqual(out.afterNext, out.before, '] must advance the visual');
-    assert.strictEqual(out.afterPrev, out.before,
-      `[ must step back to where ] came from (${out.before} -> ${out.afterNext} -> ${out.afterPrev})`);
-    console.log(`✓ V no longer cycles visuals; ] and [ step forward and back (${out.afterNext})`);
+    assert.notStrictEqual(out.afterOneV, out.before,
+      `V must advance the visual — it stayed on ${out.before}`);
+    assert.strictEqual(out.micAfterV, null,
+      `V must not open the microphone (recorder state: ${out.micAfterV})`);
+    assert.notStrictEqual(out.afterNext, out.beforeNext, '] must advance the visual');
+    assert.strictEqual(out.afterPrev, out.beforeNext,
+      `[ must step back to where ] came from (${out.beforeNext} -> ${out.afterNext} -> ${out.afterPrev})`);
+    assert.strictEqual(out.micOnSpace, 'recording',
+      `holding space must start the voice note (recorder state: ${out.micOnSpace})`);
+    assert.strictEqual(out.afterSpace, out.beforeSpace,
+      `holding space must not move the visual — it went ${out.beforeSpace} -> ${out.afterSpace}`);
+    assert.strictEqual(out.micAfterRelease, null,
+      'releasing space must close the microphone');
+    console.log(`✓ V cycles visuals and never opens the mic; space records and never moves`
+      + ` the visual (${out.before} -> ${out.afterOneV})`);
   }
 
   // 27c) THE HOLD GESTURE SURVIVES THE BUTTON CHANGING SIZE UNDER THE FINGER.
   //      Reported as "if I hold the button down, it just flashes, and then it
-  //      disappears immediately". The label goes from "Hold to speak V" to
+  //      disappears immediately". The label goes from "Hold to speak" to
   //      "Listening… release to save", the pill grows by ~40px and re-flows the bar,
   //      and the pointer — which never moved — is suddenly outside the element it
   //      pressed. `pointerleave` fired and stopped the recording at once.

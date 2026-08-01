@@ -378,6 +378,39 @@ Recorded because they are the kind of thing that will recur.
 answer to "how much signal was this actually derived from," and the UI has to act
 on that answer rather than merely disclose it.
 
+## The one auto-ranging case still unhandled (2026-08-01)
+
+Reported as "the sensor lines are jumping" in Flow, the same complaint as the earlier
+composite jumping. Measured rather than guessed, and the measurements said the obvious
+suspect was innocent:
+
+- The **axis** is not the culprit. It moves 0.39% of the band per frame for the sensors
+  (0.10% for the composites), and a 4-frame spike moved it **0.0%** — `autoRange` reads
+  the 5th/95th percentiles, which a short spike cannot reach.
+- The culprit is **noise amplified by rescaling**. The composites arrive already
+  adaptively normalised; a per-channel value is a raw `alpha/(alpha+beta)` ratio with a
+  genuinely narrow range, so auto-ranging magnifies its sample-to-sample noise. After
+  rescaling, one noisy sample occupied **34% of the drawn band for the sensors** against
+  5% for the composites.
+- Fixed by smoothing the sensor series harder than the composites
+  (`FLOW_SMOOTH_SENSORS = 21`, ~5.2s, vs `FLOW_SMOOTH = 9`). Drawn jitter fell from
+  **1.8% to 0.8%** of the band. 5s is still shorter than any state worth seeing.
+- A `noiseFloorMult` was written for `autoRange` to widen the band when the range is
+  merely noise, then **removed**: across four regimes of drift and noise it never once
+  changed the range. A safeguard that never fires is worse than none, because it reads
+  as protection.
+
+**What is still not handled:** a channel whose *genuine* range is smaller than its own
+noise. There the smoothing helps but cannot win — measured residual jitter 7.6% of the
+band at 9 samples of smoothing, 3.5% at 21. The honest fix is not more smoothing but
+refusing to auto-range at all below some measured signal-to-noise ratio, and drawing the
+channel against a fixed 0–1 axis with a note saying why. Not built, because I could not
+reproduce the user's picture with synthetic data and do not yet know whether this case
+is what they were seeing.
+
+- [ ] Decide the SNR threshold below which a channel is drawn on a fixed axis, from
+      recorded sits rather than synthetic noise.
+
 ## Phase 2 — the real phone app
 
 **Goal:** each person at the center runs this on their own phone, no laptop
