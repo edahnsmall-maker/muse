@@ -150,6 +150,257 @@ function naiveDFT(real) {
     + ` (floor ${DSP.FLAT_PTP_UV}µV: 1µV dither out, 6µV signal in)`);
 }
 
+/* ==========================================================================
+ * INDIVIDUAL ALPHA PEAK
+ * ==========================================================================
+ * The claim under test is "this is where THIS person's alpha sits", which is worth nothing
+ * unless the detector also refuses to answer when there is no peak. So the tests come in
+ * pairs: recover a known frequency, and stay silent on noise.
+ *
+ * The synthetic signal is pink-ish noise (a one-pole filter on white, which gives the ~1/f
+ * fall-off real EEG has) with an optional band of five sines spanning ±0.7Hz around a
+ * chosen centre — a bump rather than a tone, because a monochromatic line is not what a
+ * cortical resonance looks like and the width gate correctly rejects one.
+ */
+{
+  const hz = 256;
+  const synth = (seed0, { alphaAmp = 0, centre = 10.3, secs = 180, noise = 8 } = {}) => {
+    const n = hz * secs;
+    let seed = seed0;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+    const out = new Float32Array(n);
+    const spread = [-0.7, -0.35, 0, 0.35, 0.7];
+    const ph = spread.map((_, i) => i * 1.7);   // fixed offsets, so this is reproducible
+    let p = 0;
+    for (let i = 0; i < n; i++) {
+      p = 0.98 * p + rnd() * noise;
+      let a = 0;
+      spread.forEach((d, k) => { a += Math.sin((2 * Math.PI * (centre + d) * i) / hz + ph[k]); });
+      out[i] = p + alphaAmp * a + rnd() * 2;
+    }
+    return out;
+  };
+  const peakOf = (sig, opts) => DSP.individualAlphaPeak(DSP.averageSpectrum(sig, hz, opts), opts);
+
+  // 4 SECONDS IS THE POINT, not a preference. 1/windowLength is the frequency resolution,
+  // so the live display's 1s windows give 1Hz bins — which cannot represent the answer.
+  const sp = DSP.averageSpectrum(synth(13, { alphaAmp: 2.2 }), hz);
+  assert.strictEqual(sp.binHz, 0.25, 'a 4s window at 256Hz must give 0.25Hz bins');
+  assert.strictEqual(sp.n, 1024, 'and 1024 samples, which the radix-2 FFT takes unpadded');
+  assert.strictEqual(DSP.averageSpectrum(synth(13, { alphaAmp: 2.2 }), hz, { windowSec: 1 }).binHz, 1,
+    'precondition: a 1s window really does give only 1Hz bins');
+
+  // RECOVERY. Three centres, so this is not one lucky frequency.
+  for (const centre of [9.0, 10.3, 12.2]) {
+    const pk = peakOf(synth(29, { alphaAmp: 2.2, centre }));
+    assert.ok(pk.found, `an obvious ${centre}Hz bump must be found (${pk.reason})`);
+    assert.ok(Math.abs(pk.cogHz - centre) < 0.35,
+      `and located: wanted ${centre}Hz, got ${pk.cogHz.toFixed(2)}Hz`);
+    // The band is the peak ±2Hz, which is what everything downstream uses.
+    assert.ok(Math.abs(pk.band[0] - (pk.cogHz - 2)) < 1e-9 || pk.band[0] === 6,
+      'the band must be the peak minus 2Hz, or clamped at 6');
+    assert.ok(pk.prominence > 2, `and must clear the background (${pk.prominence.toFixed(2)}x)`);
+  }
+
+  // The 1/f slope must come out roughly right, or the background being subtracted is not
+  // the background. A one-pole filter on white noise is about -2 in log-log.
+  const slope = peakOf(synth(31, { alphaAmp: 2.2 })).slope;
+  assert.ok(slope < -1.2 && slope > -3,
+    `the fitted 1/f slope must be plausible for EEG-like noise (got ${slope.toFixed(2)})`);
+
+  /* NO FALSE PEAKS. Forty realisations of pure noise at each of four durations. This is
+     the assertion the whole thing rests on: a detector that names a frequency for noise
+     would silently redefine every alpha number downstream to centre on a noise bin. */
+  let falsePeaks = 0, tested = 0;
+  const reasons = new Set();
+  for (const secs of [10, 40, 180, 600]) {
+    for (let t = 0; t < 40; t++) {
+      const pk = peakOf(synth(t * 977 + 13, { secs }));
+      tested++;
+      if (pk.found) falsePeaks++; else reasons.add(pk.reason.replace(/[\d.]+/g, 'N'));
+    }
+  }
+  assert.strictEqual(falsePeaks, 0,
+    `noise must never produce a peak (${falsePeaks} of ${tested} realisations did)`);
+  assert.ok(reasons.size >= 2,
+    'and the refusals must be reasoned rather than one blanket rejection: ' + Array.from(reasons).join(' | '));
+
+  // WIDTH IS THE GATE THAT DOES THE WORK, and this records why prominence alone cannot be.
+  // Noise reaches 1.77-2.15x on its own; genuinely weak alpha starts around 2.3x. The two
+  // distributions nearly touch, so a prominence threshold there would be a coin toss.
+  // Widths do not overlap at all: noise never exceeds 0.75Hz, real alpha never under 1.5Hz.
+  {
+    const noiseStats = [], alphaStats = [];
+    for (let t = 0; t < 12; t++) {
+      noiseStats.push(peakOf(synth(t * 613 + 5, { secs: 180 }), { minProminence: 0, minWidthHz: 0, minWindows: 0 }));
+      alphaStats.push(peakOf(synth(t * 613 + 5, { alphaAmp: 0.7 }), { minProminence: 0, minWidthHz: 0, minWindows: 0 }));
+    }
+    const w = (a) => a.map((x) => x.widthHz || 0);
+    const worstNoise = Math.max(...w(noiseStats)), bestAlphaWidth = Math.min(...w(alphaStats));
+    assert.ok(worstNoise < DSP.IAF_MIN_WIDTH_HZ && bestAlphaWidth >= DSP.IAF_MIN_WIDTH_HZ,
+      `the width threshold must sit between noise (max ${worstNoise}Hz) and weak alpha`
+      + ` (min ${bestAlphaWidth}Hz); it is ${DSP.IAF_MIN_WIDTH_HZ}Hz`);
+    const promNoise = Math.max(...noiseStats.map((x) => x.prominence));
+    const promAlpha = Math.min(...alphaStats.map((x) => x.prominence));
+    assert.ok(promAlpha / promNoise < 2,
+      `recording the reason width is the gate: noise reaches ${promNoise.toFixed(2)}x and weak`
+      + ` alpha only ${promAlpha.toFixed(2)}x, so prominence barely separates them`);
+  }
+
+  // A PEAK OUTSIDE THE SEARCH RANGE must be refused, not reported as the nearest edge.
+  for (const centre of [5.5, 15.5]) {
+    const pk = peakOf(synth(41, { alphaAmp: 3.0, centre }));
+    assert.ok(!pk.found, `a ${centre}Hz bump is not alpha and must not be reported as one`
+      + ` (got ${pk.found ? pk.cogHz.toFixed(2) + 'Hz' : ''})`);
+  }
+
+  // WEAK BUT REAL must still be found, or the gates are just a refusal machine.
+  const weak = peakOf(synth(53, { alphaAmp: 0.7 }));
+  assert.ok(weak.found, `weak but real alpha must still be found (${weak.reason})`);
+  assert.ok(Math.abs(weak.cogHz - 10.3) < 0.6, `within reason (${weak.cogHz.toFixed(2)}Hz)`);
+
+  // A DEAD CHANNEL yields no spectrum at all, and says so rather than dividing by zero.
+  const dead = peakOf(new Float32Array(hz * 120));
+  assert.ok(!dead.found && /flat|artifact/i.test(dead.reason),
+    `a dead channel must refuse with a reason about the signal (got "${dead.reason}")`);
+
+  /* PER CHANNEL, then the best of them — alpha is posterior, so on this headband the ear
+     channels carry it and the forehead pair barely hint at it. The estimate is a property
+     of the person, so taking the most prominent channel is right; keeping the table is what
+     makes a frontal-only "peak" visible for what it is. */
+  {
+    const eeg = [
+      synth(61, { alphaAmp: 2.4, centre: 10.6 }),   // TP9: strong
+      synth(62, { alphaAmp: 0.15 }),                // AF7: essentially none
+      synth(63, { alphaAmp: 0.15 }),                // AF8: essentially none
+      synth(64, { alphaAmp: 1.2, centre: 10.6 }),   // TP10: present
+    ];
+    const out = DSP.alphaPeakByChannel(eeg, hz);
+    assert.strictEqual(out.fallback, false, 'a session with real alpha must not fall back');
+    assert.ok(out.bestName === 'TP9' || out.bestName === 'TP10',
+      `the strongest channel must win, not the first (got ${out.bestName})`);
+    assert.ok(Math.abs(out.freqHz - 10.6) < 0.35, `at about 10.6Hz (got ${out.freqHz.toFixed(2)})`);
+    assert.strictEqual(out.channels.length, 4, 'every channel must be reported, found or not');
+    assert.ok(out.channels.filter((c) => c.found).length >= 2, 'both ear channels should show it');
+
+    // AND THE FALLBACK IS LABELLED. Four channels of noise must produce the fixed band with
+    // fallback set — an individual band and a population band are different claims.
+    const none = DSP.alphaPeakByChannel([0, 1, 2, 3].map((k) => synth(70 + k, { secs: 180 })), hz);
+    assert.strictEqual(none.fallback, true, 'no peak anywhere must be reported as a fallback');
+    assert.deepStrictEqual(none.band, DSP.BANDS.alpha, 'and must use the fixed 8-13Hz band');
+    assert.strictEqual(none.freqHz, null, 'with no frequency claimed at all');
+    assert.ok(none.reason, 'and a reason to show');
+  }
+
+  console.log(`✓ the individual alpha peak is found (${peakOf(synth(29, { alphaAmp: 2.2 })).cogHz.toFixed(2)}Hz`
+    + ` for a 10.3Hz bump), refused on ${tested} noise realisations, and labelled when it falls back`);
+}
+
+/* 8d) The 4-second analysis windows. Non-overlapping is a statistical requirement, not a
+ *     preference: these rows become the observations the lab correlates and permutes, and
+ *     overlapping windows share samples, so the effective count would be smaller than the
+ *     row count and every p-value optimistic by an unknown factor.
+ */
+{
+  const hz = 256, secs = 40;
+  let seed = 5;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+  const n = hz * secs;
+  const eeg = [0, 1, 2, 3].map((k) => {
+    const a = new Float32Array(n);
+    let p = 0;
+    for (let i = 0; i < n; i++) { p = 0.98 * p + rnd() * 8; a[i] = p + (k < 2 ? 2.2 : 0.4) * Math.sin((2 * Math.PI * 10.3 * i) / hz); }
+    return a;
+  });
+  eeg[3].fill(0);                                   // one dead channel
+
+  const bs = DSP.bandSeries(eeg, hz, { alphaBand: [8.25, 12.25] });
+  assert.strictEqual(bs.windowSec, 4, 'the lab window is 4 seconds');
+  assert.strictEqual(bs.binHz, 0.25, 'giving 0.25Hz resolution');
+  assert.strictEqual(bs.rows.length, secs / 4,
+    `non-overlapping means ${secs / 4} rows for ${secs}s, not ${secs / 2} (got ${bs.rows.length})`);
+  // Times must be the window starts, four seconds apart.
+  assert.deepStrictEqual(bs.rows.slice(0, 3).map((r) => r.tSec), [0, 4, 8]);
+  // The dead channel is NULL in every window, not a number. Same rule as the live display.
+  assert.ok(bs.rows.every((r) => r.channels[3] === null),
+    'a dead channel must yield null per window, never a fabricated power');
+  assert.ok(bs.rows.every((r) => r.channels[0] && r.channels[0].alpha > 0),
+    'and a live channel must yield real power');
+  // The alpha band actually used is the caller's, which is the whole point of measuring it.
+  const wide = DSP.bandSeries(eeg, hz, { alphaBand: [8, 13] });
+  assert.notStrictEqual(wide.rows[0].channels[0].alpha, bs.rows[0].channels[0].alpha,
+    'a different alpha band must produce a different alpha power, or the band is ignored');
+  assert.deepStrictEqual(bs.alphaBand, [8.25, 12.25], 'and the band used is reported back');
+  console.log(`✓ 4-second lab windows: ${bs.rows.length} non-overlapping rows for ${secs}s,`
+    + ` ${bs.binHz}Hz bins, dead channels null`);
+}
+
+/* 8e) THE STREAMING ACCUMULATOR MUST GIVE THE SAME ANSWER AS THE BATCH ONE.
+ *
+ *     The app cannot call averageSpectrum: raw EEG goes straight to storage and the
+ *     in-memory buffer is bounded to two seconds, so measuring a peak from memory would mean
+ *     keeping a second full copy of the sit or reading it all back on the summary screen.
+ *     Neither is needed, because an average does not need its inputs kept — but only if the
+ *     incremental version really is the same computation. That is what this asserts, fed in
+ *     12-sample chunks because that is the Muse's packet size and a ring buffer is exactly
+ *     where an off-by-one hides.
+ */
+{
+  const hz = 256, secs = 180, n = hz * secs;
+  let seed = 13;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+  const sig = new Float32Array(n);
+  const spread = [-0.7, -0.35, 0, 0.35, 0.7];
+  const ph = spread.map((_, i) => i * 1.7);
+  let p = 0;
+  for (let i = 0; i < n; i++) {
+    p = 0.98 * p + rnd() * 8;
+    let a = 0;
+    spread.forEach((d, k) => { a += Math.sin((2 * Math.PI * (10.3 + d) * i) / hz + ph[k]); });
+    sig[i] = p + 2.2 * a + rnd() * 2;
+  }
+  const batch = DSP.averageSpectrum(sig, hz);
+  const acc = DSP.SpectrumAccumulator(hz);
+  for (let i = 0; i < n; i += DSP.EEG_SAMPLES_PER_PACKET) {
+    acc.push(sig.subarray(i, Math.min(n, i + DSP.EEG_SAMPLES_PER_PACKET)));
+  }
+  const live = acc.spectrum();
+  assert.strictEqual(live.windows, batch.windows,
+    `the same number of windows must be folded in (${live.windows} vs ${batch.windows})`);
+  const lp = DSP.individualAlphaPeak(live), bp = DSP.individualAlphaPeak(batch);
+  assert.ok(Math.abs(lp.cogHz - bp.cogHz) < 1e-9,
+    `streaming and batch must agree exactly (${lp.cogHz} vs ${bp.cogHz})`);
+  assert.ok(Math.abs(lp.prominence - bp.prominence) < 1e-9,
+    `including the prominence (${lp.prominence} vs ${bp.prominence})`);
+
+  // Before there is enough signal, it must refuse rather than answer from a half-filled ring.
+  const fresh = DSP.SpectrumAccumulator(hz);
+  fresh.push(sig.subarray(0, hz));                    // one second
+  const early = fresh.spectrum();
+  assert.strictEqual(early.power, null, 'a ring with less than one window in it has no spectrum');
+  assert.strictEqual(early.windows, 0);
+  assert.ok(early.reason, 'and says why');
+  assert.strictEqual(DSP.individualAlphaPeak(early).found, false,
+    'so no peak can be claimed from it');
+
+  // reset() must genuinely clear it — a new sit is a new estimate, and carrying yesterday's
+  // windows in would blur the thing being measured.
+  acc.reset();
+  assert.strictEqual(acc.spectrum().windows, 0, 'reset must empty the accumulator');
+
+  // Memory is fixed: a two-hour sit must cost no more than a three-minute one. Asserted via
+  // the window count growing while nothing else does — the ring and the spectrum are
+  // allocated once, at construction.
+  const long = DSP.SpectrumAccumulator(hz);
+  for (let rep = 0; rep < 4; rep++) for (let i = 0; i < n; i += 12) long.push(sig.subarray(i, i + 12));
+  assert.ok(long.spectrum().windows > batch.windows * 3,
+    'a longer sit must fold in more windows, not silently stop accumulating');
+  assert.strictEqual(long.n, batch.n, 'while the window size stays fixed');
+
+  console.log(`✓ the streaming accumulator matches the batch spectrum exactly`
+    + ` (${live.windows} windows, peak ${lp.cogHz.toFixed(4)}Hz both ways) and holds fixed memory`);
+}
+
 // 9) AdaptiveNormalizer freezes exactly (no drift) when fed a null value, so
 //    an artifact-flagged window can be skipped without disturbing the display.
 {

@@ -149,6 +149,50 @@ function makeTrialArchive({ id, seedOffset = 0, working = true }) {
   return { name: `trial-${id}.zip`, bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
 }
 
+/*
+ * An archive with REAL EEG in it: pink-ish noise plus a planted alpha bump on the two ear
+ * channels, none on the forehead pair, and one channel dead. That is the shape of a real
+ * sit on this headband — alpha is posterior, so TP9/TP10 carry it and AF7/AF8 barely hint.
+ *
+ * 120 seconds because the peak detector refuses on fewer than 20 clean 4-second windows,
+ * which is about 45s at 50% overlap. `alpha: false` plants no bump at all, which must
+ * produce a labelled fall back to the fixed band rather than a frequency.
+ */
+function makeEegArchive({ id, centre = 10.6, alpha = true, secs = 120 }) {
+  const t0 = new Date('2026-07-28T06:00:00').getTime();
+  const hz = 256;
+  const n = hz * secs;
+  const chan = (seed0, amp) => {
+    let seed = seed0;
+    const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+    const out = new Array(n);
+    const spread = [-0.7, -0.35, 0, 0.35, 0.7];
+    const ph = spread.map((_, i) => i * 1.7);
+    let p = 0;
+    for (let i = 0; i < n; i++) {
+      p = 0.98 * p + rnd() * 8;
+      let a = 0;
+      if (amp) spread.forEach((d, k) => { a += Math.sin((2 * Math.PI * (centre + d) * i) / hz + ph[k]); });
+      out[i] = p + amp * a + rnd() * 2;
+    }
+    return out;
+  };
+  const eeg = [
+    chan(101, alpha ? 2.4 : 0),     // TP9  — strong, or nothing
+    chan(102, 0),                   // AF7  — frontal, no alpha
+    chan(103, 0),                   // AF8  — frontal, no alpha
+    new Array(n).fill(0),           // TP10 — dead, so the null path is exercised too
+  ];
+  const rows = [];
+  for (let t = 0; t < secs; t++) rows.push({ t, epochMs: t0 + t * 1000, calm: 0.5, noise: 0.05 });
+  const notes = [{ id: 1, kind: 'transition', at: t0 + 30000, offsetSec: 30, transition: 'returned' }];
+  const { files } = Exporter.buildFiles({
+    meta: { startedAt: t0, durationSec: secs, bytes: 1e6, ended: true, eegHz: hz, accHz: 50 },
+    eeg, acc: [], rr: [], rows, notes,
+  }, {});
+  return { name: `eeg-${id}.zip`, bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
+}
+
 async function drop(page, archives) {
   await page.setInputFiles('#file', archives.map((a) => ({
     name: a.name, mimeType: 'application/zip', buffer: a.bytes,
@@ -751,6 +795,119 @@ async function drop(page, archives) {
     await page.evaluate(async () => { await LabStore.clearSessions(store); });
     console.log('✓ the clip library draws every epoch with its average and surrogate band,'
       + ' and all three baseline modes redraw it');
+  }
+
+  /* ---- INDIVIDUAL ALPHA PEAK, from a real archive with real samples in it -----------
+   *
+   * "do individual alpha peak and four-second lab windows. Keep one-second windows for the
+   * live display." The claim being made on screen is "this is where YOUR alpha sits", so
+   * the test cares as much about the refusal as the detection: a session with no alpha must
+   * say it is using the fixed population band, in words, rather than quietly naming a
+   * frequency picked out of noise.
+   */
+  {
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    await page.reload();
+    await page.waitForTimeout(300);
+    await drop(page, [makeEegArchive({ id: 'a', centre: 10.6 })]);
+
+    const found = await page.evaluate(() => {
+      const s = sessions.find((x) => !x.error);
+      return {
+        text: document.getElementById('alpha').textContent.replace(/\s+/g, ' '),
+        freqHz: s.alpha.freqHz, bestName: s.alpha.bestName, fallback: s.alpha.fallback,
+        band: s.alpha.band,
+        perChannel: s.alpha.channels.map((c) => ({ name: c.name, found: c.found, reason: c.reason })),
+        spectraRows: s.spectra.rows.length,
+        windowSec: s.spectra.windowSec,
+        binHz: s.spectra.binHz,
+        // The columns the recomputed series offers, which is what makes it useful.
+        keys: Analysis.seriesKeys(s.spectra.rows),
+      };
+    });
+    assert.strictEqual(found.fallback, false, 'a planted alpha bump must be found, not fallen back from');
+    assert.ok(Math.abs(found.freqHz - 10.6) < 0.4,
+      `the peak must be located near the planted 10.6Hz (got ${found.freqHz})`);
+    assert.strictEqual(found.bestName, 'TP9', 'and attributed to the channel that carries it');
+    assert.ok(Math.abs(found.band[0] - (found.freqHz - 2)) < 1e-6,
+      'the individual band is the peak ±2Hz');
+    // The forehead pair had no alpha planted and must be reported as not found, with a
+    // reason — a channel silently missing from the table is indistinguishable from one that
+    // was never read.
+    for (const name of ['AF7', 'AF8', 'TP10']) {
+      const c = found.perChannel.find((x) => x.name === name);
+      assert.strictEqual(c.found, false, `${name} has no alpha planted and must not report one`);
+      assert.ok(c.reason, `${name} must say WHY it found none`);
+    }
+    assert.match(found.text, /10\.\d\d Hz/, 'the panel must state the frequency');
+    assert.match(found.text, /TP9/, 'and which channel it came from');
+    assert.match(found.text, /above the 1\/f background/,
+      'and that the claim is relative to the fitted background, not a raw maximum');
+
+    // FOUR-SECOND WINDOWS, non-overlapping.
+    assert.strictEqual(found.windowSec, 4, 'the lab windows are 4 seconds');
+    assert.strictEqual(found.binHz, 0.25, 'which is what buys 0.25Hz resolution');
+    assert.strictEqual(found.spectraRows, 30,
+      `120s of non-overlapping 4s windows is 30 rows (got ${found.spectraRows})`);
+    assert.ok(found.keys.includes('TP9 alphaRel') && found.keys.includes('TP9 alphaLog'),
+      `the recomputed series must expose per-electrode alpha columns (got ${found.keys.join(', ')})`);
+    assert.ok(found.keys.includes('alphaRel avg'),
+      'and one headline column, so there is something to search without picking an electrode');
+    assert.ok(!found.keys.some((k) => k.startsWith('TP10')),
+      `the dead channel must contribute no columns at all (got ${found.keys.join(', ')})`);
+
+    // THE SOURCE SWITCH must actually change what the analysis reads.
+    const switched = await page.evaluate(async () => {
+      const sel = document.getElementById('srcSel');
+      const before = clipFeatureOptions();
+      sel.value = 'spectra';
+      sel.dispatchEvent(new Event('change'));
+      await new Promise((r) => setTimeout(r, 200));
+      return { before, after: clipFeatureOptions(), source: analysisSource };
+    });
+    assert.strictEqual(switched.source, 'spectra');
+    assert.ok(switched.before.includes('calm') && !switched.before.some((k) => k.includes('alphaRel')),
+      `metrics.csv must not carry the recomputed columns (got ${switched.before.join(', ')})`);
+    assert.ok(switched.after.some((k) => k.includes('alphaRel')),
+      `switching source must offer the recomputed columns (got ${switched.after.join(', ')})`);
+
+    /* AND THE DERIVED RESULTS MUST SURVIVE A RELOAD. The store drops raw EEG on purpose, so
+       if the peak were not persisted a restored session would silently fall back to the
+       fixed band — the same screen quietly answering a different question. */
+    await page.evaluate(async () => { await persist(); });
+    await page.reload();
+    await page.waitForTimeout(600);
+    const restored = await page.evaluate(() => {
+      const s = sessions.find((x) => !x.error);
+      return { hasRaw: !!(s.read.eeg && s.read.eeg.some((c) => c && c.length)),
+        freqHz: s.alpha && s.alpha.freqHz, rows: s.spectra && s.spectra.rows.length,
+        text: document.getElementById('alpha').textContent.replace(/\s+/g, ' ') };
+    });
+    assert.strictEqual(restored.hasRaw, false, 'precondition: the store really does drop raw EEG');
+    assert.ok(Math.abs(restored.freqHz - found.freqHz) < 1e-9,
+      `the measured peak must survive without the samples (${restored.freqHz} vs ${found.freqHz})`);
+    assert.strictEqual(restored.rows, found.spectraRows, 'and so must the 4-second series');
+
+    // THE FALLBACK, LABELLED. Noise-only EEG must name no frequency.
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    await page.reload();
+    await page.waitForTimeout(300);
+    await drop(page, [makeEegArchive({ id: 'none', alpha: false })]);
+    const none = await page.evaluate(() => {
+      const s = sessions.find((x) => !x.error);
+      return { fallback: s.alpha.fallback, freqHz: s.alpha.freqHz, band: s.alpha.band,
+        text: document.getElementById('alpha').textContent.replace(/\s+/g, ' ') };
+    });
+    assert.strictEqual(none.fallback, true, 'no alpha anywhere must be reported as a fallback');
+    assert.strictEqual(none.freqHz, null, 'with no frequency claimed');
+    assert.deepStrictEqual(none.band, [8, 13], 'and the fixed population band in use');
+    assert.match(none.text, /No alpha peak found/, 'said plainly on screen');
+    assert.match(none.text, /FIXED 8–13Hz band/,
+      'and named as the population average it is, not left looking like a measurement');
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    console.log(`✓ individual alpha peak: ${found.freqHz.toFixed(2)}Hz from ${found.bestName},`
+      + ` band ${found.band.map((b) => b.toFixed(2)).join('–')}Hz, ${found.spectraRows} four-second`
+      + ` windows, survives a reload, and falls back in labelled words when there is no peak`);
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

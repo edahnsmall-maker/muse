@@ -1043,6 +1043,10 @@ async function ensureRecording() {
       continue;
     }
     const generation = recGeneration;
+    /* A NEW SIT IS A NEW ESTIMATE. Alpha frequency shifts with arousal, fatigue and time of
+       day, so folding yesterday evening's windows into this morning's average would blur
+       exactly the thing being measured. */
+    for (const a of alphaAccum) a.reset();
     recStarting = true;
     recStartPromise = openRecordingSession(generation);
     try {
@@ -1232,6 +1236,30 @@ function showSummaryStats(stats) {
       + `<div style="color:rgba(255,255,255,.4)">${pct == null ? 'no signal' : pct + '% alpha'}</div></div>`;
   }).join('');
 
+  /* THE INDIVIDUAL ALPHA PEAK, stated with its own limits attached.
+   *
+   * This is a different KIND of number from everything else on this screen: the rest are
+   * interpretations of a fixed 8-13Hz band, and this is a measurement of where that band
+   * should have been for this person. Two things therefore have to be said in the same
+   * breath — what was measured, and that the live numbers above did not use it. A frequency
+   * printed on its own would read as though the app had been tracking it all along.
+   *
+   * The refusal is written out in as much detail as the finding, because "not measurable"
+   * with a reason is a usable fact (bad contact, too short, no alpha today) and
+   * "not measurable" on its own looks like a broken feature. */
+  const iaf = measuredAlphaPeak();
+  const iafBlock = iaf.fallback
+    ? `<div class="subtle" style="margin-top:14px"><b>Alpha peak:</b> not measurable this sit —
+       ${escapeHtml(iaf.reason || 'no peak found')}. The numbers above use the fixed
+       ${DSP.BANDS.alpha[0]}–${DSP.BANDS.alpha[1]}Hz band, which is a population average
+       rather than yours.</div>`
+    : `<div class="subtle" style="margin-top:14px"><b>Your alpha peak: ${iaf.freqHz.toFixed(2)} Hz</b>
+       — measured at ${escapeHtml(iaf.bestName)}, ${iaf.prominence.toFixed(1)}× above the 1/f
+       background, from ${iaf.windows} four-second windows. Your individual alpha band is
+       ${iaf.band[0].toFixed(2)}–${iaf.band[1].toFixed(2)}Hz. The live numbers above still use the
+       fixed ${DSP.BANDS.alpha[0]}–${DSP.BANDS.alpha[1]}Hz band: one-second windows give 1Hz
+       frequency bins and cannot resolve a peak. The lab recomputes with your band.</div>`;
+
   const yours = selfRating > 0
     ? `<div class="subtle" style="margin-top:4px">You felt it as a <b>${selfRating}</b> out of 5. `
       + `Over time, noticing how your guess lines up with the trace is the skill worth building — `
@@ -1243,6 +1271,7 @@ function showSummaryStats(stats) {
     + `<div id="summaryLines" style="margin-top:6px">${lines}</div>`
     + yours
     + `<div id="summaryChannels" style="margin-top:16px">${chan}</div>`
+    + iafBlock
     + renderMarkerEditor()
     /* TWO DOWNLOADS, because they are two different things and only one of them was
        reachable from here. The report is prose — what happened, for reading. The
@@ -1459,6 +1488,7 @@ function downloadReport(stats) {
     markers: markerLog.list(),
     samples: sessionLog,
     markerContext: markerContextFor,
+    alphaPeak: measuredAlphaPeak(),
   });
   const blob = new Blob([md], { type: 'text/markdown' });
   const url = URL.createObjectURL(blob);
@@ -1524,6 +1554,24 @@ const FRONTAL = [1, 2];
 const WINDOW = 256; // 1s of samples at 256Hz — exactly 1Hz per FFT bin
 
 const buffers = DSP.CHANNEL_NAMES.map(() => []);
+
+/* INDIVIDUAL ALPHA PEAK, accumulated across the whole sit.
+ *
+ * The live display's 1-second windows give 1Hz frequency bins — five bins across the whole
+ * of alpha, which cannot tell 9.5Hz from 10.5Hz — so nothing here can be measured from the
+ * numbers on screen. These accumulate 4-second spectra (0.25Hz bins) in parallel, which is
+ * the resolution the question needs, without changing anything the live display does.
+ *
+ * One accumulator per electrode, fixed at about 12KB each regardless of how long the sit
+ * runs: an average does not need its inputs kept. See DSP.SpectrumAccumulator. */
+const alphaAccum = DSP.CHANNEL_NAMES.map(() => DSP.SpectrumAccumulator(DSP.EEG_FREQUENCY));
+function measuredAlphaPeak() {
+  return DSP.pickAlphaPeak(alphaAccum.map((a, i) => {
+    const sp = a.spectrum();
+    return Object.assign({ name: DSP.CHANNEL_NAMES[i], channel: i,
+      windows: sp.windows, skipped: sp.skipped, binHz: sp.binHz }, DSP.individualAlphaPeak(sp));
+  }));
+}
 const tracker = new DSP.AdaptiveNormalizer();
 // "Thinking" is a separate signal from movement noise: activation (beta level),
 // how much the band balance churns, and how often it shifts abruptly. Computed
@@ -1822,6 +1870,7 @@ function pushSamples(channelIndex, microvolts) {
   // comparable across those changes, and it is ~10MB for a 40-minute sit.
   if (recSession) recSession.pushEeg(channelIndex, microvolts);
   else ensureRecording();
+  alphaAccum[channelIndex].push(microvolts);
   const buf = buffers[channelIndex];
   buf.push(...microvolts);
   if (buf.length > WINDOW * 2) buf.splice(0, buf.length - WINDOW * 2); // bound memory

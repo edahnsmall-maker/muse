@@ -1024,6 +1024,92 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       + ' ones with none');
   }
 
+  /* 15a2) THE SUMMARY REPORTS THE INDIVIDUAL ALPHA PEAK, and says what it does not apply to.
+   *
+   *       Every other alpha figure in the app comes from a fixed 8-13Hz band, because the
+   *       live pipeline uses 1-second windows and 1Hz frequency bins cannot resolve a peak.
+   *       So the screen has to say two things at once: what was measured, and that the
+   *       numbers above it were not computed with it. A frequency printed alone would read as
+   *       though the app had been tracking it all along.
+   *
+   *       Fed through pushSamples — the real path off the BLE notification — so this exercises
+   *       the accumulator wiring rather than calling the DSP directly.
+   */
+  {
+    const out = await page.evaluate(async () => {
+      const hz = DSP.EEG_FREQUENCY;
+      // A minute of scored rows, so the real summary screen renders at all.
+      sessionLog.length = 0;
+      for (let t = 0; t < 60; t++) {
+        sessionLog.push({ t, calm: 0.5, focus: 0.5, thinking: 0.4, drowsy: 0.2, artifact: 0,
+          levels: [0.4, 0.5, 0.5, 0.4] });
+      }
+      recSession = null; recArmed = false; selfRating = 4;
+      for (const a of alphaAccum) a.reset();
+
+      // With nothing fed in, the peak must be refused and SAID to be refused.
+      openSummary();
+      const bare = { text: document.getElementById('summaryBody').textContent.replace(/\s+/g, ' '),
+        peak: measuredAlphaPeak() };
+      closeSummary();
+
+      // Now three minutes of pink-ish noise with a 10.6Hz bump on TP9 only, in 12-sample
+      // packets, straight through pushSamples.
+      let seed = 91;
+      const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+      const spread = [-0.7, -0.35, 0, 0.35, 0.7];
+      const ph = spread.map((_, i) => i * 1.7);
+      const p = [0, 0, 0, 0];
+      const packet = [[], [], [], []];
+      for (let i = 0; i < hz * 180; i++) {
+        for (let ch = 0; ch < 4; ch++) {
+          p[ch] = 0.98 * p[ch] + rnd() * 8;
+          let a = 0;
+          if (ch === 0) spread.forEach((d, k) => { a += Math.sin((2 * Math.PI * (10.6 + d) * i) / hz + ph[k]); });
+          packet[ch].push(p[ch] + 2.4 * a + rnd() * 2);
+        }
+        if (packet[0].length === DSP.EEG_SAMPLES_PER_PACKET) {
+          for (let ch = 0; ch < 4; ch++) { pushSamples(ch, packet[ch]); packet[ch] = []; }
+        }
+      }
+      selfRating = 4;
+      openSummary();
+      const withPeak = { text: document.getElementById('summaryBody').textContent.replace(/\s+/g, ' '),
+        peak: measuredAlphaPeak() };
+      // And the exported report must carry it too, with its per-channel working.
+      const md = Summary.toMarkdown(Summary.summarize(sessionLog), { alphaPeak: withPeak.peak });
+      closeSummary();
+      return { bare, withPeak, md };
+    });
+
+    assert.strictEqual(out.bare.peak.fallback, true,
+      'with no signal fed in, no peak may be claimed');
+    assert.match(out.bare.text, /Alpha peak: not measurable this sit/,
+      'and the screen must say so rather than omitting the line, which reads as a broken feature');
+    assert.match(out.bare.text, /population average/,
+      'and name the fixed band for what it is');
+
+    assert.strictEqual(out.withPeak.peak.fallback, false,
+      `a planted 10.6Hz bump fed through pushSamples must be found (${out.withPeak.peak.reason})`);
+    assert.ok(Math.abs(out.withPeak.peak.freqHz - 10.6) < 0.4,
+      `and located (got ${out.withPeak.peak.freqHz})`);
+    assert.strictEqual(out.withPeak.peak.bestName, 'TP9',
+      'attributed to the only channel carrying it');
+    assert.match(out.withPeak.text, /Your alpha peak: 10\.\d\d Hz/, 'stated on the screen');
+    assert.match(out.withPeak.text, /still use the fixed 8–13Hz band/,
+      'together with the fact that the numbers above it were NOT computed with it');
+    assert.match(out.withPeak.text, /one-second windows give 1Hz frequency bins/,
+      'and the reason, so the limitation is understandable rather than just disclosed');
+    assert.match(out.md, /## Individual alpha peak/, 'the report carries a section for it');
+    assert.match(out.md, /\| TP9 \(used\) \|/, 'with the per-channel working, marking which was used');
+    assert.match(out.md, /Every OTHER alpha number in this report/,
+      'and the same scope caveat in the exported prose');
+    console.log(`✓ the summary measures the individual alpha peak through the real sample path`
+      + ` (${out.withPeak.peak.freqHz.toFixed(2)}Hz at ${out.withPeak.peak.bestName},`
+      + ` ${out.withPeak.peak.windows} windows), refuses when there is none, and says the live`
+      + ` numbers do not use it`);
+  }
+
   // 15b) THE SUMMARY OFFERS THE DATA, not just the prose report.
   //      Asked for directly: "when you see the summarized session, it would be nice to
   //      have it download the the data as well here." The report is what happened, for

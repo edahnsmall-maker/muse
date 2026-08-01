@@ -147,6 +147,381 @@
     return out;
   }
 
+  /* ==========================================================================
+   * INDIVIDUAL ALPHA PEAK
+   * ==========================================================================
+   *
+   * WHY THIS EXISTS. Every alpha number in the live app comes from a fixed 8-13Hz band,
+   * which is a population average and not a person. Individual alpha frequency sits
+   * roughly between 7.5 and 13Hz, varies by several Hz between people, and shifts with
+   * age, arousal and time of day. If someone's own peak is at 9.2Hz, a fixed 8-13 band
+   * spends most of its width measuring their theta shoulder and their low beta, and a
+   * genuine change in alpha gets diluted by whatever else lives in the band. Reading the
+   * peak from the person makes every alpha figure downstream about them.
+   *
+   * WHY IT NEEDS 4-SECOND WINDOWS. Frequency resolution is 1/windowLength. The live
+   * display uses 1-second windows, which gives 1Hz bins — five bins across the whole of
+   * alpha, and no way to tell 9.5Hz from 10.5Hz. Four seconds gives 0.25Hz bins, which
+   * resolves a peak to a quarter of a hertz. That is the reason the lab windows are 4s
+   * while the live display stays at 1s: it is not a preference, the shorter window cannot
+   * represent the answer. 4s at 256Hz is 1024 samples, which is a power of two, so the
+   * radix-2 FFT above takes it without padding.
+   *
+   * WHY A PLAIN PEAK-PICK IS WRONG. EEG power falls off with frequency (the 1/f
+   * background), so the largest raw value in 7.5-13Hz is almost always near 7.5 whether or
+   * not there is an alpha peak there at all. The background has to be removed first. This
+   * fits a straight line to log10(power) against log10(frequency) — which is what 1/f
+   * means — over 2-30Hz while EXCLUDING 6.5-14Hz, so the alpha bump cannot pull the fit
+   * that is meant to describe everything except the alpha bump.
+   */
+  const IAF_SEARCH_HZ = [7.5, 13];
+  const IAF_WINDOW_SEC = 4;
+  /*
+   * THE THREE GATES A BUMP HAS TO PASS, and every number here was measured rather than
+   * chosen. The measurement: pink noise with no alpha component at all, 25-40 realisations
+   * at each of several durations, asking what the detector claims when there is nothing
+   * there. Then the same with a deliberately weak alpha component added.
+   *
+   *                        prominence (max)   half-prominence width
+   *   noise only,  10s          3.28                 0.75Hz
+   *   noise only,  40s          1.90                 0.50Hz
+   *   noise only, 180s          1.77                 0.25Hz
+   *   weak alpha (amp 0.7)      2.32-2.56            1.50-1.75Hz
+   *   ordinary alpha            12.9                 1.50Hz
+   *
+   * PROMINENCE ALONE IS NOT ENOUGH, which is the useful finding: noise reaches 1.77-2.15x
+   * on its own, and genuinely weak alpha starts around 2.3x, so the two distributions very
+   * nearly touch. A threshold there would be a coin toss. WIDTH separates them cleanly —
+   * noise never exceeds 0.75Hz at half prominence and real alpha never comes in under
+   * 1.5Hz — because a single lucky bin is what noise produces and a bump is what a
+   * resonance produces. So width is the real gate and prominence is only a floor.
+   *
+   * WINDOW COUNT is the third, because both other numbers degrade with less data: at four
+   * windows noise reached 3.28x and 0.75Hz. Twenty windows is about 45 seconds of clean
+   * signal at 50% overlap, and below it the honest answer is that there is not enough to
+   * say.
+   *
+   * The asymmetry is deliberate. A refused peak costs a labelled fall back to the fixed
+   * 8-13Hz band. A false peak silently redefines every alpha number downstream to centre
+   * on a noise bin. So these are set to miss a real weak peak rather than invent one.
+   */
+  const IAF_MIN_PROMINENCE = 1.5;
+  const IAF_MIN_WIDTH_HZ = 1.0;
+  const IAF_MIN_WINDOWS = 20;
+
+  function pow2Floor(n) { let p = 1; while (p * 2 <= n) p *= 2; return p; }
+
+  /*
+   * Welch-style averaged power spectrum: many overlapping windows, averaged.
+   *
+   * Averaging is the whole point — a single 4s spectrum of EEG is far too noisy to pick a
+   * peak out of, and the noise falls as 1/sqrt(windows). Overlapping by half is standard
+   * and costs nothing here: independence does not matter for an average, only for the
+   * observations the lab later does statistics on (which is why the analysis windows in
+   * spectralWindows below do NOT overlap).
+   *
+   * Bad windows are excluded rather than included-and-hoped-about: a blink is a large slow
+   * deflection whose spectrum sits right on top of theta and the bottom of alpha, and a
+   * flat channel contributes a spectrum of nothing. How many were dropped is returned, so
+   * a peak found from 12 usable windows out of 400 can be treated as the weak claim it is.
+   */
+  function averageSpectrum(samples, sampleRate, opts = {}) {
+    const { windowSec = IAF_WINDOW_SEC, overlap = 0.5, skipBad = true } = opts;
+    const want = Math.round(windowSec * sampleRate);
+    const n = pow2Floor(want);
+    const empty = (reason) => ({ power: null, binHz: sampleRate / Math.max(1, n), n,
+      windowSec: n / sampleRate, windows: 0, skipped: 0, reason });
+    if (n < 64) return empty('window too short to resolve anything');
+    if (!samples || samples.length < n) return empty('not enough samples for one window');
+    const step = Math.max(1, Math.round(n * (1 - Math.min(0.95, Math.max(0, overlap)))));
+    const slice = (i) => (samples.subarray ? samples.subarray(i, i + n) : samples.slice(i, i + n));
+    let acc = null, used = 0, skipped = 0;
+    for (let i = 0; i + n <= samples.length; i += step) {
+      const w = slice(i);
+      if (skipBad && (isArtifact(w) || isFlat(w))) { skipped++; continue; }
+      const { power } = powerSpectrum(w, sampleRate);
+      if (!acc) acc = new Float64Array(power.length);
+      for (let k = 0; k < power.length; k++) acc[k] += power[k];
+      used++;
+    }
+    if (!used) { const e = empty('every window was artifact-flagged or flat'); e.skipped = skipped; return e; }
+    for (let k = 0; k < acc.length; k++) acc[k] /= used;
+    return { power: acc, binHz: sampleRate / n, n, windowSec: n / sampleRate,
+      windows: used, skipped, reason: null };
+  }
+
+  /*
+   * The 1/f background, as a straight line through log10(power) vs log10(frequency).
+   *
+   * Least squares, skipping the excluded band and any non-positive bin (log of zero is not
+   * a number, and a zeroed bin is missing data rather than very small data). Returns null
+   * rather than a fit when there are too few usable points to constrain a line — a
+   * two-point "fit" would produce a confident background out of nothing.
+   */
+  function spectralBackground(spectrum, opts = {}) {
+    const { fitLoHz = 2, fitHiHz = 30, excludeLoHz = 6.5, excludeHiHz = 14 } = opts;
+    if (!spectrum || !spectrum.power) return null;
+    const { power, binHz } = spectrum;
+    const xs = [], ys = [];
+    for (let i = 1; i < power.length; i++) {
+      const f = i * binHz;
+      if (f < fitLoHz || f > fitHiHz) continue;
+      if (f >= excludeLoHz && f <= excludeHiHz) continue;
+      if (!(power[i] > 0)) continue;
+      xs.push(Math.log10(f)); ys.push(Math.log10(power[i]));
+    }
+    if (xs.length < 8) return null;
+    let sx = 0, sy = 0;
+    for (let i = 0; i < xs.length; i++) { sx += xs[i]; sy += ys[i]; }
+    const mx = sx / xs.length, my = sy / ys.length;
+    let num = 0, den = 0;
+    for (let i = 0; i < xs.length; i++) { num += (xs[i] - mx) * (ys[i] - my); den += (xs[i] - mx) * (xs[i] - mx); }
+    if (!(den > 0)) return null;
+    const b = num / den, a = my - b * mx;
+    return { a, b, points: xs.length, at: (f) => Math.pow(10, a + b * Math.log10(f)) };
+  }
+
+  /*
+   * The peak itself.
+   *
+   * Two frequencies are reported and they are not the same thing. `freqHz` is the bin with
+   * the largest excess over the background — exact, and jumpy, since it can only ever be a
+   * multiple of 0.25Hz and one noisy bin decides it. `cogHz` is the centre of gravity of
+   * the excess across the peak's own width, which is what the individual band is built
+   * from: it uses every bin in the bump instead of one, so it moves smoothly and is the
+   * more stable estimate of the same quantity. Corcoran et al. (2018) make the same
+   * argument for centre of gravity over argmax.
+   *
+   * A peak is refused, with a reason, when: the background could not be fitted; the excess
+   * never reaches minProminence; or the argmax lands on the very edge of the search range,
+   * which means the real bump is outside it — theta below, beta above — and naming the
+   * edge frequency would be inventing a peak out of a slope.
+   */
+  function individualAlphaPeak(spectrum, opts = {}) {
+    const { loHz = IAF_SEARCH_HZ[0], hiHz = IAF_SEARCH_HZ[1],
+      minProminence = IAF_MIN_PROMINENCE, minWidthHz = IAF_MIN_WIDTH_HZ,
+      minWindows = IAF_MIN_WINDOWS, halfWidthHz = 2 } = opts;
+    const fixed = { found: false, band: BANDS.alpha.slice(), freqHz: null, cogHz: null,
+      prominence: null, slope: null, windows: spectrum ? spectrum.windows || 0 : 0 };
+    if (!spectrum || !spectrum.power) {
+      return Object.assign(fixed, { reason: (spectrum && spectrum.reason) || 'no spectrum' });
+    }
+    if ((spectrum.windows || 0) < minWindows) {
+      return Object.assign(fixed, { reason: `only ${spectrum.windows || 0} clean windows,`
+        + ` need ${minWindows} (about ${Math.round(minWindows * (spectrum.windowSec || 4) / 2)}s of clean signal)` });
+    }
+    const bg = spectralBackground(spectrum, opts);
+    if (!bg) return Object.assign(fixed, { reason: 'could not fit the 1/f background' });
+    const { power, binHz } = spectrum;
+    const i0 = Math.max(1, Math.ceil(loHz / binHz));
+    const i1 = Math.min(power.length - 1, Math.floor(hiHz / binHz));
+    if (i1 - i0 < 3) return Object.assign(fixed, { reason: 'search range too narrow for this resolution', slope: bg.b });
+    // Excess over the background, per bin.
+    const excess = [];
+    for (let i = i0; i <= i1; i++) {
+      const f = i * binHz, base = bg.at(f);
+      excess.push({ i, f, ratio: base > 0 ? power[i] / base : 0, over: power[i] - base });
+    }
+    let best = excess[0];
+    for (const e of excess) if (e.ratio > best.ratio) best = e;
+    const out = Object.assign({}, fixed, { freqHz: best.f, prominence: best.ratio, slope: bg.b });
+    if (best.ratio < minProminence) {
+      return Object.assign(out, { reason: `no bump above the background (best ${best.ratio.toFixed(2)}x, need ${minProminence}x)` });
+    }
+    if (best.i === i0 || best.i === i1) {
+      return Object.assign(out, { reason: `the largest excess is at the edge of ${loHz}-${hiHz}Hz, so the real bump is outside it` });
+    }
+    /* CENTRE OF GRAVITY over the contiguous run around the peak where the excess is still
+       at least half of the peak's. Half-power width rather than a fixed span, so a broad
+       bump and a narrow one each get weighted by their own shape. */
+    const halfRatio = 1 + (best.ratio - 1) / 2;
+    const at = excess.findIndex((e) => e.i === best.i);
+    let lo = at, hi = at;
+    while (lo > 0 && excess[lo - 1].ratio >= halfRatio) lo--;
+    while (hi < excess.length - 1 && excess[hi + 1].ratio >= halfRatio) hi++;
+    let wsum = 0, fsum = 0;
+    for (let k = lo; k <= hi; k++) {
+      const w = Math.max(0, excess[k].over);
+      wsum += w; fsum += w * excess[k].f;
+    }
+    const cog = wsum > 0 ? fsum / wsum : best.f;
+    /* The band is cog +/- 2Hz, the Klimesch convention, clamped so it cannot swallow the
+       delta floor or reach into the beta range where it would stop meaning alpha. */
+    const band = [Math.max(6, cog - halfWidthHz), Math.min(14, cog + halfWidthHz)];
+    const widthHz = excess[hi].f - excess[lo].f;
+    /* THE GATE THAT DOES THE WORK — see the table above. A one-bin excess is what noise
+       produces; a bump is what a resonance produces. Checked after the centre of gravity
+       so the refusal can report the width it measured. */
+    if (widthHz < minWidthHz) {
+      return Object.assign(out, { cogHz: cog, widthHz,
+        reason: `the excess is only ${widthHz.toFixed(2)}Hz wide at half prominence,`
+          + ` which is what noise looks like (need ${minWidthHz}Hz)` });
+    }
+    return Object.assign(out, { found: true, cogHz: cog, band, reason: null, widthHz });
+  }
+
+  /*
+   * Every channel, then the best of them.
+   *
+   * Per channel because alpha is not evenly distributed over the head: it is strongest
+   * posteriorly, so on this headband TP9 and TP10 behind the ears will usually show a peak
+   * that AF7 and AF8 on the forehead barely hint at. Taking the most prominent channel is
+   * the right call for ESTIMATING the frequency — a peak is a property of the person, not
+   * of the electrode — and the per-channel table is kept so a frontal-only "peak" can be
+   * seen for what it is.
+   *
+   * When nothing is found anywhere, `fallback` is true and the band is the fixed 8-13Hz.
+   * That case must be labelled wherever the number is shown: an individual band and a
+   * population band are different claims and must not look alike.
+   */
+  function alphaPeakByChannel(eeg, sampleRate, opts = {}) {
+    const channels = (eeg || []).map((samples, i) => {
+      const spectrum = averageSpectrum(samples, sampleRate, opts);
+      const peak = individualAlphaPeak(spectrum, opts);
+      return Object.assign({ name: CHANNEL_NAMES[i] || `ch${i}`, channel: i,
+        windows: spectrum.windows, skipped: spectrum.skipped, binHz: spectrum.binHz }, peak);
+    });
+    return pickAlphaPeak(channels);
+  }
+
+  /*
+   * The best channel out of a set of per-channel results, and the fallback when there is
+   * none. Separate from alphaPeakByChannel so the two callers share it: the lab has whole
+   * recorded arrays to work from, while the app accumulates spectra as the sit runs and
+   * never holds the samples. One place to decide what "the" peak is means the summary
+   * screen and the lab cannot disagree about it.
+   */
+  function pickAlphaPeak(channels) {
+    let best = null;
+    for (const c of channels || []) {
+      if (!c.found) continue;
+      if (!best || c.prominence > best.prominence) best = c;
+    }
+    const list = channels || [];
+    return {
+      channels: list,
+      best: best ? best.channel : null,
+      bestName: best ? best.name : null,
+      freqHz: best ? best.cogHz : null,
+      band: best ? best.band : BANDS.alpha.slice(),
+      prominence: best ? best.prominence : null,
+      fallback: !best,
+      windows: list.reduce((m, c) => Math.max(m, c.windows || 0), 0),
+      windowSec: list.length && list[0].binHz ? 1 / list[0].binHz : null,
+      reason: best ? null : (list.find((c) => c.reason) || {}).reason || 'no channels',
+    };
+  }
+
+  /*
+   * The same averaged spectrum, accumulated AS THE SIT RUNS.
+   *
+   * The app cannot use averageSpectrum: it never holds the whole recording. Raw EEG goes
+   * straight to IndexedDB in chunks and the in-memory buffer is bounded to two seconds, so
+   * measuring a peak from memory would mean either keeping a second full copy of the sit
+   * (~10MB) or reading it all back out of storage on the summary screen.
+   *
+   * Neither is necessary, because an average does not need its inputs kept. This holds a
+   * 4-second ring buffer per channel and folds one window's spectrum into a running sum
+   * every 2 seconds, then divides at the end. Memory is fixed at one window plus one
+   * spectrum — about 12KB per channel — no matter whether the sit is five minutes or two
+   * hours, and the answer is identical to running averageSpectrum over the whole recording.
+   */
+  function SpectrumAccumulator(sampleRate, opts = {}) {
+    const { windowSec = IAF_WINDOW_SEC, hopSec = null, skipBad = true } = opts;
+    const n = pow2Floor(Math.round(windowSec * sampleRate));
+    const hop = Math.max(1, Math.round((hopSec == null ? windowSec / 2 : hopSec) * sampleRate));
+    const ring = new Float64Array(n);
+    const flat = new Float64Array(n);
+    let write = 0, filled = 0, sinceHop = 0;
+    let acc = null, windows = 0, skipped = 0;
+    function fold() {
+      // Oldest-first out of the ring, because a spectrum of a rotated window is not the
+      // spectrum of the window.
+      for (let i = 0; i < n; i++) flat[i] = ring[(write + i) % n];
+      if (skipBad && (isArtifact(flat) || isFlat(flat))) { skipped++; return; }
+      const { power } = powerSpectrum(flat, sampleRate);
+      if (!acc) acc = new Float64Array(power.length);
+      for (let k = 0; k < power.length; k++) acc[k] += power[k];
+      windows++;
+    }
+    return {
+      n, windowSec: n / sampleRate, binHz: sampleRate / n,
+      push(samples) {
+        for (let i = 0; i < samples.length; i++) {
+          ring[write] = samples[i];
+          write = (write + 1) % n;
+          if (filled < n) filled++;
+          sinceHop++;
+          if (filled === n && sinceHop >= hop) { sinceHop = 0; fold(); }
+        }
+      },
+      spectrum() {
+        if (!windows || !acc) {
+          return { power: null, binHz: sampleRate / n, n, windowSec: n / sampleRate,
+            windows: 0, skipped,
+            reason: skipped ? 'every window was artifact-flagged or flat'
+              : 'not enough clean signal yet' };
+        }
+        const out = new Float64Array(acc.length);
+        for (let k = 0; k < acc.length; k++) out[k] = acc[k] / windows;
+        return { power: out, binHz: sampleRate / n, n, windowSec: n / sampleRate,
+          windows, skipped, reason: null };
+      },
+      // A new sit is a new estimate: alpha frequency shifts with arousal and time of day,
+      // so carrying yesterday's windows into today's average would blur exactly the thing
+      // being measured.
+      reset() { write = 0; filled = 0; sinceHop = 0; acc = null; windows = 0; skipped = 0; },
+    };
+  }
+
+  /*
+   * Band powers per fixed-length window, for the lab's observations.
+   *
+   * WINDOWS DO NOT OVERLAP HERE, and that is a statistical requirement rather than a
+   * preference. The averaged spectrum above overlaps by half because more windows only
+   * make an average better. These windows become the OBSERVATIONS the lab correlates,
+   * permutes and multiplicity-corrects, and overlapping windows share samples, so they are
+   * not independent: the effective count would be smaller than the row count and every
+   * p-value would come out optimistic by an unknown factor. Non-overlapping costs half the
+   * rows and keeps the arithmetic honest.
+   *
+   * A channel that is artifact-flagged or flat in a given window yields NULL for that
+   * window rather than a number. Same rule as the live display: a gap is true, and a value
+   * nobody measured is worse than a missing one.
+   *
+   * `alphaBand` is the caller's, so this is where an individual alpha band actually gets
+   * used. Theta and beta stay fixed: the individual measurement is about where the alpha
+   * resonance sits, and it says nothing about where theta ends.
+   */
+  function bandSeries(eeg, sampleRate, opts = {}) {
+    const { windowSec = IAF_WINDOW_SEC, alphaBand = BANDS.alpha, totalBand = [1, 30] } = opts;
+    const n = pow2Floor(Math.round(windowSec * sampleRate));
+    const chans = eeg || [];
+    let len = 0;
+    for (const c of chans) if (c && c.length > len) len = c.length;
+    const rows = [];
+    if (n >= 64) {
+      for (let i = 0; i + n <= len; i += n) {
+        const row = { tSec: i / sampleRate, channels: [] };
+        for (const c of chans) {
+          if (!c || i + n > c.length) { row.channels.push(null); continue; }
+          const w = c.subarray ? c.subarray(i, i + n) : c.slice(i, i + n);
+          if (isArtifact(w) || isFlat(w)) { row.channels.push(null); continue; }
+          const sp = powerSpectrum(w, sampleRate);
+          row.channels.push({
+            alpha: bandPower(sp, alphaBand[0], alphaBand[1]),
+            theta: bandPower(sp, BANDS.theta[0], BANDS.theta[1]),
+            beta: bandPower(sp, BANDS.beta[0], BANDS.beta[1]),
+            total: bandPower(sp, totalBand[0], totalBand[1]),
+          });
+        }
+        rows.push(row);
+      }
+    }
+    return { windowSec: n / sampleRate, n, binHz: sampleRate / n, rows,
+      alphaBand: alphaBand.slice() };
+  }
+
   // ---- Artifact detection ------------------------------------------------
   // Blinks, jaw clenching, talking, and head movement produce much larger
   // electrical swings than resting cortical EEG, especially at frontal
@@ -439,6 +814,10 @@
     PPG_CHARACTERISTICS, PPG_CHANNEL_NAMES, PPG_FREQUENCY, PPG_SAMPLES_PER_PACKET,
     encodeCommand, decode12Bit, decode24Bit, samplesToMicrovolts,
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
+    IAF_SEARCH_HZ, IAF_WINDOW_SEC, IAF_MIN_PROMINENCE, IAF_MIN_WIDTH_HZ, IAF_MIN_WINDOWS,
+    pow2Floor,
+    averageSpectrum, spectralBackground, individualAlphaPeak, alphaPeakByChannel,
+    pickAlphaPeak, SpectrumAccumulator, bandSeries,
     ARTIFACT_PTP_UV, peakToPeak, isArtifact, FLAT_PTP_UV, isFlat, pearson, classifyArtifact,
     detectBeats, estimateBreathingPeriod,
     AdaptiveNormalizer, SpikeDetector, ActivityTracker,

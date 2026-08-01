@@ -95,6 +95,7 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 </div>
 
 <div id="loaded"></div>
+<div id="alpha"></div>
 <div id="clips"></div>
 <div id="out"></div>
 <div id="saved"></div>
@@ -126,6 +127,7 @@ let storeError = null;
 const dropEl = document.getElementById('drop');
 const fileEl = document.getElementById('file');
 const loadedEl = document.getElementById('loaded');
+const alphaEl = document.getElementById('alpha');
 const outEl = document.getElementById('out');
 
 const esc = (s) => String(s == null ? '' : s)
@@ -190,9 +192,18 @@ async function ingest(name, bytes) {
         return { condition: n.condition, trialKey: n.trialKey, blockIndex: n.blockIndex,
           fromSec: n.offsetSec, analyseFromSec: n.offsetSec + settle, toSec };
       });
+      /* INDIVIDUAL ALPHA PEAK, and the 4-second spectral series built on it — computed
+       * HERE, at ingest, because this is the only moment the raw EEG is in hand. The store
+       * keeps the parsed session and drops raw EEG (a thousand times larger than anything
+       * a view reads), so anything that needs samples has to be derived before that. The
+       * results are small and are persisted, so a restored session still knows its own
+       * alpha peak without the archive. */
+      const hasRaw = !!(read.eeg && read.eeg.some((c) => c && c.length));
+      const alpha = hasRaw ? DSP.alphaPeakByChannel(read.eeg, read.eegHz) : null;
+      const spectra = hasRaw ? spectralRows(read.eeg, read.eegHz, alpha.band) : null;
       sessions.push({
         sessionId: f.name, file: f.name, read, notes, spans, wholeSit, trialBlocks,
-        durationSec: duration,
+        durationSec: duration, alpha, spectra,
       });
     } catch (err) {
       // A bad archive must be reported by name. Silently skipping it would mean
@@ -231,8 +242,78 @@ async function persist() {
   catch (err) { storeError = (err && err.message) || 'could not save'; }
 }
 
+/* ==========================================================================
+ * THE 4-SECOND SERIES, RECOMPUTED FROM RAW EEG
+ * ==========================================================================
+ * "do individual alpha peak and four-second lab windows. Keep one-second windows for the
+ * live display."
+ *
+ * These are a different kind of column from metrics.csv's. metrics.csv is what the app
+ * computed while the sit was happening, at 1Hz from 1-second windows — which is 1Hz
+ * frequency resolution, five bins across the whole of alpha, and no way to tell 9.5Hz from
+ * 10.5Hz. That is fine for a live display and useless for a question about where someone's
+ * alpha actually sits. These rows are recomputed from the raw samples in 4-second windows
+ * (0.25Hz bins) using the individual alpha band measured from this session.
+ *
+ * Both are kept and the analysis views choose between them, rather than one replacing the
+ * other: metrics.csv carries the composite scores and the strap, and has four times the
+ * time resolution; this carries real per-electrode spectra and a band that means something
+ * for this person. A view that silently mixed them would be comparing 1s and 4s windows.
+ */
+const round4 = (v) => (v == null || !Number.isFinite(v) ? null : Number(v.toFixed(4)));
+
+function spectralRows(eeg, hz, band) {
+  const out = DSP.bandSeries(eeg, hz, { alphaBand: band });
+  const rows = out.rows.map((r) => {
+    // `t` rather than `tSec`, so these rows are the same shape as metrics.csv's and every
+    // downstream view can read either without knowing which it has.
+    const row = { t: Number(r.tSec.toFixed(3)) };
+    let relSum = 0, relN = 0;
+    r.channels.forEach((c, i) => {
+      const name = DSP.CHANNEL_NAMES[i] || `ch${i}`;
+      if (!c) return;                  // a bad window leaves this channel's columns absent
+      const rel = c.total > 0 ? c.alpha / c.total : null;
+      /* LOG POWER, not raw. Band power spans orders of magnitude and is roughly
+         log-normal, so a mean or a plotted average of raw power is dominated by its
+         largest few windows. The search is rank-based (Spearman) and cannot tell the
+         difference, but the clip library averages traces, and there it matters. */
+      row[`${name} alphaLog`] = round4(Math.log10(Math.max(1e-12, c.alpha)));
+      row[`${name} thetaLog`] = round4(Math.log10(Math.max(1e-12, c.theta)));
+      row[`${name} betaLog`] = round4(Math.log10(Math.max(1e-12, c.beta)));
+      // Relative alpha: alpha as a share of 1-30Hz. Immune to overall amplitude, which
+      // drifts with electrode contact over a long sit and is not a brain state.
+      row[`${name} alphaRel`] = round4(rel);
+      row[`${name} alphaRatio`] = round4(c.alpha / (c.alpha + c.beta + 1e-12));
+      if (rel != null) { relSum += rel; relN++; }
+    });
+    // One headline column across whatever channels were clean in this window, so there is
+    // something to search without picking an electrode first.
+    if (relN) row['alphaRel avg'] = round4(relSum / relN);
+    return row;
+  });
+  return { windowSec: out.windowSec, binHz: out.binHz, alphaBand: out.alphaBand, rows };
+}
+
+/* Which rows the analysis views read. One accessor, because the alternative is seven call
+   sites that can disagree about it. Sessions with no recomputed series fall back to
+   metrics.csv and say so rather than dropping out of the analysis silently. */
+let analysisSource = 'metrics';      // 'metrics' | 'spectra'
+function rowsOf(s) {
+  if (analysisSource === 'spectra' && s.spectra && s.spectra.rows.length) return s.spectra.rows;
+  return s.read.metrics || [];
+}
+function sourceLabel() {
+  return analysisSource === 'spectra'
+    ? '4s windows recomputed from raw EEG'
+    : '1s rows from metrics.csv';
+}
+function sessionsWithoutSpectra() {
+  return sessions.filter((s) => !s.error && !(s.spectra && s.spectra.rows.length));
+}
+
 function render() {
   renderLoaded();
+  renderAlpha();
   renderTimelines();
   renderClips();
   renderTrials();
@@ -257,7 +338,7 @@ function clipFeatureOptions() {
   const usable = sessions.filter((s) => !s.error);
   const keys = new Set();
   for (const s of usable) {
-    for (const k of Analysis.seriesKeys(s.read.metrics || [])) keys.add(k);
+    for (const k of Analysis.seriesKeys(rowsOf(s))) keys.add(k);
   }
   return Array.from(keys).sort();
 }
@@ -284,7 +365,7 @@ function renderClips() {
   if (clipCategory && !catKeys.includes(clipCategory)) clipCategory = null;
 
   const lib = Analysis.epochLibrary(sessions.filter((s) => !s.error).map((s) => ({
-    sessionId: s.sessionId, metrics: s.read.metrics, notes: s.notes,
+    sessionId: s.sessionId, metrics: rowsOf(s), notes: s.notes,
   })), { feature: clipFeature, category: clipCategory || catKeys[0],
     baseline: clipBaseline });
 
@@ -418,6 +499,84 @@ function drawClips(canvas, lib) {
     if (t < lib.bins[0] || t > lib.bins[lib.bins.length - 1]) continue;
     c.fillText(t === 0 ? 'mark' : `${t}s`, X(t), H - pad.b + 6);
   }
+}
+
+/* ==========================================================================
+ * INDIVIDUAL ALPHA PEAK
+ * ==========================================================================
+ * Every alpha number in the live app comes from a fixed 8-13Hz band, which is a population
+ * average and not a person. An individual peak sits anywhere from about 7.5 to 13Hz, so a
+ * fixed band can spend most of its width on someone's theta shoulder and low beta, and
+ * dilute the thing it is supposed to measure.
+ *
+ * This panel exists to be READ SCEPTICALLY, so it shows the working: every channel, whether
+ * a peak was found there, how far above the 1/f background it rose, how wide it is, and how
+ * many clean 4-second windows went into the estimate. A refusal shows its reason. The
+ * distinction between a measured band and the fixed fallback is stated in words on every
+ * row, because those are different claims and must not look alike.
+ */
+function renderAlpha() {
+  const usable = sessions.filter((s) => !s.error);
+  if (!usable.length) { alphaEl.innerHTML = ''; return; }
+  const withAlpha = usable.filter((s) => s.alpha);
+  if (!withAlpha.length) {
+    alphaEl.innerHTML = `<h2>Individual alpha peak</h2><div class="card note">
+      No session here carries raw EEG, so the peak cannot be measured — these sits were
+      restored from storage, which keeps the parsed rows and drops the samples. Re-drop the
+      archives to measure it. Analysis falls back to the fixed
+      ${DSP.BANDS.alpha[0]}–${DSP.BANDS.alpha[1]}Hz band.</div>`;
+    return;
+  }
+  const rows = withAlpha.map((s) => {
+    const a = s.alpha;
+    const per = a.channels.map((c) => {
+      if (!c.found) {
+        return `<tr class="dim"><td>${esc(c.name)}</td><td colspan="4">${esc(c.reason || 'no peak')}</td></tr>`;
+      }
+      const isBest = c.channel === a.best;
+      return `<tr><td>${isBest ? '<strong>' : ''}${esc(c.name)}${isBest ? ' ← used</strong>' : ''}</td>
+        <td class="num">${c.cogHz.toFixed(2)} Hz</td>
+        <td class="num">${c.prominence.toFixed(1)}×</td>
+        <td class="num">${c.widthHz.toFixed(2)} Hz</td>
+        <td class="num">${c.windows}${c.skipped ? ` <span class="dim">(${c.skipped} dropped)</span>` : ''}</td></tr>`;
+    }).join('');
+    const head = a.fallback
+      ? `<div class="card note bad">No alpha peak found in any channel. Using the FIXED
+         ${DSP.BANDS.alpha[0]}–${DSP.BANDS.alpha[1]}Hz band, which is a population
+         average and not this person: ${esc(a.reason || '')}</div>`
+      : `<div class="card note"><strong>${a.freqHz.toFixed(2)} Hz</strong> from
+         ${esc(a.bestName)}, ${a.prominence.toFixed(1)}× above the 1/f background.
+         Individual alpha band <strong>${a.band[0].toFixed(2)}–${a.band[1].toFixed(2)} Hz</strong>
+         (peak ±2Hz), which is what the 4-second series below is computed with.</div>`;
+    const spec = s.spectra
+      ? `<div class="dim">${s.spectra.rows.length} non-overlapping ${s.spectra.windowSec}s
+         windows, ${s.spectra.binHz} Hz bins.</div>`
+      : '<div class="dim">no recomputed series</div>';
+    return `<div class="card"><strong>${esc(s.file)}</strong>${head}
+      <table><tr><th>Channel</th><th>Peak</th><th>Prominence</th><th>Width</th>
+      <th>Clean 4s windows</th></tr>${per}</table>${spec}</div>`;
+  }).join('');
+  const missing = sessionsWithoutSpectra();
+  const srcNote = missing.length
+    ? `<div class="card note">${missing.length} session(s) have no recomputed series and will
+       fall back to metrics.csv whichever source is selected: ${esc(missing.map((s) => s.file).join(', '))}.</div>`
+    : '';
+  alphaEl.innerHTML = `<h2>Individual alpha peak</h2>
+    <div class="card">
+      <label>Analysis reads
+        <select id="srcSel">
+          <option value="metrics"${analysisSource === 'metrics' ? ' selected' : ''}>1s rows from metrics.csv</option>
+          <option value="spectra"${analysisSource === 'spectra' ? ' selected' : ''}>4s windows recomputed from raw EEG</option>
+        </select>
+      </label>
+      <div class="dim">metrics.csv is what the app computed live: 1Hz, from 1-second windows,
+      so 1Hz frequency bins. The recomputed series uses 4-second windows (0.25Hz bins) and
+      this session's own alpha band, at a quarter of the time resolution. The windows do not
+      overlap, so each row is an independent observation and the p-values downstream mean
+      what they say.</div>
+    </div>${srcNote}${rows}`;
+  const sel = document.getElementById('srcSel');
+  if (sel) sel.addEventListener('change', () => { analysisSource = sel.value; render(); });
 }
 
 function renderLoaded() {
@@ -609,7 +768,7 @@ function renderTrials() {
       const blocks = entries.filter((e) => e.session.sessionId === sid).map((e) => e.block);
       units.push(...Trials.unitsFromRun(
         { protocol: proto || { conditions: [], key }, blocks },
-        s.read.metrics, { sessionId: sid },
+        rowsOf(s), { sessionId: sid },
       ));
     }
     if (!units.length) return '';
@@ -704,7 +863,7 @@ function renderSearch() {
   const usable = sessions.filter((s) => !s.error);
   if (!usable.length) { outEl.innerHTML = ''; return; }
   const forAnalysis = usable.map((s) => ({
-    sessionId: s.sessionId, metrics: s.read.metrics, spans: s.spans, notes: s.notes,
+    sessionId: s.sessionId, metrics: rowsOf(s), spans: s.spans, notes: s.notes,
   }));
 
   const spanUnits = Analysis.unitsFromSpans(forAnalysis);

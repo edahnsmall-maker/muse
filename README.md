@@ -683,6 +683,111 @@ measured 6.52 against 6.11, very slightly *more*), and near-baselining destroys 
 **elevation** rather than the shape, which a within-window difference cannot detect at all
 because a constant offset cancels in a subtraction.
 
+### Individual alpha peak, and why the lab windows are four seconds
+
+Every alpha number in the live app comes from a fixed **8–13Hz** band. That is a population
+average, not a person. Individual alpha frequency sits anywhere from roughly 7.5 to 13Hz,
+varies by several Hz between people, and shifts with age, arousal and time of day. If
+someone's own peak is at 9.2Hz, a fixed 8–13 band spends most of its width measuring their
+theta shoulder and their low beta, and a genuine change in alpha arrives diluted by whatever
+else lives in the band.
+
+**The 4-second window is a requirement, not a preference.** Frequency resolution is
+1/windowLength. The live display uses 1-second windows, which gives **1Hz bins** — five bins
+across the whole of alpha, and no way to tell 9.5Hz from 10.5Hz. Four seconds gives 0.25Hz
+bins. The live display stays at 1s because it needs to react; the lab uses 4s because the
+shorter window *cannot represent the answer*. 4s at 256Hz is 1024 samples, a power of two,
+so the radix-2 FFT takes it unpadded.
+
+**A plain peak-pick would be wrong.** EEG power falls off with frequency, so the largest raw
+value in 7.5–13Hz is almost always near 7.5 whether or not there is a peak there at all. The
+background is removed first: a straight line fitted to log10(power) against log10(frequency)
+over 2–30Hz, *excluding* 6.5–14Hz so the alpha bump cannot pull the fit that is meant to
+describe everything except the alpha bump. The peak is then the largest excess over that.
+
+Two frequencies are reported and they are not the same thing. `freqHz` is the single best
+bin — exact, and jumpy, since it can only be a multiple of 0.25Hz and one noisy bin decides
+it. `cogHz` is the centre of gravity of the excess across the bump's own half-power width,
+which uses every bin in the bump instead of one; it is the more stable estimate of the same
+quantity and it is what the individual band is built from (peak ±2Hz, the Klimesch
+convention). Corcoran et al. (2018) make the same argument for centre of gravity over argmax.
+
+#### The gates, and how they were set
+
+The detector must refuse as reliably as it detects — a false peak silently redefines every
+alpha number downstream to centre on a noise bin, whereas a refusal costs a labelled
+fallback. So the thresholds were **measured** against pink noise with no alpha in it at all,
+40 realisations at each of several durations, then against a deliberately weak alpha:
+
+| | prominence (max) | half-prominence width |
+|---|---|---|
+| noise only, 10s | 3.28× | 0.75Hz |
+| noise only, 40s | 1.90× | 0.50Hz |
+| noise only, 180s | 1.77× | 0.25Hz |
+| weak alpha | 2.32–2.56× | 1.50–1.75Hz |
+| ordinary alpha | 12.9× | 1.50Hz |
+
+**Prominence alone is not enough, and that is the useful finding.** Noise reaches 1.77–2.15×
+on its own and genuinely weak alpha starts around 2.3×, so the two distributions very nearly
+touch — a threshold there would be a coin toss. **Width separates them cleanly**: noise never
+exceeds 0.75Hz at half prominence and real alpha never comes in under 1.5Hz, because a single
+lucky bin is what noise produces and a bump is what a resonance produces. So width is the real
+gate (≥1.0Hz), prominence is only a floor (≥1.5×), and a third gate requires ≥20 clean windows
+because both other numbers degrade with less data.
+
+Result: **zero false peaks across 160 noise-only realisations**, 100% detection of weak but
+real alpha, and recovery of a planted 10.3Hz bump to within 0.03Hz.
+
+#### Where it is computed, twice, for different reasons
+
+**In the app**, accumulated as the sit runs. The app cannot batch-process the recording: raw
+EEG goes straight to IndexedDB in chunks and the in-memory buffer is bounded to two seconds,
+so measuring from memory would mean keeping a second full copy of the sit (~10MB) or reading
+it all back on the summary screen. Neither is necessary, because **an average does not need
+its inputs kept** — `DSP.SpectrumAccumulator` holds a 4-second ring per channel and folds one
+spectrum into a running sum every 2 seconds. Fixed at about 12KB per channel whether the sit
+is five minutes or two hours, and `test-dsp.js` asserts it produces a bit-for-bit identical
+answer to running the batch version over the whole recording, fed in 12-sample Muse packets.
+
+The summary screen states the peak *and* what it does not apply to, in the same breath: every
+other alpha figure in the report comes from the fixed band, because 1-second windows cannot
+resolve a peak. A frequency printed alone would read as though the app had been tracking it
+all along. The refusal is written out in as much detail as the finding — "not measurable
+because 14 clean windows is not enough" is usable, and a silently absent line reads as a
+broken feature.
+
+**In the lab**, from the raw samples, at ingest — the only moment the samples are in hand,
+since the store keeps parsed rows and drops raw EEG. The peak and the 4-second series derived
+from it are persisted, because otherwise a restored session would silently fall back to the
+fixed band: the same screen quietly answering a different question.
+
+#### The 4-second series, and why its windows do not overlap
+
+The lab now offers a second set of columns, recomputed from raw EEG in 4-second windows using
+this session's own alpha band: per electrode `alphaLog`, `thetaLog`, `betaLog`, `alphaRel`
+(alpha as a share of 1–30Hz, immune to the overall amplitude drift that comes from electrode
+contact rather than from the brain) and `alphaRatio`, plus one headline `alphaRel avg`. A
+selector chooses whether the analysis views read these or metrics.csv's 1-second rows. Both
+are kept rather than one replacing the other — metrics.csv has the composite scores, the
+strap, and four times the time resolution; this has real per-electrode spectra and a band
+that means something for this person.
+
+**The windows do not overlap, and that is a statistical requirement.** The averaged spectrum
+used for the peak *does* overlap by half, because more windows only make an average better.
+But these rows become the observations the lab correlates, permutes and multiplicity-corrects,
+and overlapping windows share samples, so they are not independent: the effective count would
+be smaller than the row count and every p-value would come out optimistic by an unknown
+factor. Non-overlapping costs half the rows and keeps the arithmetic honest.
+
+Log power rather than raw, for the same reason band power is usually reported that way: it
+spans orders of magnitude and is roughly log-normal, so a mean or a plotted average of raw
+power is dominated by its largest few windows. The rank-based search cannot tell the
+difference; the clip library averages traces, and there it matters.
+
+A channel that is artifact-flagged or flat in a given window yields **null** for that window
+rather than a number — the same rule as the live display, and it means a dead electrode
+contributes no columns at all rather than a column of confident zeros.
+
 ### Straight from a sit into the lab
 
 The summary offers **Open in analysis lab** next to the two downloads. Downloading a zip

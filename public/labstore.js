@@ -122,6 +122,14 @@
         files: read.files || [],
       },
       hasRaw: !!(read.eeg && read.eeg.some((ch) => ch && ch.length)),
+      /* DERIVED-FROM-RAW RESULTS ARE KEPT, even though the raw EEG is not. The individual
+       * alpha peak and the 4-second spectral series can only be computed while the samples
+       * are in hand, at ingest. Dropping them here would mean a restored session silently
+       * falling back to the fixed 8-13Hz band and the 1-second rows — the same screen,
+       * quietly answering a different question. They are small: a peak is a handful of
+       * numbers, and the series is one row per four seconds. */
+      alpha: session.alpha || null,
+      spectra: session.spectra || null,
       storedAt: session.storedAt || null,
     };
   }
@@ -130,7 +138,7 @@
   // downstream, or the views quietly behave differently depending on where the data came
   // from. The absent raw EEG is represented as four empty channels rather than missing.
   function rehydrate(stored) {
-    const s = Object.assign({}, stored);
+    const s = Object.assign({ alpha: null, spectra: null }, stored);
     s.read = Object.assign({ eeg: [[], [], [], []], acc: [], rr: [], audio: {}, markdown: '' },
       stored.read || {});
     return s;

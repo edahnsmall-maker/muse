@@ -162,7 +162,7 @@
   // keeps its meaning without the app, and easy to paste into a journal.
   // Includes the honesty caveats inline, because a file outlives the session
   // and will eventually be read without any of this conversation's context.
-  function toMarkdown(stats, { selfRating = null, cueLog = [], dateISO = null, visualMode = null, breathPattern = null, markers = [], samples = [], markerContext = null, practice = null, heart = null } = {}) {
+  function toMarkdown(stats, { selfRating = null, cueLog = [], dateISO = null, visualMode = null, breathPattern = null, markers = [], samples = [], markerContext = null, practice = null, heart = null, alphaPeak = null } = {}) {
     if (!stats) return '# Meditation session\n\nNot enough signal was recorded to summarise this sit.\n';
     const mins = Math.floor(stats.durationSec / 60);
     const secs = Math.round(stats.durationSec % 60);
@@ -217,6 +217,47 @@
     L.push(`| Signal noise (movement) | ${pct(stats.noiseAvg)} |`);
     L.push(`| Usable forehead signal | ${pct(stats.usableAvg)} |`);
     L.push('');
+
+    /* THE INDIVIDUAL ALPHA PEAK, and what it does NOT apply to.
+     *
+     * Written into the report because it is the one number here that is a property of the
+     * person rather than of a formula, so it is the one worth comparing across months. It
+     * has to carry its own scope: every other alpha figure in this report comes from the
+     * fixed 8-13Hz band, because the live pipeline uses 1-second windows and 1Hz bins
+     * cannot resolve a peak. Printing a frequency without that would imply the whole report
+     * had been computed with it.
+     *
+     * A refusal is written out too. "Not measurable, because 14 clean windows is not enough"
+     * is usable; a silently absent section reads as a missing feature. */
+    if (alphaPeak) {
+      L.push('## Individual alpha peak');
+      L.push('');
+      if (alphaPeak.fallback) {
+        L.push(`Not measurable this sit — ${alphaPeak.reason || 'no peak found'}.`);
+        L.push('');
+        L.push('Alpha figures in this report therefore use the fixed **8–13Hz** band, which is a');
+        L.push('population average and not this person.');
+      } else {
+        L.push(`**${alphaPeak.freqHz.toFixed(2)} Hz**, measured at ${alphaPeak.bestName},`);
+        L.push(`${alphaPeak.prominence.toFixed(1)}× above the fitted 1/f background, from`);
+        L.push(`${alphaPeak.windows} four-second windows. Individual alpha band`);
+        L.push(`**${alphaPeak.band[0].toFixed(2)}–${alphaPeak.band[1].toFixed(2)} Hz**.`);
+        L.push('');
+        L.push('| Channel | Peak | Prominence | Width | Clean 4s windows |');
+        L.push('| --- | --- | --- | --- | --- |');
+        for (const c of alphaPeak.channels || []) {
+          L.push(c.found
+            ? `| ${c.name}${c.channel === alphaPeak.best ? ' (used)' : ''} | ${c.cogHz.toFixed(2)} Hz`
+              + ` | ${c.prominence.toFixed(1)}× | ${c.widthHz.toFixed(2)} Hz | ${c.windows} |`
+            : `| ${c.name} | — | — | — | ${c.reason || 'no peak'} |`);
+        }
+        L.push('');
+        L.push('Every OTHER alpha number in this report comes from the fixed 8–13Hz band: the live');
+        L.push('pipeline uses 1-second windows, which give 1Hz frequency bins and cannot resolve a');
+        L.push('peak at all. The analysis lab recomputes from the raw EEG using the band above.');
+      }
+      L.push('');
+    }
 
     // Heart section, only when a strap was actually connected. Absent rather
     // than zeroed when there was none — the report should never imply it

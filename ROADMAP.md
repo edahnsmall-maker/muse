@@ -303,7 +303,11 @@ quietly turns into one that always says no.
 
 ### What to build next, in order
 
-1. Per-channel columns in `metrics.csv` (weakness 1) — unblocks the electrode questions.
+1. ~~Per-channel columns in `metrics.csv` (weakness 1)~~ — **done (2026-08-01)**, though not
+   the way this line imagined. Rather than widening `metrics.csv`, the lab recomputes
+   per-electrode spectra from the raw EEG in 4-second windows. That answers the electrode
+   questions with better frequency resolution than `metrics.csv` could have carried, and it
+   knocked out item 6 in the same work.
 2. Per-session z-scoring before pooling (3) — largest power gain for the least work.
 3. A power readout in the lab UI, not just in the verdict string: "at your current data
    you could detect ρ ≥ 0.37; you have N marks; M more would get you to 0.25." Turns the
@@ -311,9 +315,31 @@ quietly turns into one that always says no.
 4. Noise-controlled findings (4): re-test every survivor with `noise` partialled out, and
    report both. A finding that dies is a movement artefact.
 5. Within-session permutation null (5).
-6. Recompute band powers from raw EEG in the lab (2) — the step from auditing to
-   discovering, and the largest piece of work here.
+6. ~~Recompute band powers from raw EEG in the lab (2)~~ — **done (2026-08-01)**. This was
+   "the largest piece of work here" and it came in on the back of the individual alpha peak,
+   because both need the same thing: 4-second windows over the raw samples. The lab now
+   offers `alphaLog` / `alphaRel` / `alphaRatio` / `thetaLog` / `betaLog` per electrode, in
+   this person's own alpha band, with a selector against the old 1-second rows.
 7. Confidence intervals (7) and effective-comparison correction (6).
+
+**A note on the statistics, since this changes the observations.** The 4-second analysis
+windows do NOT overlap, deliberately: overlapping windows share samples and are therefore not
+independent, so the effective *n* would be smaller than the row count and every *p*-value
+optimistic by an unknown factor — which would quietly undo the multiplicity work above. The
+averaged spectrum used to find the peak does overlap by half, where independence does not
+matter because more windows only improve an average. Two different jobs, two different rules.
+
+- [ ] Restrict the peak estimate to the eyes-closed control block when a session has one, and
+      compare it against the whole-sit estimate. Whole-sit is used now because more windows is
+      a better average, but eyes-closed is where alpha is largest and least contaminated, so
+      the two disagreeing would itself be informative.
+- [ ] Track the peak across sessions. It shifts with arousal, fatigue and time of day, so a
+      per-sit figure is a candidate marker of state and not just a calibration constant.
+- [ ] Consider using the individual band in the LIVE display. It cannot be done at 1-second
+      windows (1Hz bins), so this means either a longer window for the alpha estimate alone —
+      accepting the lag — or a narrowband filter rather than an FFT. Not attempted yet, and
+      the live display staying on the fixed band is currently stated on screen rather than
+      hidden.
 
 ## Validation: calibration trials (the actual next priority)
 
