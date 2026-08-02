@@ -473,7 +473,6 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
   const canvas = makeCanvas(1280, 720);
   const v = sandbox.createZenVisual(canvas);
   while (v.currentMode().key !== 'flow') v.cycleMode();
-  v.flowDebug(true);
   const BAND = canvas.height * (0.76 - 0.18);   // flowBottom - flowTop, in canvas px
   const frame = () => { nowMs += 16; const cb = rafCb; rafCb = null; cb(nowMs); };
   const base = (i, k) => 0.42 + 0.06 * Math.sin(i / 9 + k) + 0.004 * Math.sin(i * 2.3 + k);
@@ -486,8 +485,15 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
     v.setState({ calm: 0.5, noise: 0.1, activity: 0.5, bands });
     for (let f = 0; f < 3; f++) frame();
   };
-  // Fill to capacity and let the axis converge, so what follows measures revision only.
-  for (let i = 0; i < 800; i++) push(i);
+  /* Fill to capacity and let the axis converge, so what follows measures revision only. 300 is
+     enough: FLOW_MAX is 240 samples and settleRange's release time constant is ~17s, which is
+     60 samples at this cadence. 800 was the first guess and cost 1500 needless frames — the
+     debug capture allocates four arrays per frame, so it is switched on only to measure. */
+  for (let i = 0; i < 300; i++) push(i);
+  v.flowDebug(true);
+  // One frame with the capture on, or flowTrace has nothing to return yet: the y values are
+  // recorded DURING a render, not on demand.
+  frame();
 
   /* Follow the sample currently at `idx`. History is at capacity, so each push shifts it
      down one index — that is what makes this the same sample rather than the same place. */

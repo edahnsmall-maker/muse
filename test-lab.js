@@ -243,13 +243,15 @@ function makeEegArchive({ id, centre = 10.6, alpha = true, secs = 120 }) {
   return { name: `eeg-${id}.zip`, bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
 }
 
-async function drop(page, archives) {
+/* `expectRows` because not every dropped file becomes a row: a duplicate recording is refused on
+   purpose, so waiting for one row per file would hang on exactly the test that checks that. */
+async function drop(page, archives, expectRows = archives.length) {
   await page.setInputFiles('#file', archives.map((a) => ({
     name: a.name, mimeType: 'application/zip', buffer: a.bytes,
   })));
   // The page reads and parses asynchronously; wait for the table rather than sleeping.
   await page.waitForFunction((n) => document.querySelectorAll('#loaded tbody tr, #loaded table tr').length >= n + 1,
-    archives.length, { timeout: 15000 });
+    expectRows, { timeout: 15000 });
   await page.waitForTimeout(400);
 }
 
@@ -1042,6 +1044,53 @@ async function drop(page, archives) {
       + ` ${(out.calm.stillFrac * 100).toFixed(1)}% vs ${(out.restless.stillFrac * 100).toFixed(1)}%,`
       + ` movements ${out.calm.eventsPerMin.toFixed(1)} vs ${out.restless.eventsPerMin.toFixed(1)}/min,`
       + ` peak position ${out.calm.medianRiseFrac} vs ${out.restless.medianRiseFrac}, and no p-value`);
+  }
+
+  /* ---- THE SAME SIT UNDER TWO FILENAMES MUST BE REFUSED ------------------------------
+   *
+   * A real findings report listed one session twice, and both `...-2346.zip` and
+   * `...-2346 (1).zip` — what a browser names a re-download. Session ids are filenames, so those
+   * are distinct sessions downstream, and two things break: n is inflated, and one copy can land
+   * in training while the other lands in the held-out set. That is precisely the leak that
+   * splitting by session exists to prevent, and it would let a finding be "confirmed" on the very
+   * seconds it was fitted on.
+   */
+  {
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    await page.reload();
+    await page.waitForTimeout(300);
+    const archive = makeMoveArchive({ id: 'orig', restless: false });
+    // The same bytes under a different name, exactly as a re-download arrives.
+    const copy = { name: 'move-orig (1).zip', bytes: archive.bytes };
+    await drop(page, [archive, copy], 1);       // two files, one row: the copy is refused
+    const out = await page.evaluate(() => ({
+      count: sessions.filter((s) => !s.error).length,
+      files: sessions.map((s) => s.file),
+      dupText: document.getElementById('loaded').textContent.replace(/\s+/g, ' '),
+      keys: sessions.map((s) => s.contentKey),
+    }));
+    assert.strictEqual(out.count, 1,
+      `the same recording twice must load once (got ${out.files.join(', ')})`);
+    assert.match(out.dupText, /Refused 1 duplicate/,
+      'and must say it refused one, or a vanished file looks like a failed drop');
+    assert.match(out.dupText, /same sit as/, 'naming which sit it duplicated');
+    assert.match(out.dupText, /both sides of the train\/test split/,
+      'and why it matters, since the cost is a leak rather than clutter');
+    assert.ok(out.keys[0], 'identity must come from the recording, not the filename');
+
+    /* AND A GENUINELY DIFFERENT SIT MUST STILL LOAD. A duplicate check that rejects real data is
+       worse than none — this is the assertion that keeps it from becoming one. */
+    await drop(page, [makeMoveArchive({ id: 'other', restless: true, secs: 200 })], 2);
+    const after = await page.evaluate(() => ({
+      count: sessions.filter((s) => !s.error).length,
+      keys: sessions.map((s) => s.contentKey),
+    }));
+    assert.strictEqual(after.count, 2, 'a different recording must still be accepted');
+    assert.notStrictEqual(after.keys[0], after.keys[1],
+      'two different sits must have different identities');
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    console.log('✓ the same recording under a different filename is refused, by recording identity'
+      + ' rather than by name, and a genuinely different sit still loads');
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

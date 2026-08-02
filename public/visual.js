@@ -52,6 +52,21 @@ function createZenVisual(canvas) {
     voidCalm: 0.5,
     breathAmount: null,   // null until a real measurement exists
     breathPrev: null,
+    /*
+     * EVERY COMPOSITE, EASED PER FRAME — the same fix Flow needed, for the same reason.
+     *
+     * Reported as "the other visuals are also choppy". Pulse, Corona and Silk wrote
+     * `state.metrics[key]` straight into their ring buffers on every frame, and that value only
+     * changes when setState is called: once per 250ms tick. So fifteen consecutive frames wrote
+     * an identical radius and the sixteenth stepped. The ring is a history, so the step is then
+     * preserved in the picture rather than passing — a visible staircase around the dial.
+     *
+     * `calm`, `activity`, `noise` and the electrode levels were already eased here. The
+     * composites were the ones nobody had connected, because they arrived later. Null is
+     * preserved rather than eased toward zero: a metric with no inputs must hold, not decay,
+     * which is the same rule metrics.js follows.
+     */
+    metrics: {},
   };
 
   let modeIndex = 0;
@@ -1281,7 +1296,9 @@ function createZenVisual(canvas) {
     // expand() first, for the same reason as everywhere else: without it the
     // input only ever travels across the middle third of its range.
     VizCore.PULSE_METRICS.forEach((m, mi) => {
-      const raw = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
+      // Eased, not raw — see smooth.metrics. Writing the 4Hz value into a 60fps ring is what
+      // made the dial step.
+      const raw = smooth.metrics[m.key] != null ? smooth.metrics[m.key] : null;
       pulseRings[mi].write(tSec, pulseDevs[mi].update(raw == null ? null : VizCore.expand(raw)));
     });
 
@@ -1407,7 +1424,7 @@ function createZenVisual(canvas) {
     c.fillRect(0, 0, W, H);
 
     VizCore.PULSE_METRICS.forEach((m, mi) => {
-      const raw = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
+      const raw = smooth.metrics[m.key] != null ? smooth.metrics[m.key] : null;
       coronaRings[mi].write(tSec, coronaDevs[mi].update(raw == null ? null : VizCore.expandSoft(raw)));
     });
 
@@ -1480,7 +1497,8 @@ function createZenVisual(canvas) {
     c.fillRect(0, 0, W, H);
 
     VizCore.PULSE_METRICS.forEach((m, mi) => {
-      const raw = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
+      // Eased, not raw — see smooth.metrics.
+      const raw = smooth.metrics[m.key] != null ? smooth.metrics[m.key] : null;
       coronaRings[mi].write(tSec, coronaDevs[mi].update(raw == null ? null : VizCore.expandSoft(raw)));
     });
 
@@ -2286,6 +2304,19 @@ function createZenVisual(canvas) {
     smooth.breathPeriod += response.breath * (state.breathPeriod - smooth.breathPeriod);
     for (let i = 0; i < 4; i++) {
       smooth.levels[i] += response.levels * (clamp01(state.bands[i].level) - smooth.levels[i]);
+    }
+    /* The composites, on the same per-frame easing as everything else above. `response.focus` is
+       reused deliberately: these are interpreted scores on the same timescale as focus, and
+       inventing a fourth rate constant for them would be a knob with no measurement behind it. */
+    for (const m of VizCore.PULSE_METRICS) {
+      const target = state.metrics && state.metrics[m.key] != null ? state.metrics[m.key] : null;
+      // Non-finite as well as null: a metric arriving as NaN or Infinity must not be eased
+      // toward, because an eased NaN is NaN forever — the value is a running state, so one bad
+      // sample poisons it for the rest of the sit rather than passing through in a frame.
+      if (target == null || !Number.isFinite(target)) continue;
+      const cur = smooth.metrics[m.key];
+      const next = cur == null ? target : cur + response.focus * (target - cur);
+      smooth.metrics[m.key] = clamp01(next);
     }
 
     const mode = VizCore.MODES[modeIndex].key;

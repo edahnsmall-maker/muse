@@ -132,6 +132,12 @@
       spectra: session.spectra || null,
       // Same reasoning as `alpha`: derived from acc.csv, which is not stored, so dropping this
       // would silently remove the movement comparison from any restored session.
+      // The lab's own name for the sit. See the note in lab.html: the app's name does not travel
+      // in the archive in a machine-readable place, and naming happens while comparing anyway.
+      label: session.label || '',
+      // Identity of the RECORDING rather than of the file — see the duplicate note in lab.html.
+      // Persisted so a restored sit still rejects a re-dropped copy of itself.
+      contentKey: session.contentKey || null,
       movement: session.movement || null,
       wholeStats: session.wholeStats || null,
       storedAt: session.storedAt || null,
@@ -142,7 +148,7 @@
   // downstream, or the views quietly behave differently depending on where the data came
   // from. The absent raw EEG is represented as four empty channels rather than missing.
   function rehydrate(stored) {
-    const s = Object.assign({ alpha: null, spectra: null, movement: null, wholeStats: null }, stored);
+    const s = Object.assign({ alpha: null, spectra: null, movement: null, wholeStats: null, label: '', contentKey: null }, stored);
     s.read = Object.assign({ eeg: [[], [], [], []], acc: [], rr: [], audio: {}, markdown: '' },
       stored.read || {});
     return s;

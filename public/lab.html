@@ -162,6 +162,44 @@ async function load(files) {
 
 /* ONE INGEST PATH for a dropped file and for an archive handed over by the app. Two
  * paths that are meant to agree eventually stop agreeing. */
+/*
+ * The identity of a RECORDING, independent of its filename.
+ *
+ * First attempt was the start time plus the row count, on the reasoning that two recordings
+ * cannot begin at the same millisecond. True of real sits and false of test fixtures — two
+ * different synthetic sits built from the same nominal start collided, and the duplicate check
+ * threw away real data. That is the failure mode that matters: a check which rejects genuine
+ * sessions is worse than no check, because the loss is silent from the analysis's point of view.
+ *
+ * So the key includes a cheap hash of the CONTENT as well. FNV-1a over a sample of the numeric
+ * columns — every row if there are few, otherwise a fixed stride so cost stays bounded on a
+ * 40-minute sit. Sampling by stride rather than by prefix on purpose: two sits that begin
+ * identically and diverge later are exactly the pair a prefix hash would confuse.
+ */
+function recordingKey(read) {
+  const rows = (read && read.metrics) || [];
+  if (!rows.length) return null;
+  const startMs = Number(rows[0].epochMs);
+  let h = 0x811c9dc5;
+  const stride = Math.max(1, Math.floor(rows.length / 64));
+  for (let i = 0; i < rows.length; i += stride) {
+    const r = rows[i];
+    for (const k of Object.keys(r)) {
+      const str = String(r[k]);
+      for (let j = 0; j < str.length; j++) {
+        h ^= str.charCodeAt(j);
+        h = (h * 0x01000193) >>> 0;
+      }
+    }
+  }
+  const stamp = Number.isFinite(startMs) ? startMs : 'nostamp';
+  return `${stamp}:${rows.length}:${h.toString(16)}`;
+}
+
+/* Sits refused as duplicates, reported by name — a file that silently vanished on drop would
+   look like the drop having failed. */
+const duplicates = [];
+
 async function ingest(name, bytes) {
   {
     const f = { name };
@@ -212,7 +250,38 @@ async function ingest(name, bytes) {
       // Whole-sit descriptors, so a session can be compared as a session rather than only at
       // its marks. Computed once here so every view agrees about them.
       const wholeStats = sessionStats({ read, notes, spans, durationSec: duration, movement });
+      /*
+       * THE SAME SIT MUST NOT BE LOADED TWICE, and this is a correctness problem rather than
+       * tidiness.
+       *
+       * A real findings report listed `meditation-2026-07-29-2151.zip` twice and both
+       * `meditation-2026-07-27-2346.zip` and `meditation-2026-07-27-2346 (1).zip` — the second
+       * being what a browser names a re-download. The session id is the FILENAME, so those are
+       * two different sessions as far as everything downstream is concerned, and two things go
+       * wrong at once:
+       *
+       *   - n is inflated. The same twenty windows are counted twice, so every p-value is
+       *     computed against an observation count that does not exist.
+       *   - The train/test split leaks. One copy can land in training and the other in the
+       *     held-out set, which is EXACTLY the leak splitting by session exists to prevent. A
+       *     finding "confirmed on data it was not fitted on" would have been confirmed on the
+       *     same seconds it was fitted on.
+       *
+       * Identity therefore comes from the RECORDING, not the file: when it started, in absolute
+       * epoch milliseconds, plus how many rows it has. Two files of the same sit agree on both;
+       * two genuinely different sits cannot, since a recording begins at one instant.
+       */
+      const contentKey = recordingKey(read);
+      if (contentKey) {
+        const twin = sessions.find((x) => x.contentKey === contentKey);
+        if (twin) {
+          duplicates.push({ file: f.name, sameAs: twin.file });
+          // `return`, not `continue`: ingest handles one file per call, and this one is done.
+          return;
+        }
+      }
       sessions.push({
+        contentKey,
         sessionId: f.name, file: f.name, read, notes, spans, wholeSit, trialBlocks,
         durationSec: duration, alpha, spectra, movement, wholeStats,
       });
@@ -231,7 +300,22 @@ async function openStore() {
   try {
     store = await LabStore.open();
     const restored = await LabStore.loadSessions(store);
-    for (const r of restored) sessions.push(r);
+    for (const r of restored) {
+      /* WHOLE-SIT STATS FOR RESTORED SESSIONS TOO. Reported as "i don't see the analysis of the
+       * whole session yet" — and the section really was empty, because it only renders sessions
+       * carrying `wholeStats`, and those were computed at ingest. Every sit already in storage
+       * from before that existed had none, so the whole feature was invisible to exactly the
+       * person who had been recording all along.
+       *
+       * The series statistics can be rebuilt from the stored rows, so they are. Movement cannot:
+       * it needs acc.csv, which the store drops. A restored session therefore shows its scores
+       * and says its movement is unavailable, rather than vanishing from the comparison. */
+      if (!r.wholeStats) {
+        r.wholeStats = sessionStats({ read: r.read || {}, notes: r.notes || [],
+          spans: r.spans || [], durationSec: r.durationSec, movement: r.movement || null });
+      }
+      sessions.push(r);
+    }
     /* Anything the app handed over since last time. Ingested through the SAME path as a
      * dropped file — it is the same archive bytes — so there is only ever one parse to
      * keep correct. */
@@ -583,7 +667,8 @@ function renderWhole() {
   const A = usable.find((s) => s.sessionId === wholeA);
   const B = usable.find((s) => s.sessionId === wholeB);
 
-  const opt = (sel) => ids.map((id) => `<option value="${esc(id)}"${id === sel ? ' selected' : ''}>${esc(id)}</option>`).join('');
+  const opt = (sel) => usable.map((s) => `<option value="${esc(s.sessionId)}"`
+    + `${s.sessionId === sel ? ' selected' : ''}>${esc(displayName(s))}</option>`).join('');
   const fmt = (v, dp = 2) => (v == null ? '—' : Number(v).toFixed(dp));
   const pct = (v) => (v == null ? '—' : (v * 100).toFixed(0));
 
@@ -627,9 +712,11 @@ function renderWhole() {
     <div class="card row">
       <label>A <select id="wholeA">${opt(wholeA)}</select></label>
       <label>B <select id="wholeB">${opt(wholeB)}</select></label>
+      <span class="dim">Unnamed sits show their filename. Name them in <b>Loaded</b> above —
+        a comparison between two filenames is hard to read and easy to mix up.</span>
     </div>
     <div class="card">
-      <table><tr><th></th><th>A</th><th>B</th></tr>
+      <table><tr><th></th><th>A — ${esc(displayName(A))}</th><th>B — ${esc(displayName(B))}</th></tr>
         <tr><td>Length</td><td class="num">${clock(A.wholeStats.durationSec)}</td><td class="num">${clock(B.wholeStats.durationSec)}</td></tr>
         <tr><td>Marks</td><td>${markLine(A)}</td><td>${markLine(B)}</td></tr>
         <tr><td>Alpha peak</td>
@@ -740,11 +827,48 @@ function renderAlpha() {
   if (sel) sel.addEventListener('change', () => { analysisSource = sel.value; render(); });
 }
 
+/* ==========================================================================
+ * NAMING SESSIONS
+ * ==========================================================================
+ * "i think i would have to label which zip is which for the whole event, right? to make sense of
+ * it? should we include that?"
+ *
+ * Yes, and it is the difference between a usable comparison and two filenames. `move-a.zip` versus
+ * `move-b.zip` tells you nothing about which was the calm one; "retreat day 3, very settled"
+ * versus "after coffee, restless" is the entire point of comparing them.
+ *
+ * The app already lets a sit be named where it is saved. That name does not travel in the archive
+ * in a machine-readable place — it goes into the markdown title — so rather than parse prose out
+ * of a report, the lab keeps its own label. Two consequences worth accepting: a sit can be named
+ * differently in the two places, and the lab's name is the one the analysis shows. That is the
+ * right way round, because naming happens here while looking at the comparison.
+ */
+function labelOf(s) { return (s && s.label) || ''; }
+function displayName(s) {
+  const l = labelOf(s);
+  return l ? `${l}` : s.file;
+}
+
+async function setLabel(sessionId, label) {
+  const s = sessions.find((x) => x.sessionId === sessionId);
+  if (!s) return;
+  s.label = label;
+  await persist();
+}
+
 function renderLoaded() {
   if (!sessions.length) { loadedEl.innerHTML = ''; return; }
   /* Say when a sit arrived from the app rather than from a dropped file. Data appearing
      with no account of where it came from is the sort of thing that gets doubted later,
      and doubting your own data is expensive. */
+  /* SAID OUT LOUD. A duplicate that is quietly dropped is indistinguishable from a drop that
+     did not work, and the reason matters: it is the same recording, not a similar one. */
+  const dupNote = duplicates.length
+    ? `<div class="card note bad">Refused ${duplicates.length} duplicate archive(s) — the same
+       recording under a different filename, which would inflate the observation count and could
+       put the same seconds on both sides of the train/test split:
+       ${esc(duplicates.map((d) => `${d.file} (same sit as ${d.sameAs})`).join('; '))}.</div>`
+    : '';
   const handoffNote = handedOver.length
     ? `<div class="card note">Received from the app: ${esc(handedOver.join(', '))}.</div>`
     : '';
@@ -759,7 +883,10 @@ function renderLoaded() {
       ? `<span class="warn" title="${esc(s.read.warnings.join(' · '))}">${s.read.warnings.length} warning(s)</span>`
       : '<span class="dim">complete</span>';
     return `<tr>
-      <td>${esc(s.file)}</td>
+      <td>${esc(s.file)}<br>
+        <input class="sesLabel" data-label="${i}" value="${esc(labelOf(s))}"
+          placeholder="name this sit — what was it?" maxlength="120"
+          style="width:100%;max-width:260px;margin-top:4px;font-size:11.5px"></td>
       <td class="num">${clock(s.durationSec)}</td>
       <td class="num">${s.read.metrics.length}</td>
       <td class="num">${labelled || '<span class="dim">0</span>'}</td>
@@ -767,9 +894,21 @@ function renderLoaded() {
       <td>${warn}</td>
       <td><button data-drop="${i}">Remove</button></td></tr>`;
   }).join('');
-  loadedEl.innerHTML = `<h2>Loaded</h2>${handoffNote}<div class="card scroll"><table>
+  loadedEl.innerHTML = `<h2>Loaded</h2>${dupNote}${handoffNote}<div class="card scroll"><table>
     <tr><th>File</th><th>Length</th><th>Rows</th><th>Labelled spans</th>
         <th>Transitions</th><th>Archive</th><th></th></tr>${rows}</table></div>`;
+  /* Saved on blur and on Enter, not per keystroke: one write per edit, and no re-render
+     mid-typing to move the caret. */
+  loadedEl.querySelectorAll('[data-label]').forEach((input) => {
+    const s = sessions[Number(input.dataset.label)];
+    const save = async () => {
+      if (!s || input.value === labelOf(s)) return;
+      await setLabel(s.sessionId, input.value.trim());
+      renderWhole();
+    };
+    input.addEventListener('blur', save);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  });
   loadedEl.querySelectorAll('[data-drop]').forEach((b) => {
     b.addEventListener('click', async () => {
       // Forget it in the store too. Removing it only from memory means it reappears on
