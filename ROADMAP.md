@@ -536,6 +536,84 @@ there is no way to discover that is what happened.
 - [ ] Only then consider re-transcribing the saved audio offline with a word-timing model, if
       the browser recogniser's one-event precision turns out to be the limit.
 
+## Is EEG even the right instrument? (2026-08-02)
+
+Asked directly, and it is the most important question anyone has put to this project:
+
+> *"i'm slightly wondering if the brain signals are really good indicators of meditation quality.
+> i noticed myself that when i'm very calm, some other indicators appear more obviously (and maybe
+> measurable) such as: less fidgeting, eye gaze less erratic, movements are more deliberate, but
+> also more smooth in tempo... showing a diff velocity curve than when i'm riled up (in which case
+> it's more quick at the start and stop would be my guess)... it's making me wonder if a brain
+> device is the right device to capture meditation quality at all. or if it's necessary, or even
+> the best."*
+
+**The honest answer is that the doubt is well-founded, and the app was already collecting the data
+to test it.** `acc.csv` — 50Hz three-axis accelerometer from the headband — has been in every
+archive since the beginning and nothing had ever analysed it.
+
+Three reasons to take the doubt seriously rather than defend the EEG:
+
+1. **Stillness is nearly a direct measurement.** A body that is not moving produces a flat
+   accelerometer trace. No band decomposition, no adaptive normaliser, no interpretation. Every
+   EEG composite in this app is an inference from four dry electrodes reading through hair and
+   skin, and most of them are labelled "speculative" in `metrics.js` for good reason.
+2. **The measured contact record backs it up.** On a real sit the ear channels were artifact-
+   flagged 32% of the time and only 35 of 229 four-second windows were clean enough to estimate
+   an alpha peak from. The accelerometer had 100% coverage over the same sit.
+3. **The practitioner's own report is the ground truth here**, and their report is that movement
+   quality tracks their state more obviously than anything on the screen does.
+
+### What is now measured
+
+`movement.js`, with `test-movement.js` alongside it:
+
+- **stillness** — share of the sit with per-sample change below 8mG. Set from real data: on a
+  genuine sit the change was median 3.5mG, p90 13.2mG, p99 37.8mG.
+- **movements per minute**, at a 50mG peak threshold. Also set from data, via a sweep: below
+  ~40mG the median "movement" lasts under half a second, which is a pulse beat rather than an
+  adjustment. Threshold deliberately ABSOLUTE, not relative to each sit's own noise floor — a
+  relative one would drop on a calm sit, catch more small motion, and report the calm sit as
+  having *more* movements.
+- **crest** — peak over mean rate of change within a movement.
+- **peak position** (`riseFrac`) — where the peak falls in the movement, 0.5 being symmetric.
+  **This is the direct test of "quick at the start"**, and measured against synthetic shapes it
+  separates smooth from abrupt about three times more strongly than crest does. Read it first.
+- **postural drift** — slow orientation change per minute, kept separate because slumping over
+  ten minutes and twitching every ten seconds are different behaviours.
+
+### What the first real sit says
+
+7.7 minutes, 78.4% still, 3.8 movements/min, median crest 5.3, median peak position 0.24,
+postural drift 403mG/min. One sit is one observation, so none of that means anything yet — but
+the numbers are in a sensible range and the machinery discriminates on synthetic shapes.
+
+### Still not measured, and worth being clear about
+
+- **Eye gaze.** Not available. The Muse has no eye tracker; EOG from the frontal electrodes can
+  detect blinks and gross saccades but not "erratic gaze", and nothing here should pretend
+  otherwise.
+- **Whole-body movement.** The head accelerometer sees head motion. A hand scratching a knee may
+  or may not show up. The Polar H10 has its own accelerometer at the chest, which is the obvious
+  second axis and is already recorded.
+- **Movement during walking or standing.** The hypothesis was partly about movement *in general* —
+  "walking, scratching, adjusting your position, leaving a room, grabbing a cup" — which is a much
+  larger and more interesting claim than anything a seated sit can test.
+
+### The build order this implies
+
+- [ ] Chest accelerometer as a second movement axis, from the strap that is already worn.
+- [ ] Movement metrics computed per-window, not just per-session, so movement can enter the mark
+      search on the same footing as the EEG features — the direct comparison of the two
+      instruments on the same question.
+- [ ] Correlate movement against the self-reports across many sits. If stillness or peak position
+      predicts the felt sense better than `calm` or `equanimity` do, **say so on the summary
+      screen** and demote the brainwave scores accordingly. The instrument that cost more does not
+      get to win by default.
+- [ ] A deliberate trial: sit calm for 5 minutes, then agitated for 5, with movement and EEG both
+      recorded. That is the cheapest strong test of the whole hypothesis and it needs no new
+      hardware.
+
 ## Phase 2 — the real phone app
 
 **Goal:** each person at the center runs this on their own phone, no laptop

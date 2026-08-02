@@ -345,15 +345,71 @@
    * Deterministic given a seed, so a reported score can be re-derived rather than
    * re-rolled until it flatters.
    */
-  function splitSessions(sessionIds, { holdOut = 0.3, seed = 7 } = {}) {
-    const ids = Array.from(new Set(sessionIds));
+  /*
+   * THE SPLIT IS BY SESSION AND BALANCED BY OBSERVATION COUNT, and the second half of that is
+   * a bug fix with a reproduction behind it.
+   *
+   * It used to shuffle the session ids and take 30% of the IDS. Sessions are wildly unequal —
+   * a 15-minute sit with no taps contributes nothing, a 1-minute sit contributes two windows,
+   * a 5-minute sit with 13 taps contributes twenty — so counting ids is not counting data.
+   * Reported as an analysis saying "0 comparisons across 26 windows... that is a real answer
+   * rather than a failure", and reproduced exactly from the three session names involved: the
+   * shuffle put the twenty-unit session in TEST and left the two-unit session to train on.
+   * Two observations cannot support any correlation, so every p came back null, the count of
+   * comparisons was therefore zero, and the verdict announced a real null result. Nothing had
+   * been tested at all. 91% of the data sat in the held-out half.
+   *
+   * So sessions are now held out SMALLEST FIRST, until the held-out share of observations
+   * reaches holdOut, and never past the point where the training side drops below
+   * minTrainUnits. The largest session stays in training by construction.
+   *
+   * This is deliberately not random, and the trade is worth stating. A size-ordered split
+   * makes the held-out check weaker — it is confirmed on the smaller sits — but a random one
+   * can leave nothing to fit on, which is not a weaker check, it is no analysis. The sizes of
+   * both sides are returned so the weakness is visible rather than implied. Ties are broken by
+   * the seeded shuffle, so the result stays reproducible.
+   */
+  function splitSessions(sessionIds, { holdOut = 0.3, seed = 7, minTrainUnits = 8 } = {}) {
+    const counts = new Map();
+    for (const id of sessionIds || []) counts.set(id, (counts.get(id) || 0) + 1);
+    const ids = Array.from(counts.keys());
+    const summary = { counts, trainUnits: sessionIds ? sessionIds.length : 0, testUnits: 0 };
     if (ids.length < 2) {
-      return { train: ids, test: [], reason: 'need at least 2 sessions to hold any out' };
+      return Object.assign({ train: ids, test: [],
+        reason: 'need at least 2 sessions to hold any out' }, summary);
     }
-    const shuffled = shuffle(ids, seededRandom(seed));
-    // At least one on each side whenever there are two or more sessions.
-    const nTest = Math.max(1, Math.min(ids.length - 1, Math.round(ids.length * holdOut)));
-    return { test: shuffled.slice(0, nTest), train: shuffled.slice(nTest), reason: null };
+    const total = sessionIds.length;
+    // Shuffle first so equal-sized sessions are ordered reproducibly but not alphabetically,
+    // then a stable sort by size puts the smallest candidates for holding out first.
+    const order = shuffle(ids, seededRandom(seed));
+    const bySize = order.slice().sort((a, b) => counts.get(a) - counts.get(b));
+    const test = [];
+    let held = 0;
+    const target = total * holdOut;
+    for (const id of bySize) {
+      if (ids.length - test.length <= 1) break;         // never empty the training side
+      if (held >= target) break;                        // enough held out already
+      const n = counts.get(id);
+      if (total - held - n < minTrainUnits) break;      // training side must stay testable
+      /* Do not overshoot the target by more than staying put would undershoot it. Without
+         this the greedy loop happily holds out 5 of 8 observations when asked for 30%,
+         because each individual session still looked like it fitted. The exception is an
+         empty test set: something held out beats nothing, whatever the arithmetic says. */
+      if (test.length && held + n > target && (held + n - target) > (target - held)) break;
+      test.push(id);
+      held += n;
+    }
+    const train = ids.filter((id) => test.indexOf(id) < 0);
+    return {
+      train, test,
+      trainUnits: total - held,
+      testUnits: held,
+      counts,
+      /* Said out loud when there was no way to hold anything out without gutting the fit.
+         Previously this situation produced a confident null result instead of an explanation. */
+      reason: test.length ? null
+        : `every session had to stay in training to keep ${minTrainUnits} observations to fit on`,
+    };
   }
 
   /*
@@ -458,6 +514,11 @@
        * are entirely different statements and used to be reported identically.
        */
       detectableRho: detectableRho(trainRows.length, adjusted.comparisons, { fdr }),
+      /* HOW MUCH DATA WAS ON EACH SIDE OF THE SPLIT. Reported because a split that leaves
+         almost everything held out is indistinguishable, from the outside, from a genuine null
+         — which is exactly what happened when 20 of 22 observations landed in the test half. */
+      trainUnits: trainRows.length,
+      testUnits: rows.length - trainRows.length,
       split: { train: split.train, test: split.test, reason: split.reason },
       units: rows.length,
       /*
@@ -469,6 +530,15 @@
     };
   }
 
+  // How many observations were on the fitting side, worded for a sentence.
+  function trainNote(split) {
+    if (split && split.trainUnits != null) {
+      return `only ${split.trainUnits} of them were on the fitting side of the`
+        + ' train/test split';
+    }
+    return 'the fitting side of the train/test split was left almost empty';
+  }
+
   function verdict({ rows, confirmed, adjusted, split, fdr = 0.1 }) {
     if (rows.length < MIN_N) {
       return `Not enough labelled observations (${rows.length}; need at least ${MIN_N}).`
@@ -476,7 +546,27 @@
     }
     if (!split.test.length) {
       return `Only one session, so nothing could be held out. Any pattern below is`
-        + ' unvalidated and could be a property of this single sit.';
+        + ' unvalidated and could be a property of this single sit.'
+        + (split.reason ? ` (${split.reason})` : '');
+    }
+    /*
+     * NOTHING WAS TESTED IS NOT A NULL RESULT, and conflating the two is the worst thing this
+     * function can do.
+     *
+     * Reported from a real analysis: "0 comparisons across 26 windows; none survived correction
+     * and also held its direction — with this much data that is the expected outcome, and it is
+     * a real answer rather than a failure." Every word of that was wrong. Zero comparisons means
+     * every test returned a null p, which means no test could be computed at all — here because
+     * the training half had been left with two observations. Saying "expected outcome" of that
+     * invites someone to conclude their practice has no signature when the analysis never
+     * looked.
+     */
+    if (!adjusted.comparisons) {
+      return `Nothing could be tested. ${rows.length} labelled observations were built, but`
+        + ` ${trainNote(split)} — too few to compute a single correlation, so no comparison was`
+        + ' made and this says nothing at all about whether a pattern exists.'
+        + ' This is a data-shape problem, not a result: label more moments in the sits that'
+        + ' already have signal, or record more sits of similar length.';
     }
     if (!confirmed.length) {
       /* THE FLOOR ON WHAT COULD HAVE BEEN SEEN, in the same breath as the null result.

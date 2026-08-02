@@ -158,6 +158,56 @@ function makeTrialArchive({ id, seedOffset = 0, working = true }) {
  * which is about 45s at 50% overlap. `alpha: false` plants no bump at all, which must
  * produce a labelled fall back to the fixed band rather than a frequency.
  */
+/*
+ * An archive with ACCELEROMETER data whose movement character is controlled: `restless` decides
+ * whether the sit contains large front-loaded movements or almost none. This is the fixture for
+ * the whole-session comparison, which is the thing that answers "these two sits felt different —
+ * did anything measurable differ?".
+ */
+function makeMoveArchive({ id, restless = false, secs = 180 }) {
+  const t0 = new Date('2026-08-02T07:00:00').getTime();
+  const hz = 50;
+  const n = hz * secs;
+  let seed = restless ? 31 : 17;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff - 0.5; };
+  // Movements as a change profile, accumulated — see test-movement.js for why specifying
+  // displacement instead gets the units and the shape wrong.
+  const bump = new Float64Array(n);
+  const moves = restless
+    ? Array.from({ length: 12 }, (_, i) => ({ at: 8 + i * 14, dur: 1.2, peakMg: 90, abrupt: true }))
+    : [{ at: 60, dur: 2.0, peakMg: 70, abrupt: false }];
+  for (const m of moves) {
+    const len = Math.round(m.dur * hz);
+    const i0 = Math.round(m.at * hz);
+    let running = 0;
+    for (let k = 0; k <= len && i0 + k < n; k++) {
+      const u = k / len;
+      const shape = m.abrupt ? (u / 0.12) * Math.exp(1 - u / 0.12) : Math.sin(Math.PI * u);
+      running += (m.peakMg / 1.166) * shape;
+      bump[i0 + k] += running;
+    }
+    for (let i = i0 + len + 1; i < n; i++) bump[i] += running;
+  }
+  const acc = [];
+  for (let i = 0; i < n; i++) {
+    const t = i / hz;
+    acc.push([Math.round(-960 + bump[i] + rnd() * 1.5),
+      Math.round(3 + 3 * Math.sin((2 * Math.PI * t) / 4) + rnd() * 1.5),
+      Math.round(-380 + bump[i] * 0.6 + rnd() * 1.5)]);
+  }
+  const rows = [];
+  for (let t = 0; t < secs; t++) {
+    rows.push({ t, epochMs: t0 + t * 1000,
+      calm: restless ? 0.35 : 0.62, noise: 0.05, equanimity: restless ? 0.5 : 0.9 });
+  }
+  const notes = [{ id: 1, kind: 'transition', at: t0 + 30000, offsetSec: 30, transition: 'lost' }];
+  const { files } = Exporter.buildFiles({
+    meta: { startedAt: t0, durationSec: secs, bytes: 1e6, ended: true, eegHz: 256, accHz: hz },
+    eeg: [[1, 2, 3], [4, 5, 6], [], []], acc, rr: [], rows, notes,
+  }, {});
+  return { name: `move-${id}.zip`, bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
+}
+
 function makeEegArchive({ id, centre = 10.6, alpha = true, secs = 120 }) {
   const t0 = new Date('2026-07-28T06:00:00').getTime();
   const hz = 256;
@@ -908,6 +958,90 @@ async function drop(page, archives) {
     console.log(`✓ individual alpha peak: ${found.freqHz.toFixed(2)}Hz from ${found.bestName},`
       + ` band ${found.band.map((b) => b.toFixed(2)).join('–')}Hz, ${found.spectraRows} four-second`
       + ` windows, survives a reload, and falls back in labelled words when there is no peak`);
+  }
+
+  /* ---- WHOLE SESSIONS: comparing two sits as sits ------------------------------------
+   *
+   * "i want it to also examine the overall recording to look for something qualitatively
+   * different, if it can... i have 2 sessions i'd like to compare." Everything the lab did
+   * before this was locked to marks, which answers "what happens when I notice I was thinking"
+   * and cannot answer "was this sit different from that one".
+   *
+   * The fixture makes one sit nearly motionless and the other full of abrupt movements, so the
+   * comparison has a right answer. And the honesty requirement is asserted as hard as the
+   * arithmetic: no p-value may appear, because two sits are two observations.
+   */
+  {
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    await page.reload();
+    await page.waitForTimeout(300);
+    await drop(page, [makeMoveArchive({ id: 'calm', restless: false }),
+      makeMoveArchive({ id: 'restless', restless: true })]);
+
+    const out = await page.evaluate(async () => {
+      // A is the calm sit, B the restless one.
+      const ids = sessions.filter((s) => !s.error).map((s) => s.sessionId);
+      wholeA = ids.find((i) => /calm/.test(i));
+      wholeB = ids.find((i) => /restless/.test(i));
+      renderWhole();
+      await new Promise((r) => setTimeout(r, 150));
+      const calm = sessions.find((s) => s.sessionId === wholeA);
+      const restless = sessions.find((s) => s.sessionId === wholeB);
+      return {
+        text: document.getElementById('whole').textContent.replace(/\s+/g, ' '),
+        calm: calm.movement, restless: restless.movement,
+        calmSeries: Object.keys(calm.wholeStats.series).sort(),
+        calmStats: calm.wholeStats.series.calm,
+        hasSelects: !!document.getElementById('wholeA') && !!document.getElementById('wholeB'),
+      };
+    });
+
+    // The measurement must get the answer right, or the view is decoration.
+    assert.ok(out.calm && out.restless, 'both sits must carry a movement summary');
+    assert.ok(out.calm.stillFrac > out.restless.stillFrac,
+      `the calm sit must be stiller (${out.calm.stillFrac.toFixed(3)} vs ${out.restless.stillFrac.toFixed(3)})`);
+    assert.ok(out.restless.eventsPerMin > out.calm.eventsPerMin,
+      `and the restless one must show more movements (${out.calm.eventsPerMin.toFixed(2)}`
+      + ` vs ${out.restless.eventsPerMin.toFixed(2)} per minute)`);
+    assert.ok(out.restless.medianRiseFrac < out.calm.medianRiseFrac,
+      `the restless sit's movements must be more front-loaded — this is the whole hypothesis`
+      + ` (${out.calm.medianRiseFrac} vs ${out.restless.medianRiseFrac})`);
+
+    // The view must show it, and offer a way to pick which two.
+    assert.ok(out.hasSelects, 'the comparison must let you choose which two sessions');
+    assert.match(out.text, /Stillness/, 'the movement table must be on screen');
+    assert.match(out.text, /Peak position/, 'including the shape measure');
+    assert.match(out.text, /not the EEG/i,
+      'and must say the movement numbers come from the accelerometer rather than the brainwaves');
+
+    /* NO P-VALUE REPORTED, which is not the same as never mentioning one. The first version of
+     * this assertion banned the string "p-value" outright and failed on the section's own
+     * disclaimer — the paragraph explaining why there is no p-value contains the words. So it
+     * looks for a REPORTED figure (p = 0.03, p<0.001) and for a significance claim, and leaves
+     * the explanation alone. */
+    assert.doesNotMatch(out.text, /\bp\s*[=<>]\s*0?\.\d/,
+      `a two-session comparison must not report a p-value (text: "${out.text.slice(0, 300)}")`);
+    assert.doesNotMatch(out.text, /statistically significant|is significant|significant difference/i,
+      'nor claim significance');
+    assert.match(out.text, /no p-value appears anywhere on purpose/,
+      'but it must say outright that the absence is deliberate, so nobody adds one later');
+    assert.match(out.text, /two observations/,
+      'and must say why: two sits are two observations');
+    assert.match(out.text, /different day, different room/,
+      'naming the confounds it cannot rule out');
+
+    // Whole-sit descriptors must include the spread, not only the mean — a score pinned near its
+    // ceiling has a high mean and no room to discriminate.
+    assert.ok(out.calmSeries.includes('calm') && out.calmSeries.includes('equanimity'),
+      `the recorded scores must be summarised (got ${out.calmSeries.join(', ')})`);
+    for (const k of ['mean', 'median', 'p25', 'p75', 'n']) {
+      assert.ok(out.calmStats[k] != null, `each series needs ${k}`);
+    }
+    await page.evaluate(async () => { await LabStore.clearSessions(store); });
+    console.log(`✓ whole sessions compare as sessions: stillness`
+      + ` ${(out.calm.stillFrac * 100).toFixed(1)}% vs ${(out.restless.stillFrac * 100).toFixed(1)}%,`
+      + ` movements ${out.calm.eventsPerMin.toFixed(1)} vs ${out.restless.eventsPerMin.toFixed(1)}/min,`
+      + ` peak position ${out.calm.medianRiseFrac} vs ${out.restless.medianRiseFrac}, and no p-value`);
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

@@ -130,6 +130,10 @@
        * numbers, and the series is one row per four seconds. */
       alpha: session.alpha || null,
       spectra: session.spectra || null,
+      // Same reasoning as `alpha`: derived from acc.csv, which is not stored, so dropping this
+      // would silently remove the movement comparison from any restored session.
+      movement: session.movement || null,
+      wholeStats: session.wholeStats || null,
       storedAt: session.storedAt || null,
     };
   }
@@ -138,7 +142,7 @@
   // downstream, or the views quietly behave differently depending on where the data came
   // from. The absent raw EEG is represented as four empty channels rather than missing.
   function rehydrate(stored) {
-    const s = Object.assign({ alpha: null, spectra: null }, stored);
+    const s = Object.assign({ alpha: null, spectra: null, movement: null, wholeStats: null }, stored);
     s.read = Object.assign({ eeg: [[], [], [], []], acc: [], rr: [], audio: {}, markdown: '' },
       stored.read || {});
     return s;

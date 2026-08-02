@@ -153,29 +153,84 @@ const gauss = () => {
     + ' as FDR 0.1 permits');
 }
 
-// 5) THE SPLIT MUST BE BY SESSION. Samples within one sit are near-duplicates, so a
-//    sample-level split leaks the answer across the boundary and makes every method
-//    look excellent — the most common way a result like this turns out to be nothing.
+/* 5) THE SPLIT MUST BE BY SESSION, and it must not leave the fitting side empty.
+ *
+ *    Samples within one sit are near-duplicates, so a sample-level split leaks the answer
+ *    across the boundary and makes every method look excellent — the most common way a result
+ *    like this turns out to be nothing.
+ *
+ *    The second half is a bug fix. The split used to take 30% of the session IDS, and sessions
+ *    are wildly unequal: a real analysis put a 20-observation session in TEST and left a
+ *    2-observation session to fit on, which cannot support a single correlation. Every p came
+ *    back null, the comparison count was therefore zero, and the report announced a null
+ *    result. Nothing had been tested. It now holds out the SMALLEST sessions first, up to the
+ *    requested share of OBSERVATIONS, and stops before the training side becomes untestable.
+ */
 {
   const ids = ['a', 'a', 'a', 'b', 'b', 'c', 'c', 'd'];
-  const split = A.splitSessions(ids, { holdOut: 0.5, seed: 1 });
+  // minTrainUnits below the fixture size, or the guard correctly refuses to hold anything out
+  // of eight observations — which is itself asserted further down.
+  const split = A.splitSessions(ids, { holdOut: 0.3, seed: 1, minTrainUnits: 3 });
   const overlap = split.train.filter((s) => split.test.includes(s));
   assert.deepStrictEqual(overlap, [],
     'no session may appear on both sides — that is the leak this exists to prevent');
   assert.strictEqual(split.train.length + split.test.length, 4, 'four distinct sessions');
   assert.ok(split.test.length >= 1 && split.train.length >= 1);
+  assert.strictEqual(split.trainUnits + split.testUnits, ids.length,
+    'every observation must end up on exactly one side');
+
+  /* THE BIGGEST SESSION STAYS IN TRAINING. This is the property whose absence produced the
+     "0 comparisons" report, so it is asserted directly rather than inferred from the counts. */
+  assert.ok(split.train.includes('a'),
+    `the largest session must be fitted on, not held out (train ${split.train.join(',')})`);
+  assert.ok(split.trainUnits > split.testUnits,
+    `most observations must be on the fitting side (${split.trainUnits} vs ${split.testUnits})`);
+  /* AND THE SHARE HELD OUT MUST BE NEAR WHAT WAS ASKED FOR. A greedy loop that only checked
+     each session in isolation held out 5 of 8 observations when asked for 30%, because every
+     individual step still looked affordable. */
+  assert.ok(split.testUnits / ids.length <= 0.55,
+    `asking for 30% must not hold out ${split.testUnits} of ${ids.length}`);
+
+  /* AND THE GUARD ITSELF: when holding anything out would leave too little to fit on, nothing
+     is held out and the reason is stated. Silence here is what let a broken split look like a
+     finding. */
+  const tooSmall = A.splitSessions(ids, { holdOut: 0.3, seed: 1, minTrainUnits: 8 });
+  assert.deepStrictEqual(tooSmall.test, [],
+    'nothing may be held out when the training side cannot survive it');
+  assert.match(tooSmall.reason, /observations to fit on/,
+    `and it must say why (got "${tooSmall.reason}")`);
+
+  /* THE EXACT SHAPE THAT BROKE: one big session, one tiny one. The tiny one must be the one
+     held out, and the big one must be fitted on. */
+  const lopsided = A.splitSessions(
+    Array(20).fill('big').concat(Array(2).fill('tiny')), { minTrainUnits: 8 });
+  assert.deepStrictEqual(lopsided.train, ['big'],
+    `the 20-observation session must be fitted on (train ${lopsided.train.join(',')})`);
+  assert.deepStrictEqual(lopsided.test, ['tiny']);
+  assert.strictEqual(lopsided.trainUnits, 20);
 
   // Deterministic, so a held-out score can be re-derived rather than re-rolled until
   // it flatters.
-  assert.deepStrictEqual(A.splitSessions(ids, { seed: 1 }), A.splitSessions(ids, { seed: 1 }));
-  // The seed must actually matter — but comparing two arbitrary seeds is not a valid
-  // test of that: with four sessions and one held out, two seeds coincide a quarter
-  // of the time, so the first version of this assertion was a 25% flake. Scan a
-  // range and require that the choice varies across it.
-  const outcomes = new Set();
-  for (let seed = 1; seed <= 10; seed++) outcomes.add(A.splitSessions(ids, { seed }).test.join(','));
-  assert.ok(outcomes.size > 1,
-    `the seed must change which session is held out (all 10 seeds gave ${[...outcomes][0]})`);
+  assert.deepStrictEqual(A.splitSessions(ids, { seed: 1, minTrainUnits: 3 }).test,
+    A.splitSessions(ids, { seed: 1, minTrainUnits: 3 }).test);
+
+  /* THE SEED NOW ONLY BREAKS TIES, which is a deliberate narrowing. Size decides the order, so
+     among sessions of EQUAL size the seed chooses — and among unequal ones it must not, because
+     that is the randomness that caused the bug. Both halves are asserted. */
+  const equal = ['p', 'p', 'q', 'q', 'r', 'r', 's', 's', 't', 't', 'u', 'u'];
+  const tieOutcomes = new Set();
+  for (let seed = 1; seed <= 12; seed++) {
+    tieOutcomes.add(A.splitSessions(equal, { seed, minTrainUnits: 4 }).test.join(','));
+  }
+  assert.ok(tieOutcomes.size > 1,
+    `among equal-sized sessions the seed must still choose (all seeds gave ${[...tieOutcomes][0]})`);
+  const sizedOutcomes = new Set();
+  for (let seed = 1; seed <= 12; seed++) {
+    sizedOutcomes.add(A.splitSessions(
+      Array(20).fill('big').concat(Array(2).fill('tiny')), { seed, minTrainUnits: 8 }).test.join(','));
+  }
+  assert.strictEqual(sizedOutcomes.size, 1,
+    `but it must NOT be able to hold out the big session on some seeds (${[...sizedOutcomes].join(' | ')})`);
 
   // One session cannot be validated at all, and must say so rather than pretend.
   const single = A.splitSessions(['only'], {});
@@ -183,7 +238,34 @@ const gauss = () => {
   assert.match(single.reason, /at least 2 sessions/);
   const res = A.search([{ sessionId: 'only', features: { a: 1 }, labels: { focus: 3 } }]);
   assert.match(res.verdict, /Not enough labelled observations/);
-  console.log('✓ the train/test split is by session, deterministic, and refuses on one session');
+  console.log('✓ the split is by session, keeps the largest sit for fitting, refuses to gut the'
+    + ' training side, and is deterministic');
+}
+
+/* 5b) "NOTHING WAS TESTED" MUST NOT BE REPORTED AS A NULL RESULT.
+ *
+ *     The exact sentence a real analysis produced: "0 comparisons across 26 windows; none
+ *     survived correction and also held its direction — with this much data that is the
+ *     expected outcome, and it is a real answer rather than a failure." Zero comparisons means
+ *     no test could be computed at all, so it is not an answer about anything. Someone reading
+ *     that would reasonably conclude their practice has no measurable signature.
+ */
+{
+  // Units with a constant label: nothing correlatable, so every p is null.
+  const units = [];
+  for (let i = 0; i < 12; i++) {
+    units.push({ sessionId: i < 10 ? 'big' : 'tiny',
+      features: { a: i, b: 1 }, labels: { flat: 1 } });
+  }
+  const res = A.search(units, {});
+  assert.strictEqual(res.comparisons, 0, 'precondition: nothing was testable here');
+  assert.match(res.verdict, /Nothing could be tested/,
+    `an untestable dataset must say so, not report a null (got "${res.verdict}")`);
+  assert.doesNotMatch(res.verdict, /expected outcome|real result/,
+    'and must not call it an expected or real result');
+  assert.match(res.verdict, /data-shape problem, not a result/,
+    'and must name it as a data-shape problem');
+  console.log('✓ zero comparisons is reported as "nothing could be tested", not as a null result');
 }
 
 // 6) Permutation p-values: reproducible, and never exactly zero.

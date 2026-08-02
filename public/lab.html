@@ -96,11 +96,13 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 
 <div id="loaded"></div>
 <div id="alpha"></div>
+<div id="whole"></div>
 <div id="clips"></div>
 <div id="out"></div>
 <div id="saved"></div>
 
 <script src="dsp.js"></script>
+<script src="movement.js"></script>
 <script src="labels.js"></script>
 <script src="trials.js"></script>
 <script src="import.js"></script>
@@ -128,6 +130,7 @@ const dropEl = document.getElementById('drop');
 const fileEl = document.getElementById('file');
 const loadedEl = document.getElementById('loaded');
 const alphaEl = document.getElementById('alpha');
+const wholeEl = document.getElementById('whole');
 const outEl = document.getElementById('out');
 
 const esc = (s) => String(s == null ? '' : s)
@@ -201,9 +204,17 @@ async function ingest(name, bytes) {
       const hasRaw = !!(read.eeg && read.eeg.some((c) => c && c.length));
       const alpha = hasRaw ? DSP.alphaPeakByChannel(read.eeg, read.eegHz) : null;
       const spectra = hasRaw ? spectralRows(read.eeg, read.eegHz, alpha.band) : null;
+      /* MOVEMENT, from the accelerometer — computed here for the same reason as the alpha peak:
+       * acc.csv is parsed on ingest and dropped by the store, so anything derived from it has
+       * to be derived now. The summary is a few hundred bytes; the event list is not kept. */
+      const movement = (read.acc && read.acc.length)
+        ? Movement.summarise(Movement.analyse(read.acc)) : null;
+      // Whole-sit descriptors, so a session can be compared as a session rather than only at
+      // its marks. Computed once here so every view agrees about them.
+      const wholeStats = sessionStats({ read, notes, spans, durationSec: duration, movement });
       sessions.push({
         sessionId: f.name, file: f.name, read, notes, spans, wholeSit, trialBlocks,
-        durationSec: duration, alpha, spectra,
+        durationSec: duration, alpha, spectra, movement, wholeStats,
       });
     } catch (err) {
       // A bad archive must be reported by name. Silently skipping it would mean
@@ -313,6 +324,7 @@ function sessionsWithoutSpectra() {
 
 function render() {
   renderLoaded();
+  renderWhole();
   renderAlpha();
   renderTimelines();
   renderClips();
@@ -499,6 +511,155 @@ function drawClips(canvas, lib) {
     if (t < lib.bins[0] || t > lib.bins[lib.bins.length - 1]) continue;
     c.fillText(t === 0 ? 'mark' : `${t}s`, X(t), H - pad.b + 6);
   }
+}
+
+/* ==========================================================================
+ * WHOLE SESSIONS
+ * ==========================================================================
+ * Asked for twice, the second time with a specific case: "i want it to also examine the overall
+ * recording to look for something qualitatively different, if it can... i have 2 sessions i'd
+ * like to compare." And before that: "if one sitting period was very calm, there might be
+ * patterns across the entire sitting, not just at the markers."
+ *
+ * Everything the lab did before this was locked to marks — windows before a tap, epochs around
+ * a noticing. That answers "what happens when I notice I was thinking" and cannot answer "was
+ * this sit different from that one", which is a different and often more useful question.
+ *
+ * THIS SECTION DESCRIBES AND DOES NOT TEST, and the absence of a p-value is the point rather
+ * than an omission. Two sits are two observations. Running a rank test over their per-second
+ * rows would report a tiny p and be wrong twice over: consecutive seconds within a sit are
+ * near-duplicates, so the effective count is a small fraction of the row count; and even with
+ * that fixed, n = 2 sessions cannot separate "calmer" from "different day, different room,
+ * different hour, slept differently". So the table shows the numbers and their differences, and
+ * says what it would take to make a claim.
+ */
+function sessionStats({ read, notes, spans, durationSec, movement }) {
+  const rows = read.metrics || [];
+  const out = { durationSec: durationSec || null, rows: rows.length, series: {}, movement: movement || null };
+  for (const k of Analysis.seriesKeys(rows)) {
+    const vals = rows.map((r) => Number(r[k])).filter((v) => Number.isFinite(v));
+    if (!vals.length) continue;
+    const sorted = vals.slice().sort((a, b) => a - b);
+    const mean = vals.reduce((a, b) => a + b, 0) / vals.length;
+    // Median and IQR alongside the mean: a score that spends a sit pinned near its ceiling has
+    // a high mean and no room to move, and only the spread shows that.
+    out.series[k] = {
+      mean,
+      median: sorted[Math.floor(sorted.length / 2)],
+      p25: sorted[Math.floor(sorted.length * 0.25)],
+      p75: sorted[Math.floor(sorted.length * 0.75)],
+      min: sorted[0],
+      max: sorted[sorted.length - 1],
+      n: vals.length,
+    };
+  }
+  // Marks by category, which is the closest thing to a self-reported description of the sit.
+  out.marks = {};
+  for (const n of notes || []) {
+    const k = n.transition || n.kind;
+    if (!k) continue;
+    out.marks[k] = (out.marks[k] || 0) + 1;
+  }
+  // The whole-sit self-reports, if any were given.
+  out.dims = {};
+  for (const sp of spans || []) {
+    if (!sp.dims) continue;
+    for (const [k, v] of Object.entries(sp.dims)) {
+      if (v == null) continue;
+      (out.dims[k] = out.dims[k] || []).push(v);
+    }
+  }
+  return out;
+}
+
+let wholeA = null, wholeB = null;
+
+function renderWhole() {
+  const usable = sessions.filter((s) => !s.error && s.wholeStats);
+  if (!usable.length) { wholeEl.innerHTML = ''; return; }
+  const ids = usable.map((s) => s.sessionId);
+  if (!ids.includes(wholeA)) wholeA = ids[0];
+  if (!ids.includes(wholeB)) wholeB = ids.length > 1 ? ids[1] : ids[0];
+  const A = usable.find((s) => s.sessionId === wholeA);
+  const B = usable.find((s) => s.sessionId === wholeB);
+
+  const opt = (sel) => ids.map((id) => `<option value="${esc(id)}"${id === sel ? ' selected' : ''}>${esc(id)}</option>`).join('');
+  const fmt = (v, dp = 2) => (v == null ? '—' : Number(v).toFixed(dp));
+  const pct = (v) => (v == null ? '—' : (v * 100).toFixed(0));
+
+  // Every series either session has, so a column present in one and absent in the other is
+  // visible as absent rather than quietly dropped.
+  const keys = Array.from(new Set(Object.keys(A.wholeStats.series).concat(Object.keys(B.wholeStats.series)))).sort();
+  const seriesRows = keys.map((k) => {
+    const a = A.wholeStats.series[k], b = B.wholeStats.series[k];
+    const d = (a && b) ? (b.mean - a.mean) : null;
+    return `<tr><td>${esc(k)}</td>
+      <td class="num">${a ? pct(a.mean) : '—'}</td><td class="num">${a ? pct(a.median) : '—'}</td>
+      <td class="num">${a ? pct(a.p25) + '–' + pct(a.p75) : '—'}</td>
+      <td class="num">${b ? pct(b.mean) : '—'}</td><td class="num">${b ? pct(b.median) : '—'}</td>
+      <td class="num">${b ? pct(b.p25) + '–' + pct(b.p75) : '—'}</td>
+      <td class="num">${d == null ? '—' : (d > 0 ? '+' : '') + (d * 100).toFixed(0)}</td></tr>`;
+  }).join('');
+
+  const moveRows = Movement.compare(A.wholeStats.movement, B.wholeStats.movement).map((r) => {
+    const L = Movement.LABELS[r.key] || { label: r.key, unit: '' };
+    const dp = r.key === 'stillFrac' || r.key === 'medianRiseFrac' ? 3 : 2;
+    return `<tr><td>${esc(L.label)}<br><span class="dim" style="font-size:10.5px">${esc(L.unit)}</span></td>
+      <td class="num">${fmt(r.a, dp)}</td><td class="num">${fmt(r.b, dp)}</td>
+      <td class="num">${r.delta == null ? '—' : (r.delta > 0 ? '+' : '') + r.delta.toFixed(dp)}</td>
+      <td class="num">${r.ratio == null ? '—' : r.ratio.toFixed(2) + '×'}</td></tr>`;
+  }).join('');
+
+  const markLine = (s) => {
+    const e = Object.entries(s.wholeStats.marks).filter(([k]) => k !== 'text' && k !== 'voice');
+    return e.length ? e.map(([k, v]) => `${esc(k)} ${v}`).join(' · ') : '<span class="dim">none</span>';
+  };
+  const noMove = !A.wholeStats.movement || !B.wholeStats.movement;
+
+  wholeEl.innerHTML = `<h2>Whole sessions</h2>
+    <div class="card note">These are DESCRIPTIONS, not tests, and no p-value appears anywhere on
+      purpose. Two sits are two observations: a rank test over their per-second rows would report
+      a tiny p and be wrong twice over — consecutive seconds within a sit are near-duplicates so
+      the effective count is a fraction of the row count, and n=2 sessions cannot separate
+      "calmer" from "different day, different room, different hour, slept differently". To make a
+      claim you need the same difference to reappear across several pairs of sits, which is what
+      the mark search does for marks and what this table is collecting toward.</div>
+    <div class="card row">
+      <label>A <select id="wholeA">${opt(wholeA)}</select></label>
+      <label>B <select id="wholeB">${opt(wholeB)}</select></label>
+    </div>
+    <div class="card">
+      <table><tr><th></th><th>A</th><th>B</th></tr>
+        <tr><td>Length</td><td class="num">${clock(A.wholeStats.durationSec)}</td><td class="num">${clock(B.wholeStats.durationSec)}</td></tr>
+        <tr><td>Marks</td><td>${markLine(A)}</td><td>${markLine(B)}</td></tr>
+        <tr><td>Alpha peak</td>
+          <td class="num">${A.alpha && !A.alpha.fallback ? A.alpha.freqHz.toFixed(2) + ' Hz' : '<span class="dim">not measurable</span>'}</td>
+          <td class="num">${B.alpha && !B.alpha.fallback ? B.alpha.freqHz.toFixed(2) + ' Hz' : '<span class="dim">not measurable</span>'}</td></tr>
+      </table>
+    </div>
+    <div class="card">
+      <h3 style="font-size:13px;margin:0 0 8px">Movement — from the accelerometer, not the EEG</h3>
+      <div class="dim" style="margin-bottom:8px">Stillness is close to a direct measurement: a
+        body that is not moving produces a flat trace, and no interpretation is involved. The two
+        shape numbers test the idea that calm movements are evenly paced while agitated ones are
+        front-loaded. Peak position separates those shapes about three times more strongly than
+        crest does, so read it first.</div>
+      ${noMove ? '<div class="note bad">At least one of these sessions has no accelerometer data,'
+        + ' so the movement comparison is unavailable. Sessions restored from storage keep their'
+        + ' movement summary; ones ingested before this existed do not — re-drop the archive.</div>'
+        : `<table><tr><th>Measure</th><th>A</th><th>B</th><th>B − A</th><th>B ÷ A</th></tr>${moveRows}</table>`}
+    </div>
+    <div class="card scroll">
+      <h3 style="font-size:13px;margin:0 0 8px">Recorded scores, whole sit</h3>
+      <div class="dim" style="margin-bottom:8px">Mean, median and the middle half. The spread
+        matters as much as the mean: a score that spends a sit pinned near its ceiling has a high
+        mean and no room left to distinguish a good sit from a great one.</div>
+      <table><tr><th>Series</th><th>A mean</th><th>A med</th><th>A 25–75</th>
+        <th>B mean</th><th>B med</th><th>B 25–75</th><th>Δ mean</th></tr>${seriesRows}</table>
+    </div>`;
+  const selA = document.getElementById('wholeA'), selB = document.getElementById('wholeB');
+  if (selA) selA.addEventListener('change', () => { wholeA = selA.value; renderWhole(); });
+  if (selB) selB.addEventListener('change', () => { wholeB = selB.value; renderWhole(); });
 }
 
 /* ==========================================================================
