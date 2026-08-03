@@ -22,7 +22,43 @@ if (!Module.globalPaths.includes(GLOBAL_MODULES)) Module.globalPaths.push(GLOBAL
 Module._initPaths();
 const { chromium } = require(path.join(GLOBAL_MODULES, 'playwright'));
 
-const PAGE = 'file://' + path.join(__dirname, 'public', 'direct.html');
+/*
+ * SERVED OVER HTTP, NOT file://.
+ *
+ * This suite loaded `file://.../direct.html` for a long time, and that was wrong in a way that only
+ * became visible once the logic moved out of the page into app.js.
+ *
+ * A `file://` document treats every `<script src>` as cross-origin, so any error thrown inside a
+ * module reaches window.onerror redacted to the string "Script error." with no file and no line. The
+ * boot banner then paints "The app failed to start" and cannot say why — which is most of its value
+ * gone, and gone in the direction that has already cost two afternoons. Over HTTP the scripts are
+ * same-origin and the real message survives.
+ *
+ * It is also the only faithful way to test this app at all: Web Bluetooth requires a secure context,
+ * so the real page is served over https (GitHub Pages) or localhost and never opened as a file.
+ * Testing a URL scheme the app cannot run under is testing a different app.
+ *
+ * Zero dependencies, an ephemeral port so parallel runs cannot collide, and no directory traversal
+ * because a test server that can read outside public/ is a test server that will eventually be
+ * pointed at something else.
+ */
+const http = require('http');
+const fs = require('fs');
+const PUBLIC_DIR = path.join(__dirname, 'public');
+const CONTENT_TYPES = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.css': 'text/css; charset=utf-8', '.json': 'application/json', '.zip': 'application/zip' };
+
+const server = http.createServer((req, res) => {
+  const requested = decodeURIComponent(String(req.url || '/').split('?')[0]);
+  const file = path.join(PUBLIC_DIR, requested === '/' ? 'direct.html' : requested);
+  if (path.relative(PUBLIC_DIR, file).startsWith('..')) { res.writeHead(403); res.end('forbidden'); return; }
+  fs.readFile(file, (err, body) => {
+    if (err) { res.writeHead(404); res.end('not found'); return; }
+    res.writeHead(200, { 'Content-Type': CONTENT_TYPES[path.extname(file)] || 'application/octet-stream' });
+    res.end(body);
+  });
+});
+let PAGE = null;                       // assigned once the port is known, inside the async body
 const Labels = require('./public/labels.js');
 const Labels_quadrant = (d) => Labels.quadrant(d);
 
@@ -70,6 +106,9 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
 }
 
 (async () => {
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  PAGE = `http://127.0.0.1:${server.address().port}/direct.html`;
+
   const browser = await chromium.launch();
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   const errors = [];
@@ -183,8 +222,145 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       'and pointing at the cause that has produced both real outages');
     await pageB.close();
     await ctx2b.close();
-    console.log(`✓ ${includes.length} modules are cache-busted, version skew costs only its own`
-      + ' feature, and a boot failure paints its reason on screen');
+    /* THE STYLESHEET TOO, now that it is a separate file.
+       Every panel in this app is hidden by default and revealed by a class. A stale app.css paired
+       with a fresh app.js therefore produces the exact reported symptom — "none of the panels open" —
+       with no JavaScript error anywhere to find, which is strictly worse than the outages above
+       because the boot banner cannot see it. The extraction created this risk; the version on the
+       link is what removes it. */
+    const links = html.match(/<link[^>]+rel="stylesheet"[^>]*>/g) || [];
+    assert.ok(links.length > 0, 'the stylesheet must be linked');
+    for (const link of links) {
+      assert.match(link, /\?v=/,
+        `a stale stylesheet hides every panel with no error to find: ${link}`);
+    }
+
+    // And the version must be the SAME everywhere. Two versions in one page is version skew with
+    // extra steps: the whole point is that one edit invalidates the entire set at once.
+    const versions = new Set((html.match(/\?v=([^"']+)/g) || []).map((s) => s.slice(3)));
+    assert.strictEqual(versions.size, 1,
+      `every asset must share one version, found ${JSON.stringify([...versions])}`);
+
+    /* AND THE PAGE MUST SAY WHICH BUILD IT IS.
+       The single most expensive question in this project has been "what is your browser actually
+       running?", asked after a report of broken panels against a build that demonstrably worked. The
+       stamp lives in the inline boot script rather than in app.js so that it survives the failure it
+       exists to diagnose — asserted here, because putting it anywhere else would quietly undo that. */
+    const stampAt = html.indexOf('buildStamp');
+    assert.ok(stampAt > 0 && stampAt < firstModule,
+      'the build stamp must be written by the inline boot script, before any module can throw — a'
+      + ' stamp that dies with the app cannot identify the build that died');
+    console.log(`✓ ${includes.length} modules and ${links.length} stylesheet are cache-busted on one`
+      + ` version (${[...versions][0]}), version skew costs only its own feature, a boot failure`
+      + ' paints its reason on screen, and the build stamp survives it');
+  }
+
+  /* 0a1b) THE SIMULATED HEADBAND MUST OPEN THE PANELS.
+   *
+   * WHY THIS IS THE MOST IMPORTANT TEST IN THIS FILE. Every panel is hidden until a Bluetooth
+   * connection succeeds, and headless Chromium has no Bluetooth — so until now this suite could not
+   * reach a single line downstream of connect(). Everything from packet decoding to the metrics table
+   * to the visuals was untested in the browser, and that is exactly where three outages happened.
+   *
+   * It is also the test that answers the report directly. "None of the panels open" has been said
+   * against builds that open them, and there was no way to tell a broken build from a headband that
+   * was paired but not streaming, because the two look identical. This asserts the app's own answer to
+   * that question still works, so the next time it is asked the answer takes one reload.
+   */
+  {
+    const ctxSim = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const pageSim = await ctxSim.newPage();
+    const simErrors = [];
+    pageSim.on('pageerror', (e) => simErrors.push(e.message));
+    await pageSim.goto(PAGE + '?sim=1');
+
+    // The simulator auto-connects, then the page needs a few of its own 250ms ticks before the
+    // adaptive normalisers have a range to work with. Polling rather than sleeping, for the reason
+    // recorded at the top of this file.
+    const opened = await waitFor(pageSim, () => {
+      const readout = document.getElementById('readout');
+      const rows = (document.getElementById('readoutRows').textContent || '').replace(/\s+/g, ' ');
+      const calm = /Calm\s*(\d+)/.exec(rows);
+      if (!readout.classList.contains('show') || !calm) return null;
+      return {
+        readoutOpacity: getComputedStyle(readout).opacity,
+        calm: Number(calm[1]),
+        controls: document.getElementById('controls').className,
+        rows: rows.slice(0, 200),
+        banner: (document.getElementById('simBanner') || {}).textContent || null,
+        boot: (document.getElementById('bootError') || {}).textContent || null,
+        stamp: (document.getElementById('buildStamp') || {}).textContent || null,
+      };
+    }, 'the simulated headband to open the panels and produce a calm reading', 20000);
+
+    assert.deepStrictEqual(simErrors, [],
+      `the simulated path must run without errors:\n  ${simErrors.join('\n  ')}`);
+    assert.strictEqual(opened.boot, null, 'and without a boot banner');
+    assert.strictEqual(opened.readoutOpacity, '1',
+      'the metrics panel must be genuinely visible, not merely class-tagged — opacity is what the'
+      + ' user sees, and a class with stale CSS behind it shows nothing');
+    assert.match(opened.controls, /show/, 'the control bar must appear too');
+    assert.ok(opened.calm >= 0 && opened.calm <= 100,
+      `calm must be a real reading in range, got ${opened.calm}`);
+    assert.ok(opened.stamp && /build /.test(opened.stamp), 'the build stamp must be on screen');
+
+    /* THE BANNER IS NOT OPTIONAL. Fabricated data that could be mistaken for a sit is the one
+       outcome this feature must never produce, and the banner is the whole defence. */
+    assert.ok(opened.banner, 'simulated data must announce itself on screen');
+    assert.match(opened.banner, /SIMULATED/,
+      'in words that cannot be read as anything else');
+    assert.match(opened.banner, /no headband is connected/i, 'and saying what is actually happening');
+
+    /* AND THE NUMBERS MUST MOVE THE WAY THE ARC SAYS.
+       A frozen display and a working one are indistinguishable from a single reading, which is how a
+       stuck visual survived here before. The simulated arc runs restless -> settled, so calm has to
+       rise; if it does not, either the display is frozen or the metric is not reading the signal. */
+    // waitFor() evaluates its function with no arguments, so the baseline is passed explicitly here
+    // rather than closed over — a closure would be evaluated in the browser, where `opened` does not
+    // exist, and the comparison would silently be against undefined.
+    const readCalm = () => pageSim.evaluate(() => {
+      const m = /Calm\s*(\d+)/.exec((document.getElementById('readoutRows').textContent || '')
+        .replace(/\s+/g, ' '));
+      return m ? Number(m[1]) : null;
+    });
+    let climbed = opened.calm;
+    const deadline = Date.now() + 45000;
+    while (Date.now() < deadline) {
+      const v = await readCalm();
+      if (v != null) climbed = Math.max(climbed, v);
+      if (climbed >= opened.calm + 10) break;
+      await pageSim.waitForTimeout(500);
+    }
+    assert.ok(climbed >= opened.calm + 10,
+      `calm must rise as the simulated sit settles (${opened.calm} -> ${climbed}). A display that`
+      + ' does not move is indistinguishable from a frozen one, which has happened here before');
+
+    await pageSim.close();
+    await ctxSim.close();
+
+    /* AND WITHOUT ?sim=1, NOTHING SIMULATED MAY HAPPEN.
+       Tested in the browser rather than only against requested(), because the failure that matters is
+       the simulator installing itself on the real page — and that depends on the wiring in app.js,
+       not on the predicate. */
+    const ctxReal = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const pageReal = await ctxReal.newPage();
+    await pageReal.goto(PAGE);
+    await pageReal.waitForTimeout(600);
+    const real = await pageReal.evaluate(() => ({
+      banner: !!document.getElementById('simBanner'),
+      active: typeof SimDevice !== 'undefined' ? SimDevice.active : 'module missing',
+      readout: document.getElementById('readout').className,
+    }));
+    assert.strictEqual(real.banner, false, 'no simulated banner without ?sim=1');
+    assert.strictEqual(real.active, false, 'and the simulator must not be running');
+    assert.ok(!/show/.test(real.readout),
+      'and the panels must stay shut, because nothing is connected — that is the behaviour the'
+      + ' simulator exists to distinguish from a broken build');
+    await pageReal.close();
+    await ctxReal.close();
+
+    console.log(`✓ the simulated headband opens the panels and drives calm ${opened.calm} -> ${climbed}`
+      + ', announces itself as simulated, and stays away unless the URL asks');
   }
 
   /* 0a2) THE DISPLAYED METRICS MUST COME FROM ONE PLACE.
@@ -3284,5 +3460,6 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
   await browser.close();
+  await new Promise((resolve) => server.close(resolve));
   console.log('\nAll UI tests passed.');
-})().catch((e) => { console.error(e); process.exit(1); });
+})().catch((e) => { console.error(e); server.close(); process.exit(1); });

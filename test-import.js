@@ -173,6 +173,62 @@ const have = (cmd) => {
     console.log('✓ an incomplete archive opens, and names what is missing');
   }
 
+  /* A SIMULATED SIT MUST STILL BE IDENTIFIABLE AFTER A ROUND TRIP THROUGH A REAL ZIP.
+   *
+   * The app can produce a complete, well-formed sit with no headband attached (`?sim=1`). Its rows
+   * have the same columns, the same sample rate and the same plausible ranges as real ones, so once
+   * one is pooled with real sits NOTHING in the data can separate it again — every comparison built
+   * on that pool is contaminated permanently and silently.
+   *
+   * So the marker is tested as a chain, end to end, with each link checked separately: three
+   * independent markers on the way out, and the one that survives a rename recovered on the way back
+   * in. A test that only checked `meta.simulated` would prove the flag was set and nothing about
+   * whether it reaches the person reading the archive a month later.
+   */
+  {
+    const meta = { startedAt: Date.parse('2026-08-03T09:57:00Z'), durationSec: 60, bytes: 4096,
+      ended: true, eegHz: 256, simulated: true };
+    const rows = Array.from({ length: 60 }, (_, i) => ({ t: i, calm: 0.5, noise: 0 }));
+
+    // 1) The filename, which is the marker that shows up in a folder of sits without anything
+    //    being opened.
+    assert.match(Exporter.archiveName(meta), /^SIMULATED-/,
+      'a simulated sit must be obvious from its filename');
+    assert.doesNotMatch(Exporter.archiveName({ startedAt: meta.startedAt }), /SIMULATED/,
+      'and a real one must not be labelled — a marker that fires on everything says nothing');
+
+    // 2) The report, at the top, before anything that reads like a result.
+    const md = Exporter.toMarkdown({ meta, rows, notes: [] });
+    assert.match(md, /SIMULATED DATA/, 'session.md must say so');
+    const firstResult = md.indexOf('What the app showed');
+    assert.ok(md.indexOf('SIMULATED DATA') < (firstResult === -1 ? md.length : firstResult),
+      'and must say so BEFORE the numbers, not in a footnote under them');
+    assert.doesNotMatch(Exporter.toMarkdown({ meta: { startedAt: meta.startedAt, durationSec: 60 },
+      rows, notes: [] }), /SIMULATED/, 'a real sit gets no banner');
+
+    // 3) A file in the archive, and the reader must recover it from the archive alone — the filename
+    //    prefix is gone by the time a browser file input hands the bytes over, so the file is the
+    //    only marker that survives a rename.
+    const { files } = Exporter.buildFiles({ meta, rows, notes: [] });
+    assert.ok(files.some((f) => f.name === 'SIMULATED.txt'),
+      'the archive must carry a warning file whose NAME is the warning');
+    const zipped = Exporter.zip(files);
+    const read = await Importer.readSessionArchive(new Uint8Array(zipped));
+    assert.strictEqual(read.simulated, true,
+      'the reader must recover the marker from the archive contents, not from its name');
+    assert.ok(read.warnings.some((w) => /SIMULATED/.test(w)),
+      'and must warn in words, so a caller that only prints warnings still says it');
+
+    // And the negative case, through the same path: a real archive must come back clean, or the
+    // marker is worthless.
+    const realMeta = { startedAt: meta.startedAt, durationSec: 60, bytes: 4096, ended: true, eegHz: 256 };
+    const realRead = await Importer.readSessionArchive(
+      new Uint8Array(Exporter.zip(Exporter.buildFiles({ meta: realMeta, rows, notes: [] }).files)));
+    assert.strictEqual(realRead.simulated, false, 'a real archive must read as real');
+    console.log('✓ a simulated sit is marked in its filename, its report and its contents, and the'
+      + ' reader recovers it after a rename');
+  }
+
   fs.rmSync(tmp, { recursive: true, force: true });
   console.log('\nAll import tests passed.');
 })().catch((e) => { console.error(e); process.exit(1); });

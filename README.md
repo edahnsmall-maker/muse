@@ -53,6 +53,46 @@ in Chrome, put your Muse on, click **Connect to Muse**, and pick it from the Blu
 chooser that pops up. That's the entire setup — no phone, no app, no server, no admin
 password, ever.
 
+### "None of the panels open" — check this first
+
+```
+https://edahnsmall-maker.github.io/muse/public/direct.html?sim=1
+```
+
+That runs the app against a **simulated headband**: no Bluetooth, no device, fabricated
+EEG from a scripted waveform. It connects itself a moment after the page loads.
+
+* **The panels open and Calm climbs** → the build is fine. The problem is the device or
+  the connection, and the thing to try is clicking **Connect headband** again. A page
+  reload always drops the Bluetooth session even though the headband itself still shows
+  as paired — every panel in this app stays hidden until a connection succeeds, so a
+  perfectly healthy page and an unconnected one look identical.
+* **The panels stay shut** → the build is broken. There will be a red banner at the top
+  naming the file and line; send that. If there is no banner, send the `build ...` stamp
+  from the bottom-right corner, which says which version your browser actually has.
+
+Every screen in simulated mode carries a **SIMULATED DATA** banner, and any sit recorded
+in it is marked in three independent places — a `SIMULATED-` filename prefix, a warning
+at the top of `session.md`, and a `SIMULATED.txt` inside the archive. The analysis lab
+reads the last of those and prints **SIMULATED** in the session list. That belt-and-braces
+is deliberate: simulated rows have the same shape as real ones, so once one is pooled with
+real sits there is no way to separate it again.
+
+The simulator never runs unless the URL asks for it — not as a fallback, not on an error,
+not from a stored flag.
+
+### Which build am I running?
+
+Bottom-right corner, small grey text: `build 2026-08-03e`. Hovering it shows when your
+browser actually received the page. It is written by an inline script that runs before any
+module loads, so it is still there when the app has failed to start — which is the only
+time it really matters.
+
+If the version looks current but the app is misbehaving, reload with **Shift** held. Every
+asset is loaded with a `?v=` matching that build, so a stale file cannot pair with a fresh
+one — but the *page itself* is the one file that version cannot protect, and a stale copy
+of it asks for stale copies of everything else.
+
 ### Enabling GitHub Pages (one-time, ~1 minute, only you can do this)
 
 I don't have a tool that can flip this setting — it's an account-level toggle only the
@@ -1527,6 +1567,14 @@ node test-ui.js       # loads direct.html in real Chromium and asserts DOM
                      # session renders. Added because a bug reached the user
                      # that no amount of unit-testing the signal maths could
                      # have caught — see below
+node test-simdevice.js
+                     # the simulated headband: that its packets are the exact
+                     # inverse of the real decoder, that the stream holds 256Hz
+                     # through ragged timer ticks (so no frequency is silently
+                     # rescaled), that the scripted arc really swings alpha/beta,
+                     # that the whole individual-alpha path runs on it and
+                     # recovers a peak deliberately placed BETWEEN bins, and
+                     # that it refuses to run for anything but an explicit sim=1
 node test-polar.js   # Polar H10: the variable-length Heart Rate Measurement
                      # packet (flag-driven offsets, the energy-expended field
                      # that must be SKIPPED, truncated buffers), RMSSD against

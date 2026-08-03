@@ -169,6 +169,25 @@
     const text = (name) => (files[name] ? decodeUtf8(files[name]) : null);
     const warnings = [];
 
+    /*
+     * SIMULATED ARCHIVES ARE IDENTIFIED HERE, BEFORE ANY OF THEM IS READ AS A MEASUREMENT.
+     *
+     * The app can generate a complete, well-formed sit from a scripted waveform (`?sim=1`, see
+     * simdevice.js). Those rows have the same columns, the same sample rate and the same plausible
+     * ranges as real ones, so once one is pooled with real sits nothing in the data can separate it
+     * again — every comparison built on the pool is quietly contaminated and stays that way.
+     *
+     * So this is detected at the door and surfaced as a first-class field rather than a warning that
+     * a caller might not print. The marker is a FILE, which survives renaming; the filename prefix
+     * does not reach here at all, because a browser file input gives whatever the file is called now.
+     */
+    const simulated = !!files['SIMULATED.txt'];
+    if (simulated) {
+      warnings.push('SIMULATED DATA — this archive was produced by the signal simulator with no'
+        + ' headband connected. It is not a recording of anyone and must not be pooled with real'
+        + ' sits.');
+    }
+
     const metricsText = text('metrics.csv');
     const notesText = text('notes.csv');
     if (!metricsText) warnings.push('no metrics.csv — the per-second scores are missing');
@@ -200,6 +219,7 @@
 
     return {
       files: Object.keys(files).sort(),
+      simulated,
       markdown: text('session.md'),
       metrics: metricsText ? parseCsv(metricsText) : [],
       notes: notesText ? parseCsv(notesText) : [],

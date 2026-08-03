@@ -879,9 +879,18 @@ function renderLoaded() {
     }
     const labelled = s.spans.filter((x) => x.dims).length;
     const trans = s.notes.filter((n) => n.kind === 'transition').length;
-    const warn = s.read.warnings.length
-      ? `<span class="warn" title="${esc(s.read.warnings.join(' · '))}">${s.read.warnings.length} warning(s)</span>`
-      : '<span class="dim">complete</span>';
+    /* A SIMULATED SIT IS CALLED OUT IN THE ROW, not folded into a warning count.
+       "3 warning(s)" behind a tooltip is exactly how a fabricated sit gets analysed anyway: the
+       number looks like a data-quality note, and nothing on screen says the rows are invented. Once
+       it is pooled with real sits no later step can separate it again, so the label has to be
+       readable at a glance, in the list where sits are chosen. */
+    const warn = s.read.simulated
+      ? '<span class="bad" title="Produced by the app\'s signal simulator with no headband'
+        + ' connected. Not a recording of anyone — remove it before drawing any'
+        + ' conclusion.">SIMULATED</span>'
+      : (s.read.warnings.length
+        ? `<span class="warn" title="${esc(s.read.warnings.join(' · '))}">${s.read.warnings.length} warning(s)</span>`
+        : '<span class="dim">complete</span>');
     return `<tr>
       <td>${esc(s.file)}<br>
         <input class="sesLabel" data-label="${i}" value="${esc(labelOf(s))}"

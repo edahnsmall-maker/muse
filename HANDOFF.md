@@ -102,13 +102,24 @@ it, so a strap-only session showed a permanently frozen message and no heart dat
 
 ---
 
-## 4. Tests — 11 suites, all must pass
+## 4. Tests — 24 suites, all must pass
 
 ```bash
-for t in test.js test-dsp.js test-chart.js test-viz.js test-visual-smoke.js \
-         test-metrics.js test-markers.js test-cues.js test-summary.js \
-         test-polar.js test-ui.js; do node $t; done
+for t in test.js test-dsp.js test-viz.js test-visual-smoke.js test-chart.js \
+         test-summary.js test-cues.js test-metrics.js test-markers.js \
+         test-export.js test-import.js test-labels.js test-trials.js \
+         test-probes.js test-analysis.js test-lab.js test-findings.js \
+         test-panels.js test-polar.js test-clockcheck.js test-selfcheck.js \
+         test-movement.js test-simdevice.js test-ui.js; do node $t || break; done
 ```
+
+`test-ui.js` now serves `public/` over **HTTP on an ephemeral port** rather than loading
+`file://`. That was not cosmetic. A `file://` document treats every `<script src>` as
+cross-origin, so an error thrown inside a module reaches `window.onerror` redacted to
+`"Script error."` with no file and no line — which gutted the boot banner the moment the
+logic moved out of `direct.html` into `app.js`, in exactly the direction that has already
+cost two outages. It is also the only faithful test: Web Bluetooth requires a secure
+context, so the real page is never opened as a file.
 
 Zero dependencies for the logic suites. `test-ui.js` uses Playwright, installed
 **globally** at `/opt/node22/lib/node_modules` (deliberately not in `package.json` —
@@ -124,6 +135,41 @@ Two suites are worth understanding because they cover what unit tests cannot:
   This exists because a bug reached the user's hands that no amount of unit-testing
   the maths could have caught: `setStatus()` assigns `innerHTML`, and the device
   buttons were *inside* that element, so the first status message deleted them.
+
+### `?sim=1` — you can run the whole app with no headband
+
+`public/simdevice.js` replaces `navigator.bluetooth` with a fake Muse that emits real
+packet layouts carrying a scripted signal: a 90-second arc from a beta-dominant "restless"
+state to an alpha-dominant "settled" one and back. `direct.html?sim=1` installs it and
+auto-connects.
+
+Two things it bought, both of which had cost real time:
+
+- **A diagnosis.** Every panel is hidden until a Bluetooth connection succeeds, so a broken
+  build and a headband that is paired but not streaming produce the identical screen. Three
+  separate rounds of "none of the panels open" were spent establishing which one it was.
+  Now it is one reload.
+- **Test reach.** Headless Chromium has no Bluetooth, so until this existed the suite could
+  not touch a single line downstream of `connect()` — packet decoding, the metrics table,
+  the visuals, all of it. That is precisely where the escaped bugs were. `test-ui.js` now
+  drives a full simulated sit and asserts the panels open, Calm is in range, and Calm
+  *climbs* as the arc settles (a frozen display and a working one are indistinguishable
+  from a single reading).
+
+Two things about it are non-negotiable and pinned by tests. It runs **only** for an
+explicit `sim=1` — never as a fallback, never from stored state — and anything recorded
+while it runs is marked in three independent places (filename prefix, a banner at the top
+of `session.md`, and `SIMULATED.txt` in the archive; the lab prints **SIMULATED** in the
+session list from the last of these). Simulated rows have the same shape as real ones, so
+one pooled with real sits could never be separated again.
+
+The alpha is a **band, not a sine**, and that is the one design note worth reading. The
+first version used a single 10.2 Hz sine; `DSP.individualAlphaPeak` refused to find a peak
+in it, correctly — the IAF gates require a hump at least 1.0 Hz wide, and that gate exists
+to reject narrow spectral lines, which is what mains hum and bad electrodes produce. A
+simulator built from pure tones cannot exercise the alpha path at all. There is also a real
+1/f background, because `spectralBackground` fits a line through `log10(power)` and has
+nothing to fit without one.
 
 ### `tools/shoot.js` — you can SEE the visuals
 
