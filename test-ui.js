@@ -1202,12 +1202,29 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
        timezone, and has no independent source of time to check either against. So it shows
        what it is working from, next to the times it produced. */
     const clock = await page.evaluate(() => document.getElementById('summaryBody').textContent);
-    assert.match(clock, /this device's clock/i,
+    assert.match(clock, /Device clock/i,
       'the saved list must name the clock its timestamps came from');
     assert.match(clock, /UTC[+-]\d\d:\d\d/,
       `and the UTC offset, so a wrong timezone is visible (got "${clock.slice(0, 200)}")`);
-    assert.match(clock, /off by the same amount/i,
-      'and say a constant offset moves every label and no interval — the data stays usable');
+    /* THE CROSS-CHECK MUST BE REPORTED, not just the clock's own claim. Explaining where a
+       timestamp comes from is not a fix, and it was all the app could do across three reports of
+       wrong dates. clockcheck.js compares the wall clock against the monotonic clock, which is
+       proof rather than opinion. */
+    assert.match(clock, /monotonic clock/,
+      `the measured verdict on whether the clock RUNS correctly must be shown (got "${clock.slice(0, 400)}")`);
+    /* AND THE HONEST LIMIT ALONGSIDE IT. A clock wrong by whole days ticks perfectly, so a
+       running-correctly verdict must not be allowed to read as "the dates are right". */
+    assert.match(clock, /does not mean it is SET correctly|not running correctly/,
+      'and a healthy verdict must say it does not mean the clock is SET right');
+    assert.match(clock, /Recorded data is untouched|exactly what the device reported/,
+      'and it must say a correction changes only the display');
+    // The correction control itself, since a diagnosis with no remedy is still not a fix.
+    const fix = await page.evaluate(() => ({
+      input: !!document.getElementById('clockActual'),
+      button: !!document.getElementById('clockFix'),
+    }));
+    assert.ok(fix.input && fix.button,
+      'there must be somewhere to state the true time, or the diagnosis has no remedy');
 
     const long = flagged.find((r) => r.id === 'long');
     const short = flagged.find((r) => r.id === 'short');

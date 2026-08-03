@@ -657,6 +657,7 @@
   </div>
 </div>
 <script src="dsp.js"></script>
+<script src="clockcheck.js"></script>
 <script src="viz-core.js"></script>
 <script src="visual.js"></script>
 <script src="chart.js"></script>
@@ -946,6 +947,21 @@ function pmdLogWorthSending() {
 // The chart's own buffer is capped at ~3 minutes, so the summary needs its own.
 const sessionLog = [];
 let sessionStartedAt = null;
+
+/* IS THE DEVICE CLOCK TELLING THE TRUTH? See clockcheck.js.
+ *
+ * Created at load and sampled from the 250ms tick. Every timestamp in this app is Date.now(), and
+ * after three separate reports of wrong dates the app needed something better to offer than an
+ * explanation of where timestamps come from. This cannot know the true time, but it can prove
+ * whether the wall clock is MOVING correctly by comparing it against the monotonic clock — and a
+ * clock that drifts or freezes is exactly the failure that produces an error growing by days. */
+const clockCheck = ClockCheck.create();
+// A correction the user states once, applied to what is DISPLAYED and never to what is recorded.
+let clockOffsetMs = ClockCheck.readOffset();
+/* Every displayed time goes through this. Recorded values never do: epochMs in the export stays
+   what the device believed, so a correction can be revised later and two archives with different
+   corrections are still comparable. */
+function displayTime(ms) { return new Date(Number(ms) + clockOffsetMs); }
 
 /* --- Durable recording (see record.js) ------------------------------------
  * Opened lazily on the first sample, so merely loading the page does not create
@@ -3243,6 +3259,8 @@ async function startRecording() {
   // A new sit gets a new general note, or the previous sit's comment would be amended.
   sitNoteId = null;
   sitNoteText = '';
+  // A correction the operating system made during yesterday's sit is not a fault in today's.
+  clockCheck.reset();
   markerLog.clear();
   resetProbes(timerEndAt ? (timerEndAt - Date.now()) / 1000 : 1800);
   await ensureRecording();
@@ -3808,14 +3826,44 @@ async function openSessions() {
   const offMin = -new Date().getTimezoneOffset();
   const offStr = `${offMin < 0 ? '-' : '+'}${String(Math.floor(Math.abs(offMin) / 60)).padStart(2, '0')}:`
     + String(Math.abs(offMin) % 60).padStart(2, '0');
-  const clockNote = `<div class="subtle" style="font-size:11px;opacity:.65;margin-bottom:10px">`
-    + `Times below come from this device's clock: <b>${escapeHtml(new Date().toLocaleString())}</b>`
-    + ` &middot; ${escapeHtml(tz)} &middot; UTC${offStr}.<br>If that is not the time where you are,`
-    + ` every time here is off by the same amount — fix the device's clock or timezone. Nothing`
-    + ` is lost either way: every row also carries UTC, so a constant offset can be corrected`
-    + ` afterwards without disturbing a single interval.</div>`;
+  /* THE CROSS-CHECK, and a correction the user can state.
+   *
+   * Reported three times, finally: "i just recorded this (8/3) and the date still says 7/31. i
+   * think all these dates might be off." Explaining where timestamps come from is not a fix. Two
+   * things are offered instead: the measured verdict on whether this device's clock is even RUNNING
+   * correctly (clockcheck.js compares it against the monotonic clock, which is proof rather than
+   * opinion), and a place to say what the time actually is when the clock is merely SET wrong —
+   * which no measurement on the device can detect. */
+  const cc = clockCheck.report();
+  const ccLine = !cc.available
+    ? ''
+    : cc.verdict
+      ? `<div class="subtle" style="font-size:11.5px;color:#ffc98a;margin-bottom:8px">`
+        + `<b>This device's clock is not running correctly.</b> Measured against the monotonic`
+        + ` clock: ${escapeHtml(cc.reason)}. That is proof rather than a guess, and it means the`
+        + ` times below are unreliable by roughly that much.</div>`
+      : `<div class="subtle" style="font-size:11px;opacity:.6;margin-bottom:8px">`
+        + `The clock is running correctly (checked against the monotonic clock over`
+        + ` ${Math.round(cc.elapsedSec)}s, drift ${(cc.driftMs / 1000).toFixed(2)}s). That does`
+        + ` <b>not</b> mean it is SET correctly — a clock wrong by whole days ticks perfectly, and`
+        + ` nothing on this device can tell. If the times below are wrong, say so here.</div>`;
+  const offLine = clockOffsetMs
+    ? `Showing times corrected by <b>${(clockOffsetMs / 3600000).toFixed(2)}h</b>.`
+      + ` Recorded data is untouched.`
+    : 'Times below are exactly what the device reported.';
+  const clockNote = `<div class="subtle" style="font-size:11px;opacity:.75;margin-bottom:10px">`
+    + ccLine
+    + `Device clock: <b>${escapeHtml(new Date().toLocaleString())}</b>`
+    + ` &middot; ${escapeHtml(tz)} &middot; UTC${offStr}. ${offLine}<br>`
+    + `<label style="display:inline-block;margin-top:6px">If it is actually`
+    + ` <input id="clockActual" placeholder="HH:MM" maxlength="5"`
+    + ` style="width:62px;font-size:11px;padding:2px 4px"> now,`
+    + ` <button id="clockFix" style="font-size:11px">correct the display</button></label>`
+    + `${clockOffsetMs ? ' <button id="clockClear" style="font-size:11px">remove correction</button>' : ''}`
+    + `<br><span style="opacity:.7">A correction changes only what is shown. Every export keeps`
+    + ` the device's own epochMs and UTC, so nothing is rewritten and no interval moves.</span></div>`;
   const rows = list.map((m) => {
-    const d = new Date(m.startedAt);
+    const d = displayTime(m.startedAt);
     const mins = Math.floor((m.durationSec || 0) / 60);
     const secs = Math.round((m.durationSec || 0) % 60);
     const live = recSession && recSession.id === m.id;
@@ -3859,6 +3907,33 @@ async function openSessions() {
     + ` per-second scores as CSV, your voice notes as audio, and a markdown summary`
     + ` with timestamps.${q && q.quotaBytes ? ` Using ${(q.usageBytes / 1e6).toFixed(0)}MB`
       + ` of about ${(q.quotaBytes / 1e6).toFixed(0)}MB available.` : ''}</p>`;
+
+  const actualEl = document.getElementById('clockActual');
+  const fixEl = document.getElementById('clockFix');
+  if (fixEl && actualEl) {
+    fixEl.addEventListener('click', () => {
+      const off = ClockCheck.offsetFromStatedTime(actualEl.value);
+      if (off == null) {
+        /* Refused rather than guessed. Near half a day a time of day cannot say which direction the
+           correction goes, and a twelve-hour error applied backwards puts every sit on the wrong
+           day — the exact bug this exists to fix. */
+        setStatus('Could not use that. Enter the time as HH:MM. If the clock is out by around'
+          + ' twelve hours or by whole days, fix the device\u2019s clock instead — a time of day'
+          + ' alone cannot say which way the correction goes.');
+        statusLockUntil = Date.now() + 9000;
+        return;
+      }
+      clockOffsetMs = ClockCheck.writeOffset(off);
+      openSessions();
+    });
+  }
+  const clearEl = document.getElementById('clockClear');
+  if (clearEl) {
+    clearEl.addEventListener('click', () => {
+      clockOffsetMs = ClockCheck.writeOffset(0);
+      openSessions();
+    });
+  }
 
   /* Names save on blur and on Enter, never on every keystroke: one write per edit rather
      than one per letter, and no re-render mid-typing to move the caret. */
@@ -4241,6 +4316,7 @@ setInterval(() => {
   });
 
   const stale = Date.now() - lastDataAt > 2000;
+  clockCheck.sample();
   checkRunawayRecording();
   const statusLocked = Date.now() < statusLockUntil;
   if (statusLocked) {
