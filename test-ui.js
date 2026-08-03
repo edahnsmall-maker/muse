@@ -90,6 +90,41 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   assert.deepStrictEqual(errors, [], `the page must load without console errors:\n  ${errors.join('\n  ')}`);
   console.log('✓ direct.html loads without throwing');
 
+  /* 0a2) THE DISPLAYED METRICS MUST COME FROM ONE PLACE.
+   *
+   * direct.html used to keep its own hand-written list of which composites to show, while
+   * metrics.js is where each metric is described and tiered. Two lists of the same thing is the
+   * duplication that has already produced real bugs here — a palette drifted between a visual and
+   * its chart, and a label vocabulary drifted between two files. Retiring a metric in metrics.js
+   * must retire it on screen without anyone remembering to.
+   */
+  {
+    const out = await page.evaluate(() => ({
+      shown: activeComposites.slice(),
+      fromRegistry: Metrics.displayed().map((m) => m.key),
+      chartOnly: CHART_ONLY_COMPOSITES.slice(),
+      retired: Metrics.METRICS.filter((m) => m.display === false).map((m) => m.key),
+      infoText: (() => { showMetricInfo(); const t = document.getElementById('summaryBody').textContent; closeSummary(); return t.replace(/\s+/g, ' '); })(),
+    }));
+    assert.deepStrictEqual(out.shown,
+      out.fromRegistry.filter((k) => !out.chartOnly.includes(k)),
+      'the on-screen composites must be exactly the registry\'s displayed set, less the ones with'
+      + ' their own row — a second hand-written list is how these drift apart');
+    // The retired ones must genuinely not be on screen.
+    for (const k of out.retired) {
+      assert.ok(!out.shown.includes(k), `${k} is retired and must not be in the readout`);
+    }
+    assert.ok(out.retired.length >= 2, 'something must actually have been retired');
+    /* AND THE HONESTY PANEL MUST SAY SO. It lists every metric, so with no note it implies all of
+       them are being shown. Retired is not deleted — the lab still computes them. */
+    assert.match(out.infoText, /not on the live display/,
+      'the honesty panel must mark the retired metrics rather than implying all are shown');
+    assert.match(out.infoText, /still computed in the lab/,
+      'and say they are still computed, since retiring is not deleting');
+    console.log(`✓ the readout derives from the metric registry (${out.shown.length} shown,`
+      + ` ${out.retired.join(' and ')} retired and marked as such)`);
+  }
+
   /* 0b) A MISSING OPTIONAL MODULE MUST COST ONLY ITS OWN FEATURE.
    *
    * Reported urgently: "none of the panels open, and my eeg says nothing was read but it's def
@@ -1152,6 +1187,37 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       closeSummary();
       return { bare, withPeak, md };
     });
+
+    /* THE SIGNAL CHECK MUST APPEAR AND MUST BE ABLE TO SAY THE BAD THING.
+     *
+     * Every visual runs through an adaptive normaliser, which uses its full output range whether or
+     * not the input carries information — so a responsive-looking display proves nothing by itself.
+     * The summary now reports the display against a shuffled copy of the same series. A check that
+     * could only ever report good news would be worse than none, so both directions are asserted:
+     * a structured series must pass, and an order-blind one must be called decoration. */
+    const sig = await page.evaluate(() => {
+      const through = (xs) => {
+        const n = new DSP.AdaptiveNormalizer();
+        return xs.map((v) => n.update(v)).filter((v) => v != null);
+      };
+      let seed = 4;
+      const rnd = () => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; };
+      const wander = [];
+      let v = 0.5;
+      for (let i = 0; i < 400; i++) { v = Math.max(0, Math.min(1, v + (rnd() - 0.5) * 0.02)); wander.push(v); }
+      return {
+        structured: SelfCheck.check(wander, through, { repeats: 9 }).discrimination,
+        // Passing values straight through cannot depend on order, so this is the calibration point.
+        blind: SelfCheck.check(wander, (xs) => xs, { repeats: 9 }),
+        onScreen: document.getElementById('summaryBody').textContent.replace(/\s+/g, ' '),
+      };
+    });
+    assert.ok(sig.structured > 2,
+      `the pipeline must beat a shuffle on a structured series (got ${sig.structured})`);
+    assert.strictEqual(sig.blind.decorative, true,
+      'and an order-blind transform must be reported as decoration, or the check is toothless');
+    assert.match(sig.onScreen, /Signal check/,
+      'and the verdict must be on the summary screen, not only in the console');
 
     assert.strictEqual(out.bare.peak.fallback, true,
       'with no signal fed in, no peak may be claimed');

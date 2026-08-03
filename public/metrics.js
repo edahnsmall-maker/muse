@@ -98,6 +98,30 @@
     },
   ];
 
+  /*
+   * WHAT THE LIVE APP SHOWS, as opposed to what can be computed.
+   *
+   * Eleven metrics were on offer and the honest count of validated ones was zero: two "solid"
+   * entries, and both of them are artifacts rather than brain states — a blink and a clenched jaw
+   * are the most trustworthy things this headband measures. Meanwhile the numbers a practitioner
+   * actually reads were moderate-to-speculative interpretations built on invented coefficients.
+   *
+   * Breadth also costs statistical power, measurably. The lab's multiplicity correction spends real
+   * power per comparison: a 469-comparison search over 71 observations can only report a
+   * correlation of 0.43 or stronger, while narrowing to 20 comparisons brings that floor to 0.33.
+   * So every extra metric on display is roughly a tenth of an effect size that can no longer be
+   * detected. Feature-rich and data-poor is not a neutral trade.
+   *
+   * So `display: false` retires a metric from the live screen WITHOUT deleting it: the lab still
+   * computes it, the raw EEG is still kept, and the formula can be re-examined at any time. What
+   * goes is the implication that it is a reading. `openness` and `asymmetry` are retired on the
+   * strength of their own caveats — "no validated real-time marker exists" and "do not read mood
+   * from this". `equanimity` is kept on the display at the practitioner's explicit request, and
+   * keeps its exploratory tier and its caveat.
+   */
+  const DISPLAY = { openness: false, asymmetry: false };
+  for (const m of METRICS) m.display = DISPLAY[m.key] !== false;
+
   const byKey = Object.fromEntries(METRICS.map((m) => [m.key, m]));
 
   function get(key) { return byKey[key] || null; }
@@ -108,6 +132,10 @@
   // deliberately excluded from being a DEFAULT — you can select them on
   // purpose, but nothing should silently drive the whole screen off a score
   // that has no validated basis.
+  // What the live app offers. The lab uses METRICS directly, because a candidate labelled as a
+  // candidate is exactly what a lab is for.
+  function displayed() { return METRICS.filter((m) => m.display); }
+
   function defaultSelectable() {
     return METRICS.filter((m) => m.tier !== 'speculative').map((m) => m.key);
   }
@@ -124,19 +152,48 @@
       case 'calm': return has(f.calm) ? clamp01(f.calm) : null;
       case 'thinking': return has(f.activity) ? clamp01(f.activity) : null;
       case 'focus':
-        // Steady frontal theta, penalised by instability. Theta present AND
-        // holding still is the closest thing to "sustained attention" here.
+        /* THETA PRESENT *AND* HOLDING STILL, as a geometric mean rather than a weighted penalty.
+         *
+         * This used to be `thetaLevel * (1 - 0.55 * variability)`, and the 0.55 came from nowhere.
+         * A geometric mean says the same thing — both conditions must hold, neither substitutes for
+         * the other — with no free parameter to invent. It is also better behaved at the edges: if
+         * theta is absent the answer is 0 regardless of steadiness, which is what "sustained
+         * attention" should mean, whereas the weighted form still returned 0.45 of nothing.
+         */
         if (!has(f.thetaLevel)) return null;
-        return clamp01(f.thetaLevel * (1 - 0.55 * (has(f.variability) ? f.variability : 0.5)));
+        return clamp01(Math.sqrt(
+          clamp01(f.thetaLevel) * (1 - clamp01(has(f.variability) ? f.variability : 0.5))));
       case 'drowsy':
+        /* A SHARE, not a weighted sum with an intercept.
+         *
+         * This used to be `0.5*theta + 0.5*delta - 0.35*alpha + 0.17` — four invented numbers, one
+         * of which (+0.17) existed purely to drag the output back into range after the subtraction.
+         * The intent was always "slow bands rising while alpha falls", and that is a ratio:
+         * (theta+delta) as a share of (theta+delta+alpha). Bounded 0..1 by construction, no
+         * intercept, no weights, and it says exactly the intended thing.
+         */
         if (!has(f.thetaLevel) || !has(f.deltaLevel) || !has(f.alphaLevel)) return null;
-        return clamp01(0.5 * f.thetaLevel + 0.5 * f.deltaLevel - 0.35 * f.alphaLevel + 0.17);
+        {
+          const slow = clamp01(f.thetaLevel) + clamp01(f.deltaLevel);
+          const total = slow + clamp01(f.alphaLevel);
+          return total > 0 ? clamp01(slow / total) : null;
+        }
       case 'blink': return has(f.blink) ? clamp01(f.blink) : null;
       case 'jaw': return has(f.jaw) ? clamp01(f.jaw) : null;
       case 'asymmetry':
-        // 0.5 is balanced; >0.5 means more left-frontal alpha.
+        /* A LATERALITY INDEX, which is the standard parameter-free form: the difference over the
+         * sum. 0.5 is balanced, above 0.5 is more left-frontal alpha.
+         *
+         * This used to be `0.5 + 0.5*tanh((L-R)*2)`, and the gain of 2 was chosen to make the
+         * curve look right. A tanh with an invented gain decides how much difference counts as a
+         * lot, which is exactly the judgement this file has no basis for making.
+         */
         if (!has(f.alphaLeft) || !has(f.alphaRight)) return null;
-        return clamp01(0.5 + 0.5 * Math.tanh((f.alphaLeft - f.alphaRight) * 2));
+        {
+          const sum = clamp01(f.alphaLeft) + clamp01(f.alphaRight);
+          if (!(sum > 0)) return null;
+          return clamp01(0.5 + 0.5 * ((clamp01(f.alphaLeft) - clamp01(f.alphaRight)) / sum));
+        }
       // Mapped so 0.5 is the turnaround between in and out, which is what makes
       // a centred bar and a mid-line trace mean the right thing.
       case 'breath': return has(f.breathPhase) ? clamp01(0.5 + 0.5 * f.breathPhase) : null;
@@ -145,16 +202,28 @@
         if (!has(f.hrvSteadiness)) return null;
         return clamp01(f.hrvSteadiness);
       case 'openness':
-        // Alpha up, beta down, and very little churn — the pattern the zazen
-        // literature describes. Explicitly exploratory.
+        /* ALPHA'S SHARE AGAINST BETA, held steady — the pattern the zazen literature describes,
+         * as a ratio times a steadiness, combined by geometric mean.
+         *
+         * This used to be `0.55*alpha + 0.25*(1-beta) + 0.20*(1-variability)`: three weights that
+         * happen to sum to 1.0, chosen because that looked like calibration. Worse than the others,
+         * because a weighted sum lets a HIGH alpha compensate for a churning signal and still
+         * report open awareness, which is the opposite of what the finding describes. The
+         * conjunction form cannot do that: churn pulls the whole thing down.
+         */
         if (!has(f.alphaLevel) || !has(f.betaLevel)) return null;
-        return clamp01(0.55 * f.alphaLevel + 0.25 * (1 - f.betaLevel)
-          + 0.20 * (1 - (has(f.variability) ? f.variability : 0.5)));
+        {
+          const a = clamp01(f.alphaLevel), b = clamp01(f.betaLevel);
+          if (!(a + b > 0)) return null;
+          const share = a / (a + b);
+          const steady = 1 - clamp01(has(f.variability) ? f.variability : 0.5);
+          return clamp01(Math.sqrt(share * steady));
+        }
       default: return null;
     }
   }
 
   function clamp01(v) { return Math.max(0, Math.min(1, v)); }
 
-  return { TIERS, METRICS, get, tierOf, tierInfo, defaultSelectable, compute };
+  return { TIERS, METRICS, get, tierOf, tierInfo, defaultSelectable, displayed, compute };
 });

@@ -658,6 +658,7 @@
 </div>
 <script src="dsp.js"></script>
 <script src="clockcheck.js"></script>
+<script src="selfcheck.js"></script>
 <script src="viz-core.js"></script>
 <script src="visual.js"></script>
 <script src="chart.js"></script>
@@ -1302,6 +1303,35 @@ function showSummaryStats(stats) {
        fixed ${DSP.BANDS.alpha[0]}–${DSP.BANDS.alpha[1]}Hz band: one-second windows give 1Hz
        frequency bins and cannot resolve a peak. The lab recomputes with your band.</div>`;
 
+  /* CAN THIS DISPLAY TELL YOUR SIGNAL FROM NOISE? See selfcheck.js.
+   *
+   * Every visual is driven through an adaptive normaliser, which rescales its input against that
+   * input's own recent range — so it uses its full output range whether or not the input carries
+   * information. That property was never checked, and it means a responsive-looking visual proves
+   * nothing on its own.
+   *
+   * The test is the series against a SHUFFLED copy of itself: shuffling destroys order, trends and
+   * excursions while preserving the distribution exactly, so anything the display shows equally for
+   * both is not being shown because of the signal. Reported every sit, because the answer depends
+   * on the sit — a session with poor contact or a flat trace can score well below one with signal,
+   * and that is exactly when a confident-looking visual is most misleading.
+   *
+   * Guarded like every other auxiliary module: a diagnostic must not be able to blank the app. */
+  let selfLine = '';
+  if (typeof SelfCheck !== 'undefined' && sessionLog.length >= SelfCheck.MIN_SAMPLES) {
+    const key = viewMode === 'composites' ? primaryMetric : 'calm';
+    const label = (Metrics.get(key) || {}).label || key;
+    const series = sessionLog.map((r) => (r && Number.isFinite(r[key]) ? r[key] : null));
+    const through = (xs) => {
+      const norm = new DSP.AdaptiveNormalizer();
+      return xs.map((v) => norm.update(v)).filter((v) => v != null);
+    };
+    const sc = SelfCheck.check(series, through, { seed: 11, repeats: 9 });
+    const bad = sc.known && sc.decorative;
+    selfLine = `<div class="subtle" style="margin-top:14px${bad ? ';color:#ffc98a' : ''}">`
+      + `<b>Signal check:</b> ${escapeHtml(SelfCheck.describe(sc, `The ${label} display`))}</div>`;
+  }
+
   const yours = selfRating > 0
     ? `<div class="subtle" style="margin-top:4px">You felt it as a <b>${selfRating}</b> out of 5. `
       + `Over time, noticing how your guess lines up with the trace is the skill worth building — `
@@ -1314,6 +1344,7 @@ function showSummaryStats(stats) {
     + yours
     + `<div id="summaryChannels" style="margin-top:16px">${chan}</div>`
     + iafBlock
+    + selfLine
     + renderMarkerEditor()
     /* TWO DOWNLOADS, because they are two different things and only one of them was
        reachable from here. The report is prose — what happened, for reading. The
@@ -1784,11 +1815,25 @@ let primaryMetric = 'calm';
 // returns null for them, the readout shows an em dash, and that is the honest
 // state — "we have no heart data" rather than silently omitting the row so you
 // can't tell whether it's missing or zero.
-const activeComposites = ['calm', 'thinking', 'focus', 'drowsy', 'hrv', 'equanimity', 'blink', 'jaw'];
 // Graphed over time and legend-able, but deliberately NOT a row in the composite
 // readout: a 0-100 bar is the wrong shape for breath (an exhale is not a low
 // score), and it gets exactly one row of its own — the centred bar below.
 const CHART_ONLY_COMPOSITES = ['breath'];
+/*
+ * DERIVED FROM metrics.js, NOT LISTED AGAIN HERE.
+ *
+ * This used to be a hand-written array, and metrics.js now carries a `display` flag saying which
+ * metrics belong on the live screen. Two lists of the same thing is the duplication that has
+ * already caused real bugs in this project — a palette drifted between a visual and its chart, and
+ * a vocabulary drifted between two files — so retiring a metric in metrics.js has to retire it
+ * here, without anyone remembering to.
+ *
+ * The order comes from METRICS, so the readout follows the same order as the honesty panel that
+ * explains it. `breath` is removed because it has its own centred row, for the reason above.
+ */
+const activeComposites = Metrics.displayed()
+  .map((m) => m.key)
+  .filter((k) => !CHART_ONLY_COMPOSITES.includes(k));
 
 function computeFeatures(result) {
   const wins = FRONTAL.map((ch) => buffers[ch].slice(-WINDOW)).filter((w) => w.length >= WINDOW);
@@ -2294,9 +2339,15 @@ function showMetricInfo() {
   const rows = Metrics.METRICS.map((m) => {
     const t = Metrics.tierInfo(m.tier);
     const mark = m.tier === 'solid' ? '●' : m.tier === 'moderate' ? '◐' : '○';
+    /* SAY WHICH ARE NOT ON SCREEN. This panel lists every metric, so without a note it implies all
+       of them are being shown — and two have been retired from the display on the strength of their
+       own caveats. Retired is not deleted: the lab still computes them from the raw EEG. */
+    const retired = m.display === false
+      ? ' <span style="opacity:.5">(not on the live display — still computed in the lab)</span>' : '';
     return `<div style="text-align:left;margin-bottom:16px;max-width:620px">`
       + `<div><b>${mark} ${m.label}</b> <span style="opacity:.55">— ${t.label}</span>`
-      + `${m.key === primaryMetric ? ' <span style="opacity:.5">(driving the visual)</span>' : ''}</div>`
+      + `${m.key === primaryMetric ? ' <span style="opacity:.5">(driving the visual)</span>' : ''}`
+      + retired + `</div>`
       + `<div class="subtle" style="max-width:620px">From: ${m.source}</div>`
       + `<div class="subtle" style="max-width:620px">Caveat: ${m.caveat}</div></div>`;
   }).join('');

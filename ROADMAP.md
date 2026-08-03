@@ -614,6 +614,97 @@ the numbers are in a sensible range and the machinery discriminates on synthetic
       recorded. That is the cheapest strong test of the whole hypothesis and it needs no new
       hardware.
 
+## The coefficients were invented, and the prose said so while the arithmetic did not (2026-08-03)
+
+Asked for a careful look at the project goals, the UI, the product, the code and "the formulas we're
+using to create visuals": what makes sense, what doesn't, what is the biggest weakness.
+
+The biggest weakness was in this repository's own arithmetic, and non-negotiable #5 had been
+honoured in English and broken in JavaScript. `metrics.js` carried scrupulous caveats — "a proxy of a
+proxy", "no established marker for equanimity", "do not read mood from this" — beside formulas
+containing nine hand-picked numbers:
+
+```
+focus     = thetaLevel * (1 - 0.55 * variability)
+drowsy    = 0.5*theta + 0.5*delta - 0.35*alpha + 0.17
+openness  = 0.55*alpha + 0.25*(1-beta) + 0.20*(1-variability)
+asymmetry = 0.5 + 0.5*tanh((L-R) * 2)
+```
+
+None of them measured. Several to two decimal places. One (`+0.17`) existing only to drag a
+subtraction back into range. Weights like that are worse than no weights, because they manufacture
+the appearance of calibration and a reader cannot tell an invented 0.55 from a fitted one.
+
+**Every composite is now a ratio or a geometric mean** — bounded by construction, nothing to tune:
+
+- `focus` = √(theta × steadiness). A conjunction, so absent theta is zero focus however steady;
+  the weighted form returned 0.45 of nothing.
+- `drowsy` = (theta + delta) / (theta + delta + alpha). A share, so no intercept is needed.
+- `openness` = √(alpha/(alpha+beta) × steadiness). The old weighted sum let high alpha buy its way
+  past a churning signal and still report open awareness — the opposite of the finding it cites.
+- `asymmetry` = the standard laterality index, difference over sum, with no gain deciding how much
+  difference counts as a lot.
+
+`test-metrics.js` strips comments from `compute()` and fails on any numeric literal outside
+{0, 1, 0.5, 2}, so the next weighted sum has to argue for itself there.
+
+### Eleven metrics was too many to put on a screen
+
+Of eleven, two were "solid" and both are artifacts: a blink and a clenched jaw are the most
+trustworthy things this headband measures. Breadth also costs power, measurably — a 469-comparison
+search over 71 observations can only report ρ ≥ 0.43, while 20 comparisons brings that to 0.33, so
+each extra displayed metric is roughly a tenth of an effect size that can no longer be found.
+
+`openness` and `asymmetry` are retired from the live display on the strength of their own caveats.
+Retired is **not** deleted: the lab still computes them, the raw EEG is still kept, and the honesty
+panel marks them rather than implying everything listed is on screen. `equanimity` stays at the
+practitioner's explicit request — "go for it all, but keep equanimity" — and keeps its exploratory
+tier and its caveat, because being asked for is not evidence.
+
+`activeComposites` in direct.html was a second hand-written list of the same thing and now derives
+from the registry, because that duplication has already caused drift bugs here twice.
+
+### A retraction: the visuals are NOT decoration
+
+I told the practitioner that "the visuals cannot distinguish your brain from white noise", from a
+measurement showing the real `calm` series and white noise both sweeping 5% of the normaliser's
+output range. **That comparison was confounded and the conclusion was wrong.** Comparing a real
+series against a *different* series conflates two questions: whether the display responds to
+temporal structure, and whether the two happened to have similar amplitude.
+
+The correct test is a series against a **shuffled copy of itself** — which destroys order, trends and
+excursions while preserving the distribution exactly, so the only thing that differs is structure.
+On the practitioner's real recorded sit:
+
+| metric | display vs its own shuffle |
+|---|---|
+| calm | 3.38× |
+| equanimity | 3.91× |
+| focus | 3.35× |
+| thinking | 5.01× |
+| drowsy | 4.14× |
+| HRV | 5.65× |
+
+All far above the 1.2× that chance produces. The pipeline does respond to real structure. The
+adaptive normaliser scores 4.24× on a wandering series and 0.80× on white noise, so it is not the
+blind amplifier I claimed.
+
+`selfcheck.js` makes this a permanent instrument rather than a one-off: the summary screen now
+reports it every sit, because the answer depends on the sit — a session with poor contact scores
+well below one with signal, and that is precisely when a confident-looking visual misleads most.
+`test-selfcheck.js` asserts it can deliver bad news, since a self-check that only ever reports good
+news converts an unexamined problem into a certified one.
+
+### Still outstanding from that review
+
+- [ ] The label hierarchy is backwards. The whole-sit rating needs no reaction time and is the best
+      label the system collects; it is optional and skippable. Marks depend on noticing and they are
+      the spine of the analysis.
+- [ ] The session-level search: one sit = one observation, the end-of-sit rating as the label.
+- [ ] The lab needs an honest headline before its tables.
+- [ ] `direct.html` is 4,500 lines and the source of all three page-blanking bugs. Splitting it is
+      the highest-risk item here and the lowest user-visible value, which is why it is last.
+
 ## Phase 2 — the real phone app
 
 **Goal:** each person at the center runs this on their own phone, no laptop
