@@ -4211,6 +4211,10 @@ setInterval(() => {
   // In composite view the visual is tuned to the SELECTED composite, not to
   // the raw sensor-derived calm score — that was the point of the toggle.
   const driver = viewMode === 'composites' ? Metrics.compute(primaryMetric, features) : null;
+  /* TELL THE VISUAL WHAT IS DRIVING IT, so its key can say so. Eclipse and the other
+     single-value visuals follow whichever composite is selected; without the name on screen,
+     switching from Calm to Focus changes the image in a way nobody can see is a change. */
+  visual.setDriver(viewMode === 'composites' ? (Metrics.get(primaryMetric) || {}).label : null);
   // Pulse draws one ring per composite, so it needs them by key rather than
   // just the single selected driver. Nulls are passed through untouched —
   // setState merges, so a metric with no inputs holds instead of reading zero.

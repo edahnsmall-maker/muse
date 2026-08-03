@@ -470,10 +470,29 @@
     }
 
     binAt(tSec) {
+      return Math.min(this.bins - 1, Math.floor(this.binExact(tSec)));
+    }
+
+    /*
+     * THE HAND'S POSITION AS A FRACTION OF A BIN, which is what makes the sweep smooth.
+     *
+     * Reported as "corona is still very very choppy. like it's in slo mo", after a first fix that
+     * eased the composite VALUES and changed nothing — because the values were never the problem.
+     * Measured: with the value feed steady, Corona's drawn geometry changed on 5 of 59 consecutive
+     * frames, in a regular pattern of one change every ten frames. 144 bins over a 24-second
+     * revolution is one bin every 0.167s, so the picture could only ever update six times a
+     * second, in discrete angular jumps. Pulse measured the same way for the same reason.
+     *
+     * The bin ARRAY has to stay quantised — it is a fixed-size history — but the hand does not.
+     * Keeping the exact fractional position means `age` and therefore `faded` change every frame,
+     * so the trail's fade and its lead-in ramp move continuously instead of stepping. Same fix as
+     * Flow's sub-sample scroll, in the angular domain rather than the horizontal one.
+     */
+    binExact(tSec) {
       const t = Number.isFinite(tSec) ? tSec : 0;
       let frac = (t % this.revSec) / this.revSec;
       if (frac < 0) frac += 1;
-      return Math.min(this.bins - 1, Math.floor(frac * this.bins));
+      return frac * this.bins;
     }
 
     // Writes `value` into EVERY bin the hand has crossed since the last call,
@@ -483,6 +502,9 @@
     write(tSec, value) {
       const target = this.binAt(tSec);
       const v = Math.max(0, Math.min(1, value == null || Number.isNaN(value) ? 0 : value));
+      // The exact position is kept alongside the integer one: writing needs a bin index, drawing
+      // needs a continuous angle, and conflating them is what made the sweep step.
+      this.cursorExact = this.binExact(tSec);
       if (!this.started) {
         this.values[target] = v;
         this.cursor = target;
@@ -501,7 +523,10 @@
     // 0 = the hand is here right now; approaching 1 = a full revolution ago,
     // i.e. about to be overwritten.
     age(bin) {
-      return ((this.cursor - bin + this.bins) % this.bins) / this.bins;
+      // The FRACTIONAL cursor when there is one — see binExact. Falling back to the integer keeps
+      // a ring that has never been written (or an older caller) behaving exactly as before.
+      const c = this.cursorExact == null ? this.cursor : this.cursorExact;
+      return (((c - bin) % this.bins) + this.bins) % this.bins / this.bins;
     }
 
     // The bulge to actually draw: what was recorded, faded by how long ago the
@@ -695,7 +720,7 @@
   }
 
   function legendFor(modeKey, {
-    composites = false, breath = false, depositSec = null, omitSeries = null,
+    composites = false, breath = false, depositSec = null, omitSeries = null, driver = null,
   } = {}) {
     const spec = LEGENDS[modeKey];
     if (!spec) return [];                      // hidden/experimental modes: no key yet
@@ -723,6 +748,20 @@
     if (omitted.size) {
       for (let i = out.length - 1; i >= 0; i--) if (omitted.has(out[i].label)) out.splice(i, 1);
     }
+    /*
+     * WHAT IS DRIVING THIS IMAGE, when the answer is a choice rather than a constant.
+     *
+     * Eclipse follows the SELECTED composite, so pressing the Composites toggle really does
+     * change the picture — and a soft grey disc responding to Focus instead of Calm looks like a
+     * soft grey disc, so the change was invisible. Reported twice, the second time precisely:
+     * "the toggle doesnt change the eclipse output, at least the legend is the same if the output
+     * changes". An unlabelled change cannot be told from no change.
+     *
+     * Placed FIRST, above the palette and the notes, because it is the answer to "what am I
+     * looking at" and the rest is detail. Only when a driver is actually supplied: inventing
+     * "driven by Calm" as a default would be a claim the caller never made.
+     */
+    if (driver) out.unshift({ text: `driven by ${driver}` });
     if (spec.notes) {
       // Only substitute when the interval is actually known. Otherwise drop the line
       // rather than print a placeholder or invent a default — a key that says the

@@ -563,4 +563,61 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
     + ` of the band, while a real excursion still rescales (${spike.net.toFixed(2)}%)`);
 }
 
+/* ---- The sweep visuals must move EVERY frame, not six times a second -------------
+ *
+ * Reported as "corona is still very very choppy. like it's in slo mo" — after a first fix that
+ * eased the composite values and changed nothing, because the values were never the cause.
+ *
+ * Measured: with the data feed steady, Corona's drawn geometry changed on 5 of 59 consecutive
+ * frames, in a regular one-change-every-ten-frames pattern. 144 bins over a 24-second revolution
+ * is one bin every 0.167s, so the picture could only update six times a second, in discrete
+ * angular jumps. Pulse measured the same, for the same reason.
+ *
+ * This measures the thing the eye sees: with NO new data arriving, does the drawn output change
+ * on every frame? Every numeric argument of every recorded op is summed, not just line vertices —
+ * the first version of this measurement looked only at moveTo/lineTo and reported Corona as
+ * changing on 0 of 59 frames, because Corona draws with arcs and gradients.
+ */
+{
+  const canvas = makeCanvas(1280, 720);
+  const v = sandbox.createZenVisual(canvas);
+  const ctx = canvas.getContext();
+  const frame = () => { nowMs += 16; const cb = rafCb; rafCb = null; cb(nowMs); };
+  const feed = (i) => v.setState({
+    calm: 0.5, noise: 0.05, activity: 0.5,
+    metrics: { calm: 0.5 + 0.15 * Math.sin(i / 12), focus: 0.5, thinking: 0.45, drowsy: 0.4 },
+    bands: [0, 1, 2, 3].map(() => ({ level: 0.45, spike: 0, fresh: true })),
+  });
+
+  const signature = () => {
+    let acc = 0;
+    for (const [name, args] of ctx.__calls) {
+      for (let i = 0; i < args.length; i++) {
+        const val = args[i];
+        // Weighted by position and op name so two different frames cannot coincidentally sum
+        // to the same total.
+        if (typeof val === 'number' && Number.isFinite(val)) acc += val * (1 + ((i + name.length) % 13));
+      }
+    }
+    return acc;
+  };
+
+  for (const mode of ['corona', 'pulse']) {
+    while (v.currentMode().key !== mode) v.cycleMode();
+    // Warm the ring past a full revolution at the app's real cadence: 250ms of data, ~15 frames.
+    for (let i = 0; i < 120; i++) { feed(i); for (let f = 0; f < 15; f++) frame(); }
+    const sig = [];
+    for (let f = 0; f < 40; f++) { ctx.__calls.length = 0; frame(); sig.push(signature()); }
+    let identical = 0;
+    for (let i = 1; i < sig.length; i++) if (Math.abs(sig[i] - sig[i - 1]) < 1e-9) identical++;
+    assert.strictEqual(identical, 0,
+      `${mode} must redraw something different on every frame with the feed steady:`
+      + ` ${identical} of ${sig.length - 1} frames were identical to the one before`
+      + ' (it was 54 of 59 before the sweep position became continuous)');
+  }
+  assert.deepStrictEqual(badNumbers, [], `the continuous sweep produced bad numbers:\n  ${badNumbers.join('\n  ')}`);
+  console.log('✓ Corona and Pulse sweep continuously: 0 identical consecutive frames, where the'
+    + ' quantised cursor left 54 of 59 unchanged');
+}
+
 console.log('\nAll visual smoke tests passed.');

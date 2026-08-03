@@ -160,6 +160,11 @@ function createZenVisual(canvas) {
    * than assumed (a 250ms tick is not a promise, and a busy tab delivers it late), as an EMA
    * over observed gaps with implausible ones rejected.
    */
+  /* WHAT THE APP SAYS IS DRIVING THE IMAGE, for the key to name. A label rather than a value:
+     visual.js is handed a number and cannot know which metric it came from, and guessing would
+     put a name in the key that the renderer never used. */
+  let driverLabel = null;
+
   let flowDebugOn = false;
   const flowLastY = [null, null, null, null];
 
@@ -2370,6 +2375,7 @@ function createZenVisual(canvas) {
      */
     if (legendOn) {
       drawLegend(ctx, canvas.width, canvas.height, VizCore.legendFor(mode, {
+        driver: driverLabel,
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
         depositSec: irisDepositSec(),
@@ -2510,6 +2516,9 @@ function createZenVisual(canvas) {
       return seriesMode;
     },
     setLegend(on) { legendOn = !!on; return legendOn; },
+    // Null clears it, which is right when the view is showing raw sensors: nothing is being
+    // selected, so there is no driver to name.
+    setDriver(label) { driverLabel = label || null; return driverLabel; },
     // Which electrodes have produced at least one artifact-free window. Exposed so a
     // test can assert that a dead one is absent rather than merely dim.
     channelsReading() { return everFresh.slice(); },
@@ -2544,6 +2553,7 @@ function createZenVisual(canvas) {
     // The drawing is smoke-tested; WHAT it claims is the part worth asserting.
     legendNow() {
       return VizCore.legendFor(VizCore.MODES[modeIndex].key, {
+        driver: driverLabel,
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
         depositSec: irisDepositSec(),

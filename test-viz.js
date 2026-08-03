@@ -703,4 +703,41 @@ const VizCore = require('./public/viz-core.js');
   console.log('✓ the key names only what is on screen, and says the height is relative');
 }
 
+/* ---- THE KEY MUST NAME WHAT IS DRIVING THE IMAGE ---------------------------------
+ *
+ * Reported twice, the second time precisely: "the toggle doesnt change the eclipse output, at
+ * least the legend is the same if the output changes". Both halves were true. Eclipse follows the
+ * SELECTED composite, so pressing the Composites toggle does change the picture — but a soft grey
+ * disc responding to Focus instead of Calm looks like a soft grey disc, and nothing said which.
+ * An unlabelled change cannot be distinguished from no change.
+ */
+{
+  const plain = VizCore.legendFor('eclipse', {});
+  const driven = VizCore.legendFor('eclipse', { driver: 'Focus' });
+  assert.ok(!plain.some((e) => /driven by/.test(e.text || '')),
+    'with no driver supplied the key must claim none — a default would be a claim nobody made');
+  const note = driven.find((e) => /driven by/.test(e.text || ''));
+  assert.ok(note, `the key must name the driver when one is given (${JSON.stringify(driven)})`);
+  assert.match(note.text, /Focus/, 'by name');
+  assert.strictEqual(driven[0], note,
+    'and first, because it answers "what am I looking at" and the rest is detail');
+  // Switching the driver must change the key, which is the whole point.
+  const other = VizCore.legendFor('eclipse', { driver: 'Calm' });
+  assert.notStrictEqual(other[0].text, note.text,
+    'a different driver must produce a different key, or the toggle is still invisible');
+  // Everything the key said before must still be there.
+  for (const e of plain) {
+    const same = driven.find((d) => (d.text && d.text === e.text) || (d.label && d.label === e.label));
+    assert.ok(same, `naming the driver must not drop "${e.text || e.label}" from the key`);
+  }
+  // And it applies to the other single-value visuals, not just Eclipse.
+  for (const mode of ['iris', 'bloom', 'field']) {
+    const withDriver = VizCore.legendFor(mode, { driver: 'Equanimity' });
+    if (!withDriver.length) continue;              // a mode with no key yet is not a failure
+    assert.ok(withDriver.some((e) => /driven by Equanimity/.test(e.text || '')),
+      `${mode} must also name its driver`);
+  }
+  console.log('✓ the key names which composite is driving the image, and changes when it changes');
+}
+
 console.log('\nAll viz-core tests passed.');
