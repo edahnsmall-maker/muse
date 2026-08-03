@@ -955,9 +955,30 @@ let sessionStartedAt = null;
  * explanation of where timestamps come from. This cannot know the true time, but it can prove
  * whether the wall clock is MOVING correctly by comparing it against the monotonic clock — and a
  * clock that drifts or freezes is exactly the failure that produces an error growing by days. */
-const clockCheck = ClockCheck.create();
+/*
+ * GUARDED, BECAUSE A DIAGNOSTIC MUST NEVER BE ABLE TO KILL THE APP.
+ *
+ * Reported, urgently: "none of the panels open, and my eeg says nothing was read but it's def
+ * connected." That was this line. `clockcheck.js` briefly went missing from the served directory
+ * while direct.html still had its <script> tag, so `ClockCheck` was undefined, this threw at load,
+ * and everything after it in the inline script never ran — every panel, every keyboard binding, and
+ * the whole EEG path. The app looked connected because the Bluetooth handshake happens before any
+ * of that.
+ *
+ * The lesson is not "keep the file there". It is that a clock cross-check is a NICE-TO-HAVE
+ * diagnostic and it was wired in as though it were load-critical. Anything optional now degrades to
+ * a no-op with the same shape, so a missing or broken auxiliary module costs its own feature and
+ * nothing else. This project has been blanked by a top-level throw three times now; the pattern is
+ * always the same and the fix is always this.
+ */
+const clockCheck = (typeof ClockCheck !== 'undefined' && ClockCheck.create)
+  ? ClockCheck.create()
+  : { available: false, sample: () => null, reset: () => {},
+      report: () => ({ available: false, usable: true, elapsedSec: 0, driftMs: 0, ratePpt: 0,
+        steps: [], stepMs: 0, verdict: null, reason: 'clock check unavailable' }) };
 // A correction the user states once, applied to what is DISPLAYED and never to what is recorded.
-let clockOffsetMs = ClockCheck.readOffset();
+let clockOffsetMs = (typeof ClockCheck !== 'undefined' && ClockCheck.readOffset)
+  ? ClockCheck.readOffset() : 0;
 /* Every displayed time goes through this. Recorded values never do: epochMs in the export stays
    what the device believed, so a correction can be revised later and two archives with different
    corrections are still comparable. */
@@ -3912,7 +3933,8 @@ async function openSessions() {
   const fixEl = document.getElementById('clockFix');
   if (fixEl && actualEl) {
     fixEl.addEventListener('click', () => {
-      const off = ClockCheck.offsetFromStatedTime(actualEl.value);
+      const off = (typeof ClockCheck !== 'undefined' && ClockCheck.offsetFromStatedTime)
+        ? ClockCheck.offsetFromStatedTime(actualEl.value) : null;
       if (off == null) {
         /* Refused rather than guessed. Near half a day a time of day cannot say which direction the
            correction goes, and a twelve-hour error applied backwards puts every sit on the wrong
@@ -3923,7 +3945,7 @@ async function openSessions() {
         statusLockUntil = Date.now() + 9000;
         return;
       }
-      clockOffsetMs = ClockCheck.writeOffset(off);
+      clockOffsetMs = ClockCheck.writeOffset(off) || 0;
       openSessions();
     });
   }

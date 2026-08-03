@@ -90,6 +90,77 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   assert.deepStrictEqual(errors, [], `the page must load without console errors:\n  ${errors.join('\n  ')}`);
   console.log('✓ direct.html loads without throwing');
 
+  /* 0b) A MISSING OPTIONAL MODULE MUST COST ONLY ITS OWN FEATURE.
+   *
+   * Reported urgently: "none of the panels open, and my eeg says nothing was read but it's def
+   * connected." One auxiliary file briefly went missing from the served directory while
+   * direct.html still had its script tag, so the module global was undefined, a top-level call
+   * threw, and NOTHING after it in the inline script ever ran — every panel, every keyboard
+   * binding, the whole EEG path. The app still looked connected because the Bluetooth handshake
+   * happens before any of it.
+   *
+   * This project has now been blanked by a top-level throw three times: twice by const-before-
+   * declaration and once by this. Fixing the instance is not enough — the shape has to be pinned.
+   * So: load the page with the optional module deleted from the window, and require that the app
+   * still works.
+   */
+  {
+    /* Its own context: browser.newPage() above created an implicit one that will not hold a
+       second page, and this check needs a fresh load with a different init script. */
+    const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const page2 = await ctx2.newPage();
+    const errs2 = [];
+    page2.on('pageerror', (e) => errs2.push(e.message));
+    page2.on('console', (m) => { if (m.type() === 'error') errs2.push(m.text()); });
+    // Delete the global the moment each script finishes, which is exactly what a 404 on that file
+    // looks like from the inline script's point of view.
+    await page2.addInitScript(() => {
+      Object.defineProperty(navigator, 'bluetooth', {
+        value: { requestDevice: () => new Promise(() => {}) }, configurable: true,
+      });
+      Object.defineProperty(window, 'ClockCheck', {
+        get() { return undefined; }, set() {}, configurable: true,
+      });
+    });
+    await page2.goto(PAGE);
+    await page2.waitForTimeout(700);
+
+    assert.deepStrictEqual(errs2, [],
+      `with ClockCheck absent the page must still load clean:\n  ${errs2.join('\n  ')}`);
+
+    // The things the user found broken: panels, and the EEG path.
+    const alive = await page2.evaluate(() => {
+      const out = { panels: {}, eeg: null, clock: null };
+      // Every floating panel must still open.
+      for (const id of ['dataPanel', 'readout', 'summary']) {
+        const el = document.getElementById(id);
+        out.panels[id] = !!el;
+      }
+      // The EEG path must still run: feed samples and check a scored row appears.
+      try {
+        for (let ch = 0; ch < 4; ch++) {
+          const buf = [];
+          for (let i = 0; i < 512; i++) buf.push(20 * Math.sin((2 * Math.PI * 10 * i) / 256));
+          pushSamples(ch, buf);
+        }
+        out.eeg = computeCalm() != null;
+      } catch (err) { out.eeg = 'threw: ' + err.message; }
+      // And the diagnostic itself degrades to a no-op rather than throwing.
+      try { clockCheck.sample(); out.clock = clockCheck.report().available; }
+      catch (err) { out.clock = 'threw: ' + err.message; }
+      return out;
+    });
+    assert.ok(alive.panels.dataPanel && alive.panels.readout && alive.panels.summary,
+      `the panels must still exist (${JSON.stringify(alive.panels)})`);
+    assert.strictEqual(alive.eeg, true,
+      `the EEG path must still score a window (got ${JSON.stringify(alive.eeg)})`);
+    assert.strictEqual(alive.clock, false,
+      `and the clock check must report itself unavailable rather than throw (got ${JSON.stringify(alive.clock)})`);
+    await page2.close();
+    await ctx2.close();
+    console.log('✓ a missing optional module costs only its own feature: panels and EEG survive');
+  }
+
   /* 0) THE CONNECT CONTROL MUST BE VISIBLE ON A FRESH LOAD.
    *
    * Reported from a live page showing nothing but the Record button. The device
