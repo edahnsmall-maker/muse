@@ -2392,7 +2392,10 @@ async function connect() {
 function onDisconnected() {
   setStatus('headband disconnected — reconnect below');
   statusLockUntil = Date.now() + 5000;
-  readoutEl.classList.remove('show');
+  /* The panel STAYS, with its contents replaced. Hiding it was the old behaviour and it produced the
+     same ambiguity as a fresh load: the screen goes quiet and nothing says why. Leaving the last
+     numbers up would be worse still — they would read as live. */
+  renderNotConnectedReadout();
   dataPanelEl.classList.remove('show');
   timerPickerEl.hidden = true;
   timerEndAt = null; timerDone = false;
@@ -3687,6 +3690,34 @@ readoutRowsEl.addEventListener('click', (e) => {
 });
 
 
+/*
+ * WHAT THE PANEL SAYS WHEN NOTHING IS CONNECTED.
+ *
+ * Until this existed, a fresh page showed the visual, the control bar, and NOTHING ELSE. The Metrics
+ * panel only became visible when a Bluetooth connection succeeded, so the whole of a working app's
+ * first screen was indistinguishable from a broken one — and the Metrics pill sat there lit up as
+ * `active`, which made it worse than silence: the UI was reporting a panel as open while showing
+ * nothing at all.
+ *
+ * "I don't see any panels. Do I need to connect in order to see the metrics?" is exactly the right
+ * question, and the app should never have made anyone ask it. Yes — but nothing said so, and the app
+ * already knew.
+ *
+ * So the panel opens on load and answers it. No values, because there are none and dashes in a table
+ * read as broken sensors rather than as an absent device; a sentence instead, naming the next action
+ * and where to click.
+ */
+function renderNotConnectedReadout() {
+  readoutRowsEl.innerHTML =
+    '<div class="rNote"><b>No headband connected.</b><br>'
+    + 'Press <b>Connect</b> at the bottom right, then choose your Muse in the'
+    + ' chooser Chrome pops up.<br><span class="rNoteDim">A page reload always drops the'
+    + ' connection, even when the headband still shows as paired — so this is what you see after'
+    + ' every refresh.</span></div>';
+  readoutEl.classList.add('show');
+  renderViewSwitch();
+}
+
 // A minimal readout for when the strap is connected but the headband isn't. The
 // strap alone genuinely measures three things — heart rate, HRV, and a real
 // breathing rate from RSA — and none of them need EEG.
@@ -3712,6 +3743,9 @@ function renderStrapOnlyReadout() {
 }
 
 renderDevices();   // initial paint; must come after the device state declarations
+/* Painted here as well as on the tick, so the first frame is never the blank screen this exists to
+   prevent. A quarter of a second of "is this thing broken?" is how the question gets asked. */
+renderNotConnectedReadout();
 
 let tickCount = 0;
 setInterval(() => {
@@ -3743,6 +3777,9 @@ setInterval(() => {
     // Strap-only operation is a legitimate state: the strap alone gives heart
     // rate, HRV and a real breathing rate, none of which need the headband.
     if (strapConnected()) renderStrapOnlyReadout();
+    /* And no device at all is also a legitimate state — it is the state every page load starts in.
+       It used to render nothing, which is why a working app's first screen looked broken. */
+    else if (!museConnected()) renderNotConnectedReadout();
     if (lastDataAt && !lockedNow) setStatus('gathering signal — sit still for a moment…');
     return;
   }

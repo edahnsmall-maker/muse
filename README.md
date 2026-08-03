@@ -53,6 +53,19 @@ in Chrome, put your Muse on, click **Connect to Muse**, and pick it from the Blu
 chooser that pops up. That's the entire setup — no phone, no app, no server, no admin
 password, ever.
 
+### Yes, you have to connect first — and now the page says so
+
+A fresh page shows the visual, the control bar, and a Metrics panel reading **"No headband
+connected"** with the button to press. That panel used to be invisible until a Bluetooth
+connection succeeded, which meant the first screen of a perfectly healthy app was
+indistinguishable from a broken one — while the Metrics pill sat lit up as though the panel
+were open. A dropped connection returns to the same message rather than hiding the panel or
+leaving the last numbers standing.
+
+**A page reload always drops the Bluetooth session**, even though the headband still shows
+as paired to your computer. So after every refresh you press Connect again. That is normal,
+and it is the most likely explanation for a screen that looks dead.
+
 ### "None of the panels open" — check this first
 
 ```

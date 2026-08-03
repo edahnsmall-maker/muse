@@ -349,18 +349,99 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     const real = await pageReal.evaluate(() => ({
       banner: !!document.getElementById('simBanner'),
       active: typeof SimDevice !== 'undefined' ? SimDevice.active : 'module missing',
-      readout: document.getElementById('readout').className,
+      rows: (document.getElementById('readoutRows').textContent || '').replace(/\s+/g, ' '),
     }));
     assert.strictEqual(real.banner, false, 'no simulated banner without ?sim=1');
     assert.strictEqual(real.active, false, 'and the simulator must not be running');
-    assert.ok(!/show/.test(real.readout),
-      'and the panels must stay shut, because nothing is connected — that is the behaviour the'
-      + ' simulator exists to distinguish from a broken build');
+    /* The panel is open — see the next block, which is why — but it must say the headband is absent
+       rather than showing readings. A number on screen with no device behind it is the one thing this
+       whole feature is built to prevent. */
+    assert.match(real.rows, /No headband connected/,
+      'and the panel must say nothing is connected rather than showing fabricated readings');
+    assert.doesNotMatch(real.rows, /Calm\s*\d/,
+      'no calm score may appear without a device');
     await pageReal.close();
     await ctxReal.close();
 
     console.log(`✓ the simulated headband opens the panels and drives calm ${opened.calm} -> ${climbed}`
       + ', announces itself as simulated, and stays away unless the URL asks');
+  }
+
+  /* 0a1c) A FRESH PAGE MUST SAY WHY IT IS EMPTY.
+   *
+   * The report was "i dont see any panels. do i need to connect in order to see the metrics?" — and
+   * the answer was yes, with nothing anywhere on screen saying so. The Metrics panel only became
+   * visible once a Bluetooth connection succeeded, so the first screen of a perfectly healthy app was
+   * indistinguishable from a dead one. Worse than blank: the Metrics pill rendered as `active` the
+   * whole time, so the interface was reporting a panel as open while showing nothing.
+   *
+   * This is the same class of defect as the two boot outages — a state the app knew about and did not
+   * say — and it is asserted at the same strength: on the visible pixels, not on a class name.
+   */
+  {
+    const ctxCold = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const pageCold = await ctxCold.newPage();
+    const coldErrors = [];
+    pageCold.on('pageerror', (e) => coldErrors.push(e.message));
+    // A browser that offers Bluetooth but never resolves the chooser: the real pre-connect state.
+    await pageCold.addInitScript(() => {
+      Object.defineProperty(navigator, 'bluetooth', {
+        value: { requestDevice: () => new Promise(() => {}) }, configurable: true,
+      });
+    });
+    await pageCold.goto(PAGE);
+
+    const cold = await waitFor(pageCold, () => {
+      const el = document.getElementById('readout');
+      const style = getComputedStyle(el);
+      if (style.opacity !== '1' || style.visibility !== 'visible') return null;
+      return {
+        text: (document.getElementById('readoutRows').textContent || '').replace(/\s+/g, ' '),
+        opacity: style.opacity,
+        metricsPill: document.getElementById('btnMetrics').className,
+      };
+    }, 'the metrics panel to be visible on a fresh page with nothing connected', 8000);
+
+    assert.deepStrictEqual(coldErrors, [], `a fresh page must not error:\n  ${coldErrors.join('\n  ')}`);
+    assert.match(cold.text, /No headband connected/,
+      'the panel must say what is wrong, in the place the user is already looking');
+    assert.match(cold.text, /Connect/,
+      'and name the control to press — "not connected" without a next action is only half an answer');
+    /* The reload caveat, because this is what makes the state confusing rather than obvious: the
+       headband still shows as paired to the operating system, so "it's definitely connected" is a
+       reasonable thing to believe and the page has to contradict it explicitly. */
+    assert.match(cold.text, /reload always drops the connection/i,
+      'and explain why a refresh lands here, since the device still looks paired');
+    // No fabricated readings. A table of dashes reads as four broken sensors, which sends the reader
+    // after a fault instead of a button.
+    assert.doesNotMatch(cold.text, /\bTP9\b|\bCalm\b/,
+      'and must not print sensor rows for sensors that are not delivering anything');
+    assert.match(cold.metricsPill, /active/,
+      'the Metrics pill may only read as active now that the panel it names is actually open');
+
+    /* AND A DISCONNECT MUST RETURN TO EXACTLY THAT STATE — not to a hidden panel (the old behaviour,
+       which reproduced the same ambiguity) and not to the last numbers left standing, which would
+       read as live. */
+    const afterDrop = await pageCold.evaluate(async () => {
+      // Fake a connected device, then fire the disconnect handler the real device fires.
+      device = { gatt: { connected: true } };
+      readoutRowsEl.innerHTML = '<div class="rRow">Calm 87</div>';
+      readoutEl.classList.add('show');
+      device.gatt.connected = false;
+      onDisconnected();
+      const style = getComputedStyle(document.getElementById('readout'));
+      return { opacity: style.opacity,
+        text: (document.getElementById('readoutRows').textContent || '').replace(/\s+/g, ' ') };
+    });
+    assert.strictEqual(afterDrop.opacity, '1', 'the panel must stay on screen after a dropout');
+    assert.match(afterDrop.text, /No headband connected/, 'and say the headband is gone');
+    assert.doesNotMatch(afterDrop.text, /87/,
+      'and must not leave the last reading standing, where it would read as live');
+
+    await pageCold.close();
+    await ctxCold.close();
+    console.log('✓ a fresh page and a dropped connection both say "No headband connected" and name the'
+      + ' control to press, instead of showing an empty screen');
   }
 
   /* 0a2) THE DISPLAYED METRICS MUST COME FROM ONE PLACE.

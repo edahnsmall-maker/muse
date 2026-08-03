@@ -64,6 +64,11 @@
   #readout.show { opacity: 1; }
   #readout.panelClosed { opacity: 0; transform: translateY(10px); pointer-events: none; visibility: hidden; }
   #readout b { color: rgba(255,255,255,.92); font-weight: 500; }
+  /* The "nothing is connected" message. A sentence, not a table: rows of dashes read as four broken
+     sensors rather than as an absent device, and the difference matters — one is a fault to chase and
+     the other is a button to press. Narrower line-height than the rows, because this is prose. */
+  .rNote { line-height: 1.55; padding: 2px 0 4px; color: var(--text-muted); }
+  .rNoteDim { display: inline-block; margin-top: 7px; opacity: .6; font-size: 11.5px; }
   /* Opens upward from its pill. Absolute inside the bar's stacking context so it
      never overlaps the visual, which is the whole reason these moved. */
   .popover { position: absolute; bottom: 100%; margin-bottom: 10px; display: flex;
