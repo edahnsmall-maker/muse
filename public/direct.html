@@ -656,25 +656,64 @@
     <div id="hint"></div>
   </div>
 </div>
-<script src="dsp.js"></script>
-<script src="clockcheck.js"></script>
-<script src="selfcheck.js"></script>
-<script src="viz-core.js"></script>
-<script src="visual.js"></script>
-<script src="chart.js"></script>
-<script src="summary.js"></script>
-<script src="cues.js"></script>
-<script src="metrics.js"></script>
-<script src="markers.js"></script>
-<script src="polar.js"></script>
-<script src="record.js"></script>
-<script src="export.js"></script>
-<script src="labels.js"></script>
-<script src="trials.js"></script>
-<script src="probes.js"></script>
-<script src="panels.js"></script>
+<!--
+  A VISIBLE FAILURE, INSTALLED FIRST.
+
+  Twice in one day this app went completely dead — every panel, every key, the whole EEG path —
+  because one top-level line in the inline script threw. Both times the report was "none of the
+  panels open", because that is all there is to see: a throw during script evaluation stops the rest
+  of the file silently, and the Bluetooth handshake has already succeeded by then so the headband
+  still says connected.
+
+  Silence is the actual defect. This handler runs before any module loads, so anything that throws
+  later paints the reason on screen instead of leaving a mystery. It has no dependencies on purpose.
+-->
+<script>
+(function () {
+  function show(what) {
+    try {
+      var el = document.getElementById('bootError');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'bootError';
+        el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;background:#5a1420;'
+          + 'color:#ffd9df;font:13px/1.5 system-ui,sans-serif;padding:10px 14px;'
+          + 'border-bottom:1px solid #a33;white-space:pre-wrap';
+        (document.body || document.documentElement).appendChild(el);
+      }
+      el.textContent = 'The app failed to start, so most of it will not work.\n' + what
+        + '\n\nThis is almost always a stale cached file. Reload with Shift held, or clear the'
+        + ' cache for this page. If it persists, the message above names the exact line.';
+    } catch (e) { /* nothing left to try */ }
+  }
+  window.addEventListener('error', function (e) {
+    show((e && e.message ? e.message : 'unknown error')
+      + (e && e.filename ? '\n  at ' + e.filename + ':' + e.lineno : ''));
+  });
+  window.addEventListener('unhandledrejection', function (e) {
+    show('An async failure: ' + ((e && e.reason && e.reason.message) || e.reason || 'unknown'));
+  });
+}());
+</script>
+<script src="dsp.js?v=2026-08-03d"></script>
+<script src="clockcheck.js?v=2026-08-03d"></script>
+<script src="selfcheck.js?v=2026-08-03d"></script>
+<script src="viz-core.js?v=2026-08-03d"></script>
+<script src="visual.js?v=2026-08-03d"></script>
+<script src="chart.js?v=2026-08-03d"></script>
+<script src="summary.js?v=2026-08-03d"></script>
+<script src="cues.js?v=2026-08-03d"></script>
+<script src="metrics.js?v=2026-08-03d"></script>
+<script src="markers.js?v=2026-08-03d"></script>
+<script src="polar.js?v=2026-08-03d"></script>
+<script src="record.js?v=2026-08-03d"></script>
+<script src="export.js?v=2026-08-03d"></script>
+<script src="labels.js?v=2026-08-03d"></script>
+<script src="trials.js?v=2026-08-03d"></script>
+<script src="probes.js?v=2026-08-03d"></script>
+<script src="panels.js?v=2026-08-03d"></script>
 <!-- Only for handing a finished sit to the lab's inbox; the app never reads lab data. -->
-<script src="labstore.js"></script>
+<script src="labstore.js?v=2026-08-03d"></script>
 <script>
 const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
@@ -1831,7 +1870,18 @@ const CHART_ONLY_COMPOSITES = ['breath'];
  * The order comes from METRICS, so the readout follows the same order as the honesty panel that
  * explains it. `breath` is removed because it has its own centred row, for the reason above.
  */
-const activeComposites = Metrics.displayed()
+/* GUARDED, because a NEW cross-module function is exactly what version skew breaks.
+ *
+ * `Metrics.displayed()` was added in the same change that started calling it here, and a browser
+ * holding a cached metrics.js has direct.html asking for a function that does not exist yet. That
+ * threw at the top level and killed the entire inline script — the second outage of the day with the
+ * same shape. Reproduced in a headless browser by deleting the method before load.
+ *
+ * The fallback reads the flag directly, which every version of METRICS can answer, so a stale module
+ * costs the retirement of two metrics rather than the whole app. */
+const activeComposites = (Metrics.displayed
+  ? Metrics.displayed()
+  : Metrics.METRICS.filter((m) => m.display !== false))
   .map((m) => m.key)
   .filter((k) => !CHART_ONLY_COMPOSITES.includes(k));
 

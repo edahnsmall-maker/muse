@@ -90,6 +90,103 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   assert.deepStrictEqual(errors, [], `the page must load without console errors:\n  ${errors.join('\n  ')}`);
   console.log('✓ direct.html loads without throwing');
 
+  /* 0a1) A BOOT FAILURE MUST BE VISIBLE, AND VERSION SKEW MUST NOT CAUSE ONE.
+   *
+   * Twice in one day the app went completely dead — every panel, every key, the whole EEG path —
+   * because one top-level line threw during script evaluation. Both times the user's report was
+   * "none of the panels open", because that is all there is to see: the rest of the file never
+   * runs, and the Bluetooth handshake has already succeeded so the headband still says connected.
+   *
+   * The second one was version skew. `Metrics.displayed()` was added in the same change that began
+   * calling it, so a browser holding a cached metrics.js asked for a function that did not exist.
+   *
+   * Three things are asserted here, because guarding one call at a time is whack-a-mole:
+   * every module is cache-busted so a fresh page cannot pair with stale modules; the new
+   * cross-module call has a fallback; and any throw paints a visible reason instead of silence.
+   */
+  {
+    const html = require('fs').readFileSync(require('path').join(__dirname, 'public', 'direct.html'), 'utf8');
+
+    // Every module include must carry a version, or a fresh direct.html can load stale modules.
+    const includes = html.match(/<script src="[^"]+"><\/script>/g) || [];
+    const unversioned = includes.filter((t) => !/\?v=/.test(t));
+    assert.deepStrictEqual(unversioned, [],
+      'every module must be cache-busted, or version skew silently kills the app: '
+      + unversioned.join(' '));
+    assert.ok(includes.length > 10, `and they must all still be there (${includes.length})`);
+
+    // The failure handler must be installed BEFORE any module can throw.
+    const firstModule = html.indexOf('<script src=');
+    const handler = html.indexOf("addEventListener('error'");
+    assert.ok(handler > 0 && handler < firstModule,
+      'the error handler must be installed before the first module, or the failure it exists to'
+      + ' report can happen first');
+
+    /* AND IT MUST ACTUALLY PAINT. Loading with a deliberately broken module proves the banner
+       appears and names the cause, which is the difference between a five-minute fix and an
+       afternoon of guessing. */
+    const ctx1 = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const page1 = await ctx1.newPage();
+    await page1.addInitScript(() => {
+      // Exactly the shape of the real outage: a cached module missing a brand-new method.
+      Object.defineProperty(window, 'Metrics', {
+        configurable: true,
+        set(v) { delete v.displayed; Object.defineProperty(window, 'Metrics', { value: v, writable: true, configurable: true }); },
+        get() { return undefined; },
+      });
+    });
+    await page1.goto(PAGE);
+    await page1.waitForTimeout(700);
+    const skew = await page1.evaluate(() => ({
+      composites: typeof activeComposites !== 'undefined' ? activeComposites.length : 0,
+      panels: !!document.getElementById('dataPanel'),
+      // The training panel's shortcut letters, which the user missed when the script was dead.
+      letters: (() => {
+        try {
+          setTrainingMode(true);
+          return Array.from(document.querySelectorAll('#armedBar [data-arm] b')).map((b) => b.textContent.trim());
+        } catch (e) { return []; }
+      })(),
+    }));
+    assert.ok(skew.composites > 0,
+      'a stale metrics.js must cost the retirement of two metrics, not the whole app');
+    assert.ok(skew.panels, 'the panels must survive it');
+    assert.ok(skew.letters.length >= 8,
+      `and the shortcut letters must render — they were never removed, the dead script was hiding`
+      + ` them (got ${JSON.stringify(skew.letters)})`);
+    await page1.close();
+    await ctx1.close();
+
+    // Now a genuinely fatal throw: the banner must appear and name it.
+    const ctx2b = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const pageB = await ctx2b.newPage();
+    await pageB.addInitScript(() => {
+      /* A module missing entirely, which is what a 404 looks like. The first attempt at this test
+         installed a throwing getter on `createZenVisual` and asserted the banner appeared — it did
+         not, and the reason is worth recording: assignment to an accessor without a setter fails
+         SILENTLY in sloppy mode, so visual.js quietly did nothing and the inline script never read
+         the property. Nothing threw, and the test would have passed while proving nothing had the
+         assertion been the other way round. Checked against three synthetic breaks before choosing
+         one that genuinely fires. */
+      Object.defineProperty(window, 'Markers', { get() { return undefined; }, configurable: true });
+    });
+    await pageB.goto(PAGE);
+    await pageB.waitForTimeout(500);
+    const banner = await pageB.evaluate(() => {
+      const el = document.getElementById('bootError');
+      return el ? el.textContent.replace(/\s+/g, ' ') : null;
+    });
+    assert.ok(banner, 'a fatal boot failure must paint a visible banner rather than failing silently');
+    assert.match(banner, /failed to start/, 'saying plainly that the app did not start');
+    assert.match(banner, /MarkerLog|undefined/, 'and naming the actual error');
+    assert.match(banner, /stale cached file/i,
+      'and pointing at the cause that has produced both real outages');
+    await pageB.close();
+    await ctx2b.close();
+    console.log(`✓ ${includes.length} modules are cache-busted, version skew costs only its own`
+      + ' feature, and a boot failure paints its reason on screen');
+  }
+
   /* 0a2) THE DISPLAYED METRICS MUST COME FROM ONE PLACE.
    *
    * direct.html used to keep its own hand-written list of which composites to show, while
