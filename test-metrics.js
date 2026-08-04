@@ -161,8 +161,32 @@ const Metrics = require('./public/metrics.js');
   // Drowsy is a share, so it is bounded without an intercept and orders the profiles correctly.
   const dSleepy = Metrics.compute('drowsy', { thetaLevel: 0.9, deltaLevel: 0.9, alphaLevel: 0.1 });
   const dAwake = Metrics.compute('drowsy', { thetaLevel: 0.1, deltaLevel: 0.1, alphaLevel: 0.9 });
-  assert.ok(dSleepy > 0.9 && dAwake < 0.25,
+  assert.ok(dSleepy >= 0.9 && dAwake <= 0.1,
     `a share must separate the extremes cleanly (sleepy ${dSleepy}, awake ${dAwake})`);
+  // Symmetric, because theta/(theta+alpha) has no reason not to be — an asymmetry here would mean a
+  // hidden constant had crept back in.
+  assert.ok(Math.abs((dSleepy + dAwake) - 1) < 1e-9,
+    `the two extremes must be mirror images (${dSleepy} and ${dAwake})`);
+
+  /* DELTA MUST NOT REACH DROWSY AT ALL.
+   *
+   * Reported as "i dont know what the drowsy metric is based on, but it's not reading me right", and
+   * this was why. Delta on a forehead electrode is mostly eye movement and drift — and this app's OWN
+   * blink detector fires on delta-band energy shared across the two frontal sensors. So while delta
+   * was in this formula, a blink and a doze produced the same reading, and two parts of one app
+   * disagreed about what delta meant.
+   *
+   * Asserted as independence rather than as a threshold: swinging delta from nothing to everything
+   * must not move the number by a hair. A tolerance would let a small weight survive.
+   */
+  const dNoDelta = Metrics.compute('drowsy', { thetaLevel: 0.4, deltaLevel: 0, alphaLevel: 0.5 });
+  const dAllDelta = Metrics.compute('drowsy', { thetaLevel: 0.4, deltaLevel: 1, alphaLevel: 0.5 });
+  assert.strictEqual(dNoDelta, dAllDelta,
+    `delta must not influence drowsy at all (${dNoDelta} vs ${dAllDelta}) — it is the band this app`
+    + ' already treats as a blink');
+  // And it must still answer when delta is missing entirely, since it no longer needs it.
+  assert.ok(Metrics.compute('drowsy', { thetaLevel: 0.7, alphaLevel: 0.3 }) != null,
+    'drowsy must not require a band it does not use');
   // Openness must NOT let high alpha buy its way past a churning signal — the weighted sum did.
   const oChurny = Metrics.compute('openness', { alphaLevel: 1, betaLevel: 0, variability: 1 });
   const oSteady = Metrics.compute('openness', { alphaLevel: 0.6, betaLevel: 0.4, variability: 0 });

@@ -58,8 +58,8 @@
     },
     {
       key: 'drowsy', label: 'Drowsy', tier: 'moderate',
-      source: 'theta and delta rising while alpha declines',
-      caveat: 'Included mainly as a CONFOUND CHECK rather than a goal. If this is high, treat Calm and Focus with suspicion — the same band changes look like both settling and falling asleep.',
+      source: "theta's share of theta plus alpha — theta rising as alpha gives way",
+      caveat: 'Included mainly as a CONFOUND CHECK rather than a goal. If this is high, treat Calm and Focus with suspicion — the same band changes look like both settling and falling asleep. Delta is deliberately excluded: on a forehead electrode it is mostly eye movement and drift, and this app already treats delta energy across both frontal sensors as a BLINK, so counting it here made blinking look like dozing.',
     },
     {
       key: 'blink', label: 'Blinks', tier: 'solid',
@@ -164,19 +164,35 @@
         return clamp01(Math.sqrt(
           clamp01(f.thetaLevel) * (1 - clamp01(has(f.variability) ? f.variability : 0.5))));
       case 'drowsy':
-        /* A SHARE, not a weighted sum with an intercept.
+        /* THETA'S SHARE OF THETA PLUS ALPHA. Delta is deliberately NOT in it.
          *
-         * This used to be `0.5*theta + 0.5*delta - 0.35*alpha + 0.17` — four invented numbers, one
-         * of which (+0.17) existed purely to drag the output back into range after the subtraction.
-         * The intent was always "slow bands rising while alpha falls", and that is a ratio:
-         * (theta+delta) as a share of (theta+delta+alpha). Bounded 0..1 by construction, no
-         * intercept, no weights, and it says exactly the intended thing.
+         * Two changes, for two different reasons.
+         *
+         * FIRST, it stopped being a weighted sum. It was `0.5*theta + 0.5*delta - 0.35*alpha + 0.17`
+         * — four invented numbers, one of which (+0.17) existed only to drag the result back into
+         * range after the subtraction. The intent was always "slow activity rising while alpha
+         * falls", and that is a ratio, bounded 0..1 by construction with nothing to tune.
+         *
+         * SECOND, and this is the part that was reported as wrong — "i dont know what the drowsy
+         * metric is based on, but it's not reading me right" — delta came out.
+         *
+         * Delta on a forehead electrode is not mostly brain. It is eye movement, blinks, and slow
+         * electrode drift. This app says so itself, in classifyArtifact(): a blink is detected AS a
+         * large deflection in roughly 1-4Hz appearing on both frontal sensors, which is the delta
+         * band. So the same energy that made the app report a blink also pushed Drowsy up. Anyone
+         * sitting with their eyes flickering, or with the headband settling on their skin, read as
+         * falling asleep. Two parts of one app cannot disagree about what delta means.
+         *
+         * Theta against alpha is the pairing that actually tracks sleep onset — theta rises as alpha
+         * gives way — and it is the standard drowsiness contrast for that reason. Losing delta loses
+         * some real slow-wave signal along with the artifact; that is the right trade when the
+         * artifact and the signal are inseparable at this electrode placement.
          */
-        if (!has(f.thetaLevel) || !has(f.deltaLevel) || !has(f.alphaLevel)) return null;
+        if (!has(f.thetaLevel) || !has(f.alphaLevel)) return null;
         {
-          const slow = clamp01(f.thetaLevel) + clamp01(f.deltaLevel);
-          const total = slow + clamp01(f.alphaLevel);
-          return total > 0 ? clamp01(slow / total) : null;
+          const theta = clamp01(f.thetaLevel);
+          const total = theta + clamp01(f.alphaLevel);
+          return total > 0 ? clamp01(theta / total) : null;
         }
       case 'blink': return has(f.blink) ? clamp01(f.blink) : null;
       case 'jaw': return has(f.jaw) ? clamp01(f.jaw) : null;

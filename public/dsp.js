@@ -808,7 +808,102 @@
     }
   }
 
+  /*
+   * HOW LONG THE DISPLAYED BAND POWERS ARE AVERAGED OVER, and why it is not a preference.
+   *
+   * THE MEASUREMENT THAT SET IT. Reported as "the scores are so volatile they seem to contradict real
+   * life. my calm score doesn't fluctuate so often and wildly." That is correct, and the cause is not
+   * the formulas — it is the estimator. Band power from a single 1-second periodogram is a very noisy
+   * estimate. Measured on a STATIONARY stochastic EEG model, where the true state never changes by
+   * construction, the 2-98% span of log(alpha/beta) is:
+   *
+   *     1s of signal   1.89 log units       16s   0.49
+   *     2s             1.48                 32s   0.25
+   *     4s             1.05
+   *     8s             0.69
+   *
+   * Against that, the real changes worth showing are:
+   *
+   *     a 20% rise in alpha   0.18 log units
+   *     a 40% rise            0.34
+   *     a DOUBLING of alpha   0.69
+   *
+   * So at the 1-second window this app shipped with, the second-to-second noise was 1.89 against 0.69
+   * for a doubling of alpha — the noise was nearly three times larger than the largest change a person
+   * is likely to produce. Every number on screen was mostly estimator noise, and no amount of display
+   * smoothing fixes that: smoothing a noisy estimate makes it a smooth wrong estimate.
+   *
+   * 16 SECONDS is the smallest averaging span at which a doubling of alpha becomes larger than the
+   * noise (0.69 against 0.49). It is a floor, not a comfortable margin — 32s would be needed before a
+   * 40% change clears the noise — and it is chosen at the floor because averaging costs lag, and lag
+   * is not free either: a score that takes a minute to move cannot be read against what you notice
+   * yourself doing.
+   *
+   * NON-OVERLAPPING seconds. The app ticks four times a second on a one-second window, so consecutive
+   * estimates share 75% of their samples and are barely independent — averaging sixteen of THOSE buys
+   * about four seconds' worth of averaging, not sixteen. One estimate per second, no overlap, is what
+   * the numbers above were measured with.
+   */
+  const BAND_AVERAGE_SEC = 16;
+
+  /*
+   * A running average of band powers over the last N non-overlapping seconds.
+   *
+   * Powers are averaged in the LINEAR domain and logged afterwards by the caller, because the mean of
+   * logs is the log of the geometric mean — a different quantity, and one that a single very quiet
+   * second drags down hard. Averaging power then taking the log is what "average band power over 16
+   * seconds" means.
+   *
+   * Entries carry a timestamp and expire. Without that, a run of artifact-flagged seconds would leave
+   * the last clean average standing indefinitely, and a number from two minutes ago presented as
+   * current is worse than no number: it is stale in a way nothing on screen reveals.
+   */
+  class BandPowerAverager {
+    constructor({ seconds = BAND_AVERAGE_SEC, maxAgeSec = null } = {}) {
+      this.seconds = Math.max(1, Math.round(seconds));
+      // Three times the span: long enough that ordinary blinks do not empty it, short enough that a
+      // number can never be older than the window it claims to describe by more than a factor of a few.
+      this.maxAgeSec = maxAgeSec == null ? this.seconds * 3 : maxAgeSec;
+      this.entries = [];
+    }
+    push(powers, atSec) {
+      if (!powers) return;
+      for (const k of ['delta', 'theta', 'alpha', 'beta']) {
+        if (!Number.isFinite(powers[k])) return;      // a partial estimate is not an estimate
+      }
+      this.entries.push({ powers, at: atSec });
+      this.trim(atSec);
+    }
+    trim(nowSec) {
+      if (nowSec != null) {
+        while (this.entries.length && nowSec - this.entries[0].at > this.maxAgeSec) this.entries.shift();
+      }
+      while (this.entries.length > this.seconds) this.entries.shift();
+    }
+    // How many seconds of clean signal are actually behind the current answer. Reported rather than
+    // assumed, so the caller can say "settling" instead of presenting a one-second estimate as a
+    // sixteen-second one.
+    filled(nowSec) {
+      this.trim(nowSec);
+      return this.entries.length;
+    }
+    mean(nowSec) {
+      this.trim(nowSec);
+      const n = this.entries.length;
+      if (!n) return null;
+      const out = { delta: 0, theta: 0, alpha: 0, beta: 0, seconds: n };
+      for (const e of this.entries) {
+        out.delta += e.powers.delta; out.theta += e.powers.theta;
+        out.alpha += e.powers.alpha; out.beta += e.powers.beta;
+      }
+      out.delta /= n; out.theta /= n; out.alpha /= n; out.beta /= n;
+      return out;
+    }
+    reset() { this.entries = []; }
+  }
+
   return {
+    BAND_AVERAGE_SEC, BandPowerAverager,
     MUSE_SERVICE, CONTROL_CHARACTERISTIC, EEG_CHARACTERISTICS, CHANNEL_NAMES,
     EEG_FREQUENCY, EEG_SAMPLES_PER_PACKET,
     PPG_CHARACTERISTICS, PPG_CHANNEL_NAMES, PPG_FREQUENCY, PPG_SAMPLES_PER_PACKET,

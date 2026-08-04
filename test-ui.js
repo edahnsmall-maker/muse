@@ -335,6 +335,55 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       `calm must rise as the simulated sit settles (${opened.calm} -> ${climbed}). A display that`
       + ' does not move is indistinguishable from a frozen one, which has happened here before');
 
+    /* AND IT MUST RISE SMOOTHLY, not lurch.
+     *
+     * "the scores are so volatile they seem to contradict real life. my calm score doesn't fluctuate
+     * so often and wildly." The cause was the estimator, not the display: band power from a single
+     * 1-second window carries more noise than a doubling of alpha produces (see DSP.BAND_AVERAGE_SEC).
+     * With 16 seconds of averaging behind it the number has to move gradually, and the panel has to
+     * SAY it is averaging, because a score that lags its cause by a quarter of a minute will be read
+     * wrongly by anyone who does not know it lags.
+     */
+    const walk = [];
+    for (let i = 0; i < 12; i++) {
+      walk.push(await readCalm());
+      await pageSim.waitForTimeout(700);
+    }
+    const steps = [];
+    for (let i = 1; i < walk.length; i++) {
+      if (walk[i] != null && walk[i - 1] != null) steps.push(Math.abs(walk[i] - walk[i - 1]));
+    }
+    const worst = Math.max(...steps);
+    assert.ok(worst <= 12,
+      `no single reading may lurch more than 12 points while the simulated arc moves smoothly`
+      + ` (worst step ${worst} across ${walk.join(',')})`);
+
+    const span = await pageSim.evaluate(() => ({
+      text: (document.getElementById('readoutSpan').textContent || '').replace(/\s+/g, ' '),
+      settling: document.getElementById('readoutSpan').classList.contains('settling'),
+    }));
+    assert.match(span.text, /16s average/,
+      'the panel must state how much signal is behind the numbers');
+    assert.match(span.text, /lags/,
+      'and admit the lag that buys it, since that is a real limitation and not a footnote');
+    assert.strictEqual(span.settling, false, 'and stop saying "settling" once it is full');
+
+    /* THE INDIVIDUAL ALPHA PEAK, LIVE. Asked for — "i also dont see alpha in the composites. was i
+       supposed to?" It was measured all along and shown only in the end-of-sit summary.
+       This assertion caught a real bug on its first run: the row tested `peak.found`, which
+       pickAlphaPeak() does not return (it belongs to the per-channel results inside it), so the row
+       read "no clear peak" while all four channels had found one at 10.1 Hz. */
+    const alphaRow = await waitFor(pageSim, () => {
+      const t = (document.getElementById('readoutRows').textContent || '').replace(/\s+/g, ' ');
+      const m = /Alpha peak\s*([\d.]+) Hz/.exec(t);
+      return m ? Number(m[1]) : null;
+    }, 'the live alpha peak row to report a frequency', 60000);
+    /* The simulator builds its alpha around SimDevice.ALPHA_CENTRE_HZ (10.125). Asserting the value
+       rather than merely the presence of a number is what makes this a test of the measurement instead
+       of a test that some digits appeared. */
+    assert.ok(Math.abs(alphaRow - 10.125) < 0.6,
+      `the live peak must land on the frequency the simulator was built around, got ${alphaRow} Hz`);
+
     await pageSim.close();
     await ctxSim.close();
 

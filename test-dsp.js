@@ -615,4 +615,64 @@ function naiveDFT(real) {
   console.log('✓ pearson is correct and degrades safely');
 }
 
+/* BAND POWER AVERAGING — the fix for "the scores are so volatile they seem to contradict real life".
+ *
+ * The measurement behind it is in DSP.BAND_AVERAGE_SEC: a 1-second estimate of log(alpha/beta) carries
+ * a 2-98% noise span of 1.89 on a stationary signal, while a DOUBLING of alpha is only 0.69. So the
+ * displayed numbers moved by nearly three times more than the largest real change could account for.
+ * These tests pin the three properties that make the average mean what it says.
+ */
+{
+  // 1) AVERAGED IN THE LINEAR DOMAIN. The mean of logs is the log of the geometric mean — a different
+  //    quantity, and one a single very quiet second drags down hard. "Average band power over 16
+  //    seconds" is the arithmetic mean of power.
+  const a = new DSP.BandPowerAverager({ seconds: 4 });
+  for (const [i, alpha] of [1, 10, 100, 1000].entries()) {
+    a.push({ delta: 1, theta: 1, alpha, beta: 1 }, i);
+  }
+  const m = a.mean(3);
+  assert.strictEqual(m.alpha, (1 + 10 + 100 + 1000) / 4,
+    `power must be averaged linearly, got ${m.alpha}`);
+  assert.notStrictEqual(m.alpha, Math.pow(1 * 10 * 100 * 1000, 0.25),
+    'and must not be the geometric mean, which is what averaging logs would give');
+  assert.strictEqual(m.seconds, 4, 'and must report how many seconds are behind it');
+
+  // 2) A FIXED WINDOW that drops the oldest. Sixteen entries must never become seventeen, or the span
+  //    the panel claims would drift upward over a long sit.
+  const b = new DSP.BandPowerAverager({ seconds: 3 });
+  for (let i = 0; i < 10; i++) b.push({ delta: 0, theta: 0, alpha: i, beta: 1 }, i);
+  assert.strictEqual(b.filled(9), 3, 'the window must stay at its stated length');
+  assert.strictEqual(b.mean(9).alpha, (7 + 8 + 9) / 3, 'and hold the most recent seconds');
+
+  /* 3) IT EXPIRES. Without this, a run of artifact-flagged seconds leaves the last clean average
+   *    standing indefinitely — and a number from two minutes ago, displayed as current with nothing on
+   *    screen saying so, is worse than no number at all. */
+  const c = new DSP.BandPowerAverager({ seconds: 4 });
+  for (let i = 0; i < 4; i++) c.push({ delta: 1, theta: 1, alpha: 5, beta: 1 }, i);
+  assert.strictEqual(c.filled(3), 4, 'fresh entries count');
+  assert.strictEqual(c.filled(3 + c.maxAgeSec + 1), 0,
+    'and every one of them must expire rather than be shown as current');
+  assert.strictEqual(c.mean(3 + c.maxAgeSec + 1), null,
+    'an empty averager must return null, not a stale average');
+
+  // 4) A PARTIAL ESTIMATE IS NOT AN ESTIMATE. A missing band would otherwise average as undefined and
+  //    poison every number downstream with NaN.
+  const d = new DSP.BandPowerAverager({ seconds: 4 });
+  d.push({ delta: 1, theta: 1, alpha: 1 }, 0);              // no beta
+  d.push({ delta: 1, theta: 1, alpha: 1, beta: NaN }, 1);
+  assert.strictEqual(d.filled(1), 0, 'incomplete or non-finite estimates must be refused outright');
+  d.push({ delta: 1, theta: 2, alpha: 3, beta: 4 }, 2);
+  assert.strictEqual(d.filled(2), 1, 'while a complete one is taken');
+
+  /* 5) THE SPAN IS LONG ENOUGH TO BEAT THE NOISE. Asserted against the measurement that chose it
+   *    rather than left as a number in a file: at 16s the noise span of log(alpha/beta) is about 0.49
+   *    and a doubling of alpha is 0.693, so the constant must not quietly be reduced below the point
+   *    where the largest realistic change disappears back into the noise. */
+  assert.ok(DSP.BAND_AVERAGE_SEC >= 16,
+    `${DSP.BAND_AVERAGE_SEC}s of averaging leaves a doubling of alpha (0.69 log units) inside the`
+    + ' estimator noise — see the table in dsp.js');
+  console.log(`✓ band power averages linearly over ${DSP.BAND_AVERAGE_SEC} non-overlapping seconds,`
+    + ' expires when stale, and refuses partial estimates');
+}
+
 console.log('\nAll DSP tests passed.');

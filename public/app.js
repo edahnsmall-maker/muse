@@ -60,6 +60,7 @@ const visual = createZenVisual(document.getElementById('gl'));
 const statusEl = document.getElementById('status');
 const readoutEl = document.getElementById('readout');
 const readoutRowsEl = document.getElementById('readoutRows');
+const readoutSpanEl = document.getElementById('readoutSpan');
 const viewSwitchEl = document.getElementById('viewSwitch');
 
 // Only the `active` class changes on tick. Rewriting the markup would replace the
@@ -1234,12 +1235,52 @@ const activeComposites = (Metrics.displayed
   .map((m) => m.key)
   .filter((k) => !CHART_ONLY_COMPOSITES.includes(k));
 
+/*
+ * SIXTEEN SECONDS OF SIGNAL BEHIND EVERY DISPLAYED NUMBER.
+ *
+ * See DSP.BAND_AVERAGE_SEC for the measurement that set the span. The short version: on a stationary
+ * signal, where nothing about the person changes, a 1-second estimate of log(alpha/beta) has a 2-98%
+ * noise span of 1.89, and a DOUBLING of alpha is 0.69. The app used the 1-second estimate, so the
+ * numbers moved by more than any real change could account for — which is exactly the report, "the
+ * scores are so volatile they seem to contradict real life."
+ *
+ * Fed once per second rather than on every 250ms tick. Four estimates a second from a one-second
+ * window share 75% of their samples, so averaging sixteen of them is worth about four seconds of
+ * independent signal, not sixteen.
+ */
+const bandAverager = new DSP.BandPowerAverager();
+let lastBandPushSec = null;
+/* Enough seconds to be worth showing. Below this the average is not yet what it claims to be, and the
+   readout says "settling" rather than printing a number with a quarter of its window behind it. */
+const BAND_AVERAGE_MIN_SEC = 4;
+
+// True once there is a real average behind the numbers — read by the readout so the panel can say
+// which of the two it is showing rather than presenting them identically.
+function bandAverageSeconds() {
+  return bandAverager.filled(Date.now() / 1000);
+}
+
 function computeFeatures(result) {
   const wins = FRONTAL.map((ch) => buffers[ch].slice(-WINDOW)).filter((w) => w.length >= WINDOW);
   if (wins.length < 2) return features;
   const clean = !wins.some((w) => DSP.isArtifact(w));
   const bp = wins.map((w) => DSP.bandPowers(w, DSP.EEG_FREQUENCY));
-  const avg = (k) => bp.reduce((sum, pw) => sum + pw[k], 0) / bp.length;
+  const instant = (k) => bp.reduce((sum, pw) => sum + pw[k], 0) / bp.length;
+
+  /* One clean second in, at most once a second. Artifact-flagged seconds are skipped entirely rather
+     than pushed as zeros — a blink is missing data, not quiet brain. */
+  const nowSec = Date.now() / 1000;
+  if (clean && (lastBandPushSec == null || nowSec - lastBandPushSec >= 1)) {
+    bandAverager.push({ delta: instant('delta'), theta: instant('theta'),
+      alpha: instant('alpha'), beta: instant('beta') }, nowSec);
+    lastBandPushSec = nowSec;
+  }
+  /* The average when there is one, the instant estimate while it fills. Falling back rather than
+     showing nothing for the first sixteen seconds, because a blank panel at the start of a sit reads
+     as broken — but the readout is told which it is, so the difference is stated and not hidden. */
+  const mean = bandAverager.mean(nowSec);
+  const useAverage = !!mean && mean.seconds >= BAND_AVERAGE_MIN_SEC;
+  const avg = useAverage ? (k) => mean[k] : instant;
   // wins[0] is AF7 (left forehead), wins[1] is AF8 (right).
   const art = DSP.classifyArtifact(wins[0], wins[1], DSP.EEG_FREQUENCY);
 
@@ -1531,7 +1572,19 @@ function computeCalm() {
     const powers = DSP.bandPowers(window, DSP.EEG_FREQUENCY);
     alphaSum += powers.alpha; betaSum += powers.beta;
   }
-  const ratio = Math.log(alphaSum / FRONTAL.length + 1e-6) - Math.log(betaSum / FRONTAL.length + 1e-6);
+  /* THE RATIO COMES FROM THE 16-SECOND AVERAGE, not from this one window.
+     Calm is the headline number and the thing that drives the visual, so it is the number the
+     volatility report was about. A one-second estimate of this ratio carries 1.89 log units of noise
+     against 0.69 for a doubling of alpha — see DSP.BAND_AVERAGE_SEC. The instantaneous windows above
+     are still computed, because artifact detection and the per-channel labels genuinely want to react
+     within a second; only the SCORE is slow.
+     One tick stale, because the averager is fed from computeFeatures() which runs just after this. At
+     4Hz against a 16-second window that is 1.5% of the span and not worth restructuring the tick for. */
+  const averaged = bandAverager.mean(Date.now() / 1000);
+  const useAveraged = averaged && averaged.seconds >= BAND_AVERAGE_MIN_SEC;
+  const ratio = useAveraged
+    ? Math.log(averaged.alpha + 1e-6) - Math.log(averaged.beta + 1e-6)
+    : Math.log(alphaSum / FRONTAL.length + 1e-6) - Math.log(betaSum / FRONTAL.length + 1e-6);
   const activity = activityTracker.update({
     betaLog: Math.log(betaSum / FRONTAL.length + 1e-6),
     ratio,
@@ -2399,6 +2452,11 @@ function onDisconnected() {
      same ambiguity as a fresh load: the screen goes quiet and nothing says why. Leaving the last
      numbers up would be worse still — they would read as live. */
   renderNotConnectedReadout();
+  /* Drop the averaged band powers. Sixteen seconds from before a dropout, shown as current after
+     reconnecting, would be a number about a different moment — and the maxAge inside the averager only
+     catches gaps longer than its own window. */
+  bandAverager.reset();
+  lastBandPushSec = null;
   dataPanelEl.classList.remove('show');
   timerPickerEl.hidden = true;
   timerEndAt = null; timerDone = false;
@@ -3961,12 +4019,56 @@ setInterval(() => {
     }
   }
   tail.push(row('Noise', result.artifactRate, { text: noiseLabel, color: COMPOSITE_COLORS.jaw }));
+  /* THE INDIVIDUAL ALPHA PEAK, LIVE. Asked for directly — "i also dont see alpha in the composites.
+     was i supposed to?" It was being measured all along and shown only in the end-of-sit summary,
+     which is the one place it cannot be checked against what you notice at the time.
+     Its own row rather than a composite, because it is not a 0-100 score: it is a FREQUENCY in Hz, and
+     squeezing a frequency into the same normalised scale as everything else is how the invented
+     coefficients got here in the first place. It refuses to report until it has ~40s of clean signal
+     and a peak that clears the prominence and width gates, so the row says what it is waiting for. */
+  {
+    /* `freqHz != null`, not `found`. pickAlphaPeak() returns the CHOSEN CHANNEL's summary — channels,
+       best, bestName, freqHz — and has no `found` field of its own; that belongs to the per-channel
+       results inside it. Reading `peak.found` gave undefined for a peak that had been located
+       perfectly well, so the row said "no clear peak" while every one of the four channels had found
+       one. Caught only because the simulator made it reproducible in ten seconds. */
+    const peak = measuredAlphaPeak();
+    if (peak && peak.freqHz != null) {
+      // Which electrode, because the four disagree by a few tenths and the number is meaningless
+      // without knowing where it came from. `fallback` means the gates were not met and this is the
+      // best guess rather than a measurement, so it must not be presented as one.
+      tail.push(row('Alpha peak', null, {
+        text: `${peak.freqHz.toFixed(1)} Hz${peak.fallback ? '?' : ''} ${peak.bestName || ''}`.trim(),
+      }));
+    } else {
+      const windows = peak && peak.windows != null ? peak.windows : 0;
+      tail.push(row('Alpha peak', null, {
+        text: windows < DSP.IAF_MIN_WINDOWS
+          ? `measuring… ${windows}/${DSP.IAF_MIN_WINDOWS}` : 'no clear peak',
+      }));
+    }
+  }
   if (timerEndAt) {
     const remaining = Math.max(0, timerEndAt - Date.now());
     const mm = Math.floor(remaining / 60000), ss = Math.floor((remaining % 60000) / 1000);
     tail.push(row('Timer', null, { text: timerDone ? 'complete' : `${mm}:${String(ss).padStart(2, '0')}` }));
   }
   if (markerLog.length) tail.push(row('Marks', null, { text: String(markerLog.length) }));
+
+  /* SAY HOW MUCH SIGNAL IS BEHIND THE NUMBERS.
+     16-second averaging is what stopped the scores being mostly estimator noise, and it is also a real
+     limitation: the score lags its cause by up to a quarter of a minute. Someone reading it against
+     what they just noticed themselves doing needs to know that, and the only honest place to say it is
+     next to the numbers. During the warm-up it says so instead, because a 4-second average presented
+     identically to a 16-second one is the kind of quiet difference this project keeps paying for. */
+  {
+    const secs = bandAverageSeconds();
+    const full = secs >= DSP.BAND_AVERAGE_SEC;
+    readoutSpanEl.classList.toggle('settling', !full);
+    readoutSpanEl.textContent = full
+      ? `${DSP.BAND_AVERAGE_SEC}s average · lags by up to that much`
+      : `settling · ${secs}s of ${DSP.BAND_AVERAGE_SEC}s averaged`;
+  }
 
   // Rows only. Touching the pills' markup here is what broke them.
   readoutRowsEl.innerHTML =

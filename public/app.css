@@ -64,6 +64,11 @@
   #readout.show { opacity: 1; }
   #readout.panelClosed { opacity: 0; transform: translateY(10px); pointer-events: none; visibility: hidden; }
   #readout b { color: rgba(255,255,255,.92); font-weight: 500; }
+  /* Quiet, and always present. A caveat that only appears when things are going badly gets read as an
+     error; this one is a permanent property of the measurement and should look like one. */
+  #readoutSpan { font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+    color: rgba(255,255,255,.34); margin: 2px 0 8px; line-height: 1.4; }
+  #readoutSpan.settling { color: rgba(255,214,140,.75); }
   /* The "nothing is connected" message. A sentence, not a table: rows of dashes read as four broken
      sensors rather than as an absent device, and the difference matters — one is a fault to chase and
      the other is a button to press. Narrower line-height than the rows, because this is prose. */
