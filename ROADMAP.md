@@ -10,6 +10,93 @@ Started from a Zen background (shikantaza / open awareness / no-mind as the
 ideal), designed to also serve other styles (focused attention, loving-
 kindness) which likely have different physiological signatures.
 
+## THE CURRENT THESIS: the breath is the measurement, the EEG is the question
+
+Arrived at after eight recorded sits, and it reorders everything below it. In the
+practitioner's words: *"the breath is the best indicator but the sensors need to be smart.
+If we can calibrate to the breath (and tease out some noise), then we might be able to tie
+that to EEG. but the analysis will need to be sharp for both. for breath, i think it's the
+shape and some of the movement in the belly, maybe something like the height of the belly
+outbreath even. it could be very subtle."*
+
+**Why this is right.** Breathing is the only thing in this system that is *measured* rather
+than inferred. Chest-wall movement is a physical displacement in millimetres of a real chest;
+every EEG composite here is a ratio pushed through a normaliser. And breath is expressed in
+units that mean the same thing on Tuesday and Thursday, which is the property the whole
+whole-session question depends on.
+
+**What the eight sits say about the EEG side.** Alpha was not measurable in a single one of
+them. Prominence ran 0.77–0.84× against the 1.5× needed — the alpha region sits *below* the
+1/f background rather than above it, which is what eyes-open suppression looks like, and
+eyes-open is how this practice is done. TP9 and TP10 were 0–27% clean in every sit. So the
+EEG is not the thing to build on; it is the thing to test *against* a signal we trust.
+
+### Where breath.js actually stands — 1 of 3 sits, and that is the honest number
+
+Built, tested, and **not validated**. It answers on one real sit and refuses on two, and the
+refusals are the feature:
+
+| sit | chest accelerometer | heart-derived | outcome |
+|---|---|---|---|
+| 8/4 6:34 | 7.02/min | 6.43/min | **answered**, 9% apart |
+| 8/3 9:59 | 8.54/min | 6.04/min | **refused** — 41% apart |
+| 7/29 21:51 | 2.9/min | 6.70/min | **refused** — internally inconsistent |
+
+Three things were learned the hard way and are worth not relearning:
+
+1. **The loudest axis is often the second harmonic.** Choosing by variance picked z, whose
+   dominant component was at 13.92/min against a true 6.59 — so every breath was counted
+   twice. Physically sensible: a symmetric chest expansion peaks twice per cycle.
+2. **Segmentation and shape need opposite filters.** A narrow band around the fundamental is
+   what makes boundaries robust — and asymmetry *is* harmonic content, so that same narrow
+   band erases the shape entirely. Measured: a deliberately quick-in breath read 0.500,
+   identical to symmetric. Boundaries come from the narrow signal, shape from the wide one.
+3. **Internal agreement proves nothing.** On the 8/3 sit the spectrum and the counted cycles
+   agreed with each other to 2.8% and were both 41% wrong. Only a second sensor caught it.
+
+**So the cross-check against heart-derived breathing is mandatory, not optional.** Every
+recording with a chest accelerometer also carries beat-to-beat intervals from the same strap;
+they share no axis, no filter and no failure mode. Disagreement over 20% reports no breath
+rather than a number that is probably out by a factor of two. That trade is deliberate: a gap
+costs an analysis, a wrong breath rate costs a wrong conclusion *about the brain*.
+
+### What has to happen next, in order
+
+1. **Make the axis and fundamental choice work on more than one sit.** Two rules have failed:
+   lowest-credible-peak (admits postural drift) and median-across-axes (broke the harmonic
+   case without fixing the real sits). The next thing to try is fitting the whole breathing
+   band as a harmonic series and taking the fundamental that best explains all three axes
+   jointly, rather than choosing an axis and then a frequency.
+2. **Belly, not just chest.** The hypothesis is specifically about belly movement and "the
+   height of the belly outbreath". The Polar strap sits on the ribcage; diaphragmatic
+   breathing may show up as a *different* axis or barely at all. This may need a second
+   sensor placed lower, and that should be established before more analysis is built on the
+   chest signal.
+3. **Only then tie it to EEG.** With a breath measurement that survives its own cross-check on
+   most sits, the marks-versus-marks comparison already in the lab becomes the test: does the
+   breath differ between Thinking and Just sitting, and does anything in the EEG move with it?
+4. **The lab needs rebuilding around this.** Its whole-session table is built for a researcher
+   ("that's a problem", and it is). The shape it should take: pick a few sits you remember as
+   calm and a few you remember as busy, and compare the averages. Grouping by your own memory
+   is a better label than anything derived from the data, because it is independent of it.
+
+### The measures breath.js produces, and what each is worth
+
+- **rate** (breaths/min) — comparable between sits, cross-checked against the heart.
+- **riseFrac** — the fraction of the cycle spent rising, trough to peak. 0.5 is symmetric.
+  Scale-free, so a deep breath and a shallow one are comparable. *This is the "shape".*
+- **periodCv** — regularity: the coefficient of variation of the period. Speaks to "more
+  smooth in tempo". Dimensionless.
+- **crest** — peak rate of change over mean rate of change. A pure sine is 1.571; higher means
+  the movement is concentrated into a jerk.
+- **amplitude** (mG) — depth, and the *only* measure here that is not scale-free. It depends on
+  strap tightness and on an unverified gain, so it must never be compared between sits.
+
+A correction worth recording: I previously reported riseFrac 0.208 from a real sit as "strongly
+asymmetric, quick in and slow out". That was measured from the start of a zero-crossing-aligned
+cycle, where a symmetric wave reads 0.25 — so there was no value meaning "symmetric" at all.
+Measured properly from trough to peak, that sit is 0.487, which is very nearly symmetric.
+
 ## The core design commitment
 
 **The product's job is to remove the uncertainty that makes beginners quit —
