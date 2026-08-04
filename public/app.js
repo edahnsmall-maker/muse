@@ -1259,6 +1259,39 @@ function downloadReport(stats) {
 
 document.getElementById('summaryLink').addEventListener('click', openSummary);
 document.getElementById('trainToggle').addEventListener('click', () => setTrainingMode(!trainingMode));
+
+/*
+ * MEDITATE / TRAIN, in the app bar.
+ *
+ * The same screen with training off and on, rather than two pages. Presenting them as two places is
+ * honest about what actually differs — Train arms recording and shows the mark bar, Meditate is the
+ * visual alone — and keeping them as one screen means there is no second copy to keep in step.
+ *
+ * The bar's highlight is driven from `trainingMode` rather than from which button was last pressed, so
+ * the Training pill, Shift+T and these two buttons can never disagree about which place you are in.
+ */
+function renderPlaces() {
+  const med = document.getElementById('placeMeditate');
+  const tr = document.getElementById('placeTrain');
+  if (med) med.classList.toggle('here', !trainingMode);
+  if (tr) tr.classList.toggle('here', trainingMode);
+  const bar = document.getElementById('barStatus');
+  if (bar) {
+    bar.textContent = trainingMode
+      ? 'Training — marks and recording on'
+      : 'Meditating — nothing is being recorded';
+  }
+}
+{
+  const med = document.getElementById('placeMeditate');
+  const tr = document.getElementById('placeTrain');
+  if (med) med.addEventListener('click', () => setTrainingMode(false));
+  if (tr) tr.addEventListener('click', () => setTrainingMode(true));
+  /* NOT PAINTED HERE. `trainingMode` is declared with `let` further down this file, so calling
+     renderPlaces() at this point reads it inside its temporal dead zone and throws — which is precisely
+     the failure that took this whole app down twice before, and it threw on the first run. The initial
+     paint happens at the END of the file, where everything exists. */
+}
 // The "Mark this moment" and "Fullscreen" pills are gone: training mode already
 // prompts for M, and F needs no pill. Both keys still work — see the keydown
 // handler — so nothing was removed except two pills from a crowded bar.
@@ -1611,6 +1644,7 @@ document.addEventListener('click', (e) => {
 function setTrainingMode(on) {
   const wasOn = trainingMode;
   trainingMode = !!on;
+  renderPlaces();
   renderArmedBar();
   renderMarkCount();
   /* TURNING TRAINING ON STARTS RECORDING.
@@ -4522,6 +4556,11 @@ addEventListener('resize', () => {
  * first, and if any of it threw, this line never runs — which is itself the correct behaviour,
  * because then the boot banner in direct.html is what should be on screen.
  */
+/* The app bar's initial paint. Here, at the very end, because it reads `trainingMode` — a `let`
+   declared halfway down this file — and anything above that declaration reads it inside its temporal
+   dead zone and throws. Two of this project's three total outages were exactly that. */
+renderPlaces();
+
 if (SIM_ACTIVE) {
   setTimeout(() => { connect(); }, 200);
 }

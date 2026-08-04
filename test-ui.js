@@ -416,6 +416,70 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       + ', announces itself as simulated, and stays away unless the URL asks');
   }
 
+  /* 0a1b2) THE APP BAR — the same three places as the lab, and painted on load.
+   *
+   * Reported as "the ui at the top is diff from everything else (doesn't carry to other page)", which was
+   * exactly right: the lab grew this bar and the meditation screen did not, so the two pages read as two
+   * products.
+   *
+   * Meditate and Train are ONE screen with training off and on, and the highlight is driven from
+   * `trainingMode` rather than from which button was last pressed — so the bar, the Training pill and
+   * Shift+T can never disagree about which place you are in. Asserted through Shift+T for that reason.
+   *
+   * And painted at load. The first attempt called renderPlaces() from the middle of app.js, above the
+   * `let trainingMode` declaration, and threw on its temporal dead zone — the exact failure that took
+   * this whole app down twice. That is why the initial paint lives at the end of the file.
+   */
+  {
+    const ctxBar = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const pgBar = await ctxBar.newPage();
+    const barErrors = [];
+    pgBar.on('pageerror', (e) => barErrors.push(e.message));
+    await pgBar.goto(PAGE);
+    await pgBar.waitForTimeout(700);
+    assert.deepStrictEqual(barErrors, [],
+      `the app bar must not throw on load:\n  ${barErrors.join('\n  ')}`);
+
+    const onLoad = await pgBar.evaluate(() => ({
+      places: [...document.querySelectorAll('.place')].map((e) => e.textContent.trim()),
+      here: [...document.querySelectorAll('.place.here')].map((e) => e.textContent.trim()),
+      status: (document.getElementById('barStatus') || {}).textContent || '',
+      // The readout must sit BELOW the bar, not under it.
+      readoutTop: Math.round(document.getElementById('readout').getBoundingClientRect().top),
+      barBottom: Math.round(document.getElementById('appBar').getBoundingClientRect().bottom),
+    }));
+    assert.deepStrictEqual(onLoad.places, ['Meditate', 'Train', 'Lab'],
+      'the same three places as the lab, in the same order');
+    assert.deepStrictEqual(onLoad.here, ['Meditate'],
+      'and exactly one highlighted on load — neither highlighted reads as being in no place at all');
+    assert.match(onLoad.status, /nothing is being recorded/i,
+      'and the bar must say whether anything is being recorded, which is the difference that matters');
+    assert.ok(onLoad.readoutTop >= onLoad.barBottom,
+      `the metrics panel must sit below the bar, not under it (${onLoad.readoutTop} vs ${onLoad.barBottom})`);
+
+    // Train, then Shift+T: the highlight must follow the STATE, not the last click.
+    await pgBar.click('#placeTrain');
+    await pgBar.waitForTimeout(400);
+    const trained = await pgBar.evaluate(() => ({
+      here: [...document.querySelectorAll('.place.here')].map((e) => e.textContent.trim()),
+      status: (document.getElementById('barStatus') || {}).textContent || '',
+    }));
+    assert.deepStrictEqual(trained.here, ['Train'], 'clicking Train must move the highlight');
+    assert.match(trained.status, /recording on/i, 'and say what changed');
+
+    await pgBar.keyboard.press('Shift+T');
+    await pgBar.waitForTimeout(400);
+    assert.deepStrictEqual(
+      await pgBar.evaluate(() => [...document.querySelectorAll('.place.here')].map((e) => e.textContent.trim())),
+      ['Meditate'],
+      'and Shift+T must move it back — the bar reads trainingMode, so no route can desynchronise it');
+
+    await pgBar.close();
+    await ctxBar.close();
+    console.log('✓ the app bar carries the same three places as the lab, highlights on load, sits above'
+      + ' the panels, and follows training mode however it was changed');
+  }
+
   /* 0a1c) A FRESH PAGE MUST SAY WHY IT IS EMPTY.
    *
    * The report was "i dont see any panels. do i need to connect in order to see the metrics?" — and

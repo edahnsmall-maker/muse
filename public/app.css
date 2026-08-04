@@ -535,6 +535,28 @@
   #tierLegend .li { display: flex; align-items: center; gap: 4px; }
   #tierLegend .more { text-decoration: underline; cursor: pointer; }
 
+  /* ---- The app bar ----------------------------------------------------------------
+     Matches lab.html exactly, because the complaint was that it did not: two pages with different
+     chrome read as two products. Above the canvas and out of the visual's way — it is 44px of a screen
+     that is otherwise entirely given to the visualisation. */
+  #appBar { position: fixed; top: 0; left: 0; right: 0; height: 44px; z-index: 20;
+    display: flex; align-items: center; gap: 18px; padding: 0 16px;
+    background: linear-gradient(180deg, rgba(5,8,18,.82), rgba(5,8,18,0));
+    pointer-events: none; }
+  #appBar .brand, #appBar #places { pointer-events: auto; }
+  #appBar .brand { font-size: 14px; font-weight: 600; letter-spacing: .02em;
+    color: rgba(255,255,255,.82); }
+  #appBar .brand .mark { color: #7dd3fc; margin-right: 4px; }
+  #appBar #barStatus { margin-left: auto; font-size: 11px; }
+  #places { display: flex; gap: 4px; }
+  .place { font: inherit; font-size: 13px; padding: 5px 14px; border-radius: 9px; cursor: pointer;
+    background: none; border: none; text-decoration: none; color: rgba(255,255,255,.58); }
+  .place:hover { background: rgba(255,255,255,.07); color: rgba(255,255,255,.88); }
+  .place.here { background: rgba(125,211,252,.14); color: #cbe9ff;
+    box-shadow: inset 0 0 0 1px rgba(125,211,252,.30); }
+  /* The readout sits below the bar rather than under it. */
+  #readout, #notePanel { top: calc(44px + 6vmin); }
+
   /* A real, clickable control bar. Keyboard shortcuts still work, but nothing
      is keyboard-ONLY — shortcuts you have to remember are not discoverable. */
   #controls { display: flex; gap: 8px; flex-wrap: wrap; justify-content: center; align-items: flex-start;
