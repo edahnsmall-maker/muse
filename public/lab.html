@@ -82,11 +82,105 @@
     background: linear-gradient(transparent, var(--bg) 40%); }
   code { font: 12px ui-monospace, monospace; background: rgba(255,255,255,.07);
     padding: 1px 5px; border-radius: 4px; }
+
+  /* ---- The shell ------------------------------------------------------------------
+     A bar that says where you are, and tabs that say what there is. Both exist because this page
+     used to be one scroll of six analyses with no indication of where to start. */
+  #appBar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+    padding: 0 0 14px; border-bottom: 1px solid rgba(255,255,255,.08); margin-bottom: 4px; }
+  #appBar .brand { font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  #appBar .brand .mark { color: #7dd3fc; margin-right: 4px; }
+  #appBar .barNote { margin-left: auto; font-size: 11.5px; }
+  #places { display: flex; gap: 4px; }
+  #places a, #places .here { padding: 5px 14px; border-radius: 9px; font-size: 13px;
+    text-decoration: none; color: rgba(255,255,255,.62); }
+  #places a:hover { background: rgba(255,255,255,.06); color: rgba(255,255,255,.85); }
+  #places .here { background: rgba(125,211,252,.14); color: #cbe9ff;
+    box-shadow: inset 0 0 0 1px rgba(125,211,252,.30); }
+
+  #tabs { display: flex; gap: 2px; flex-wrap: wrap; margin: 14px 0 18px; }
+  .tab { background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer;
+    color: rgba(255,255,255,.55); font: inherit; font-size: 13.5px; padding: 8px 15px 9px; }
+  .tab:hover { color: rgba(255,255,255,.85); }
+  .tab.active { color: #cbe9ff; border-bottom-color: #7dd3fc; }
+  .pane[hidden] { display: none; }
+
+  /* ---- Explore --------------------------------------------------------------------
+     A question, then sentences. The two-column split puts "how to read this" beside the answer
+     rather than under it, because a caveat below the fold is a caveat nobody applies. */
+  .askRow { display: flex; gap: 10px; align-items: stretch; flex-wrap: wrap; margin-bottom: 12px; }
+  .askRow select { flex: 1 1 260px; font: inherit; font-size: 14px; padding: 11px 12px;
+    background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.14);
+    border-radius: 11px; }
+  .askRow button { font: inherit; font-size: 14px; padding: 11px 22px; border-radius: 11px;
+    border: 1px solid rgba(125,211,252,.45); background: rgba(125,211,252,.16); color: #cbe9ff;
+    cursor: pointer; }
+  .askRow button:hover { background: rgba(125,211,252,.26); }
+  .knobs { display: flex; gap: 14px; flex-wrap: wrap; align-items: center; font-size: 12.5px;
+    margin-bottom: 6px; }
+  .knobs label { display: flex; gap: 6px; align-items: center; color: rgba(255,255,255,.6); }
+  .knobs select { font: inherit; font-size: 12.5px; padding: 5px 8px; border-radius: 8px;
+    background: rgba(255,255,255,.05); color: inherit; border: 1px solid rgba(255,255,255,.13); }
+
+  .split { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 18px; align-items: start; }
+  @media (max-width: 900px) { .split { grid-template-columns: 1fr; } }
+
+  .finding { display: flex; gap: 13px; align-items: flex-start; padding: 13px 0;
+    border-bottom: 1px solid rgba(255,255,255,.06); }
+  .finding:last-child { border-bottom: none; }
+  .finding .glyph { flex: 0 0 26px; font-size: 17px; text-align: center; opacity: .8; }
+  .finding .body { flex: 1 1 auto; min-width: 0; }
+  .finding .say { line-height: 1.55; }
+  .finding .why { font-size: 12px; color: rgba(255,255,255,.5); margin-top: 5px; line-height: 1.5; }
+  /* The badge carries the actual evidence — a count of sessions — so it is styled to be read, not
+     skimmed past. Four states and no percentage: see explore.js on why there is no confidence figure. */
+  .badge { display: inline-block; flex: 0 0 auto; font-size: 11.5px; padding: 4px 10px;
+    border-radius: 999px; white-space: nowrap; }
+  .badge.repeats { background: rgba(134,239,172,.14); color: #bbf7d0;
+    box-shadow: inset 0 0 0 1px rgba(134,239,172,.28); }
+  .badge.possible { background: rgba(253,224,71,.12); color: #fde68a;
+    box-shadow: inset 0 0 0 1px rgba(253,224,71,.24); }
+  .badge.unclear { background: rgba(255,255,255,.06); color: rgba(255,255,255,.6);
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); }
+  .badge.insufficient { background: rgba(148,163,184,.12); color: #cbd5e1;
+    box-shadow: inset 0 0 0 1px rgba(148,163,184,.26); }
+  .sideHead { font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: rgba(255,255,255,.45); margin-bottom: 9px; }
+  .keyRow { display: flex; gap: 9px; font-size: 12.5px; margin-bottom: 8px; line-height: 1.45; }
+  .keyRow .k { flex: 0 0 auto; }
 </style>
 
-<h1>Lab</h1>
-<p class="sub">Drop session <code>.zip</code> files here. Everything stays on this
-machine — nothing is uploaded, and this page works with no network at all.</p>
+<!--
+  THE SHELL: three places, and tabs inside the lab.
+
+  Asked for after a mockup: "i vote we implement these design changes. i like the lab mockup even more."
+  The reason it is worth doing is the reason it was asked for — "the lab is a bit hard to use for a
+  novice like that." Everything on this page used to be stacked on one scroll: the loaded list, the
+  alpha peak, whole-session descriptions, the clip library, the pattern search and the saved analyses,
+  in that order, with no indication of where to start. Correct, and unreadable.
+
+  ONE THING FROM THE MOCKUP IS DELIBERATELY ABSENT. It showed a "My model" tab beside "Confidence 82%"
+  and "Personalized model". There is no model here, nothing is fitted, and there is no basis for 82. A
+  tab named for a thing that does not exist is worse than a missing tab, so the five tabs below are the
+  ones that have somethingbehind them.
+-->
+<header id="appBar">
+  <div class="brand"><span class="mark" aria-hidden="true">◇</span> Meditation Lab</div>
+  <nav id="places">
+    <a href="direct.html">Meditate</a>
+    <a href="direct.html">Train</a>
+    <span class="here">Lab</span>
+  </nav>
+  <div class="barNote dim">Everything stays on this machine · works with no network</div>
+</header>
+
+<nav id="tabs" role="tablist">
+  <button class="tab active" data-tab="explore" role="tab">Explore</button>
+  <button class="tab" data-tab="sessions" role="tab">Sessions</button>
+  <button class="tab" data-tab="compare" role="tab">Compare</button>
+  <button class="tab" data-tab="signals" role="tab">Signals</button>
+  <button class="tab" data-tab="learn" role="tab">Learn</button>
+</nav>
 
 <div id="drop">
   <strong>Drop session archives here</strong><br>
@@ -94,12 +188,28 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
   <input type="file" id="file" multiple accept=".zip" hidden>
 </div>
 
-<div id="loaded"></div>
-<div id="alpha"></div>
-<div id="whole"></div>
-<div id="clips"></div>
-<div id="out"></div>
-<div id="saved"></div>
+<section class="pane" data-pane="explore">
+  <div id="explore"></div>
+</section>
+<section class="pane" data-pane="sessions" hidden>
+  <div id="loaded"></div>
+  <!-- Pre-created so renderTimelines/renderTrials find a host instead of inserting one after the
+       loaded list — which would land them in whichever pane happened to hold it. -->
+  <div id="timelines"></div>
+  <div id="trials"></div>
+</section>
+<section class="pane" data-pane="compare" hidden>
+  <div id="whole"></div>
+  <div id="out"></div>
+  <div id="saved"></div>
+</section>
+<section class="pane" data-pane="signals" hidden>
+  <div id="alpha"></div>
+  <div id="clips"></div>
+</section>
+<section class="pane" data-pane="learn" hidden>
+  <div id="learn"></div>
+</section>
 
 <script src="dsp.js"></script>
 <script src="movement.js"></script>
@@ -108,6 +218,7 @@ machine — nothing is uploaded, and this page works with no network at all.</p>
 <script src="import.js"></script>
 <script src="analysis.js"></script>
 <script src="findings.js"></script>
+<script src="explore.js"></script>
 <script src="labstore.js"></script>
 <script>
 /*
@@ -406,8 +517,307 @@ function sessionsWithoutSpectra() {
   return sessions.filter((s) => !s.error && !(s.spectra && s.spectra.rows.length));
 }
 
+/* ==========================================================================
+ * THE SHELL: which pane is showing
+ * ==========================================================================
+ * Tabs rather than one long scroll. The reason is the report — "the lab is a bit hard to use for a
+ * novice like that" — and the fix is not prettier cards, it is that the first thing on screen should be
+ * a question rather than the sixth-most-important table.
+ */
+let pane = 'explore';
+function showPane(next) {
+  pane = next;
+  for (const el of document.querySelectorAll('.pane')) el.hidden = el.dataset.pane !== next;
+  for (const el of document.querySelectorAll('.tab')) el.classList.toggle('active', el.dataset.tab === next);
+  /* Still re-renders on switch: a pane that was hidden when its data arrived may have been drawn into a
+     zero-width box, and canvases in particular measure wrong there. Cheap, and it removes a whole class
+     of "the chart is blank until I resize" bug. */
+  render();
+}
+for (const el of document.querySelectorAll('.tab')) {
+  el.addEventListener('click', () => showPane(el.dataset.tab));
+}
+
+/* ==========================================================================
+ * EXPLORE — a question, then sentences
+ * ==========================================================================
+ * The logic is in explore.js, deliberately: it is the part that can overclaim, so it lives where it can
+ * be tested without a browser. This function only asks it things and prints what comes back.
+ *
+ * Every mark kind present across the loaded sits becomes an answerable question. Nothing here invents a
+ * category — if a kind was never tapped, it is not offered.
+ */
+const exploreState = { question: 'before-mark', experience: null, other: null, windowSec: 20 };
+
+// Marks per sit, keyed by kind, in session-clock seconds. One pass over the notes, reused by every
+// question, because doing it inside the loop below would rescan every archive per signal.
+function markTimesByKind() {
+  const byKind = {};
+  for (const s of sessions) {
+    if (s.error) continue;
+    for (const n of (s.read && s.read.notes) || []) {
+      const kind = n.tapCategory || n.transition || n.markKind || n.kind;
+      const t = Number(n.offsetSec);
+      if (!kind || !Number.isFinite(t)) continue;      // a general note has no moment
+      if (!byKind[kind]) byKind[kind] = {};
+      if (!byKind[kind][s.sessionId]) byKind[kind][s.sessionId] = [];
+      byKind[kind][s.sessionId].push(t);
+    }
+  }
+  return byKind;
+}
+
+/* Two explanations joined into readable prose. Without it the badge's reason ran straight into the
+   signal's caveat with no full stop between them — "3 are needed before a count means anything CANNOT
+   be compared between sits" — which reads as one broken sentence rather than two true ones. */
+function sentenceJoin(a, b) {
+  const first = String(a || '').trim();
+  const second = String(b || '').trim();
+  if (!second) return first;
+  if (!first) return second;
+  return first + (/[.!?]$/.test(first) ? '' : '.') + ' ' + second;
+}
+
+function kindLabelFor(kind) {
+  const t = (typeof Probes !== 'undefined' && Probes.TAP_BY_KEY && Probes.TAP_BY_KEY[kind])
+    || (typeof Labels !== 'undefined' && Labels.TRANSITION_BY_KEY && Labels.TRANSITION_BY_KEY[kind]);
+  return (t && t.label) || kind;
+}
+
+function renderExplore() {
+  const host = document.getElementById('explore');
+  if (!host) return;
+  const usable = sessions.filter((s) => !s.error);
+  if (!usable.length) {
+    host.innerHTML = `<h2>What do you want to understand?</h2>
+      <div class="card note">Drop some session archives above and this will fill in. Several at once
+      is much better than one: every question here is answered by how many separate sits agree, so a
+      single sit cannot answer any of them.</div>`;
+    return;
+  }
+  const byKind = markTimesByKind();
+  // Kinds ordered by how much evidence they carry — a kind marked three times cannot answer anything,
+  // and putting it first would invite the reader to ask a question that has no answer.
+  const kinds = Object.keys(byKind).map((k) => {
+    const perSit = byKind[k];
+    const sits = Object.keys(perSit).filter((id) => perSit[id].length >= Explore.MIN_MARKS_PER_SESSION);
+    const total = Object.values(perSit).reduce((a, v) => a + v.length, 0);
+    return { kind: k, label: kindLabelFor(k), sits: sits.length, total };
+  }).sort((a, b) => b.sits - a.sits || b.total - a.total)
+    /* ONLY KINDS THAT CAN ANSWER SOMETHING.
+       The first version offered every kind found in the archives, including "text · 9 marks in 0 sits"
+       and "voice · 3 marks in 0 sits" — general notes and voice memos, which are not moments at all —
+       plus kinds tapped once. Offering a question with no possible answer is worse than not offering it:
+       the reader picks it, gets "not enough", and cannot tell that from a real null. */
+    .filter((k) => k.sits >= 1 && k.kind !== 'text' && k.kind !== 'voice');
+
+  if (!kinds.length) {
+    host.innerHTML = `<h2>What do you want to understand?</h2>
+      <div class="card note">These sits carry no timed marks, so there is nothing to ask about yet.
+      A mark is what turns a recording into data: it says <em>this moment was like that</em>, and every
+      question on this page compares marked moments against the rest of the sit.</div>`;
+    return;
+  }
+  if (!exploreState.experience || !byKind[exploreState.experience]) {
+    exploreState.experience = kinds[0].kind;
+  }
+
+  const q = Explore.QUESTIONS.find((x) => x.key === exploreState.question) || Explore.QUESTIONS[0];
+  const expLabel = kindLabelFor(exploreState.experience);
+
+  const questionOptions = Explore.QUESTIONS.filter((x) => x.needs !== 'two-marks' || kinds.length > 1)
+    .map((x) => `<option value="${x.key}"${x.key === q.key ? ' selected' : ''}>`
+      + `${esc(x.ask.replace('{experience}', expLabel).replace('{other}', 'another mark'))}</option>`)
+    .join('');
+  const kindOptions = kinds.map((k) => `<option value="${esc(k.kind)}"`
+    + `${k.kind === exploreState.experience ? ' selected' : ''}>`
+    + `${esc(k.label)} · ${k.total} marks in ${k.sits} sit${k.sits === 1 ? '' : 's'}</option>`).join('');
+
+  // ---- Ask it, for every signal that any loaded sit actually carries.
+  const marks = byKind[exploreState.experience] || {};
+  const win = q.key === 'after-mark'
+    ? { preSec: 0, postSec: exploreState.windowSec }
+    : { preSec: exploreState.windowSec, postSec: 0 };
+  const sits = usable.map((s) => ({ id: s.sessionId, label: displayName(s), rows: s.read.metrics }));
+  const answers = [];
+  for (const sig of Explore.SIGNALS) {
+    // Skip a signal no loaded sit has any reading for: an "unclear" row for a sensor that was never
+    // worn reads as a null result when it is an absence.
+    const present = sits.some((x) => (x.rows || []).some((r) =>
+      r[sig.key] != null && r[sig.key] !== '' && Number.isFinite(Number(r[sig.key]))));
+    if (!present) continue;
+    // metrics.csv arrives as strings; coerce once here rather than inside explore.js, which should not
+    // know where its rows came from.
+    const typed = sits.map((x) => ({ id: x.id, label: x.label,
+      rows: (x.rows || []).map((r) => ({ t: Number(r.t), [sig.key]: r[sig.key] === '' || r[sig.key] == null
+        ? null : Number(r[sig.key]) })) }));
+    answers.push(Explore.askAcrossSessions(typed, { signalKey: sig.key, markTimes: marks, window: win }));
+  }
+  const order = { repeats: 0, possible: 1, unclear: 2, insufficient: 3 };
+  answers.sort((a, b) => order[a.strength.key] - order[b.strength.key]);
+
+  /* WHEN EVERY AVAILABLE SIGNAL IS A RELATIVE ONE, SAY SO ABOVE THE ANSWERS.
+     Found by running this against seven real archives: the only signals present were `calm` and
+     `thinking`, both rescaled within their own sit, so the screen was quietly answering a
+     between-sits question with numbers that cannot be compared between sits. The comparable columns —
+     alpha share, breathing rate, HRV in real units — did not exist when those sits were recorded.
+     Silence here would read as "the lab found nothing", when the truth is "this data cannot answer
+     it, and the next sit can". Those are different, and only one of them is actionable. */
+  const comparable = answers.filter((a) => (Explore.SIGNAL_BY_KEY[a.signalKey] || {}).comparable);
+  const missingComparable = !comparable.length && answers.length
+    ? `<div class="card note bad">Every signal these archives carry is rescaled <em>within</em> its own
+       sit, so none of it can be compared between sits. The comparable measurements — alpha share,
+       breathing rate, HRV in milliseconds — are recorded from now on but were not in these files.
+       Record one more sit and this question becomes answerable.</div>`
+    : '';
+
+  const GLYPH = { calmAbs: '◇', calm: '◇', thinking: '◇', breathPerMin: '∿', hrvMs: '♡', hrBpm: '♡' };
+  const findings = answers.length ? answers.map((a) => {
+    const sig = Explore.SIGNAL_BY_KEY[a.signalKey] || {};
+    return `<div class="finding">
+      <div class="glyph">${GLYPH[a.signalKey] || '·'}</div>
+      <div class="body">
+        <div class="say">${esc(Explore.describe(a, { experience: expLabel }))}</div>
+        <div class="why">${esc(sentenceJoin(a.strength.why, sig.caveat))}</div>
+      </div>
+      <span class="badge ${a.strength.key}">${esc(a.strength.label)}</span>
+    </div>`;
+  }).join('') : `<div class="card note">None of the loaded sits carry a signal this question can be
+    answered with.</div>`;
+
+  host.innerHTML = `<h2>What do you want to understand?</h2>
+    <div class="card">
+      <div class="askRow">
+        <select id="qSel">${questionOptions}</select>
+        <button id="qGo">Explore</button>
+      </div>
+      <div class="knobs">
+        <label>Experience <select id="expSel">${kindOptions}</select></label>
+        <label>Window <select id="winSel">
+          ${[10, 20, 30, 60].map((v) => `<option value="${v}"`
+            + `${v === exploreState.windowSec ? ' selected' : ''}>${v} seconds</option>`).join('')}
+        </select></label>
+        <span class="dim">${usable.length} session${usable.length === 1 ? '' : 's'} loaded</span>
+      </div>
+    </div>
+    <div class="split">
+      <div>
+        ${missingComparable}
+        <div class="card">
+          <div class="sideHead">What the data suggests</div>
+          ${findings}
+          <div class="note" style="margin-top:12px">Association, not proof. Every line above is a
+          description of a handful of recordings from one person, and a signal can move with a state
+          without being caused by it.</div>
+        </div>
+        <div class="card">
+          <div class="sideHead">Try next</div>
+          <div style="line-height:1.6">${esc(Explore.nextStep(answers, usable))}</div>
+        </div>
+      </div>
+      <div>
+        <div class="card">
+          <div class="sideHead">How to read this</div>
+          <div class="keyRow"><span class="k"><span class="badge repeats">Repeats</span></span>
+            <span>The same direction in at least three quarters of the sits that could answer, and at
+            least three of them.</span></div>
+          <div class="keyRow"><span class="k"><span class="badge possible">Possible</span></span>
+            <span>More sits agreed than disagreed, but not by enough to rule out where you happened to
+            look.</span></div>
+          <div class="keyRow"><span class="k"><span class="badge unclear">Unclear</span></span>
+            <span>The sits disagree about the direction. That is what no pattern looks like.</span></div>
+          <div class="keyRow"><span class="k"><span class="badge insufficient">Not enough</span></span>
+            <span>Fewer than ${Explore.MIN_SESSIONS} sits could answer. Not the same as no
+            effect.</span></div>
+        </div>
+        <div class="card">
+          <div class="sideHead">Why a count, not a p-value</div>
+          <div style="font-size:12.5px;line-height:1.6;color:rgba(255,255,255,.66)">
+            A p-value over marks pooled from every sit assumes the sits are interchangeable. They are
+            not — they differ in electrode fit, time of day, and how much signal was usable. Here each
+            sit votes once, however many marks it holds, so one sit with forty marks cannot outvote
+            five with five. And a count degrades honestly: <em>2 of 2</em> plainly looks small, where
+            <em>p = 0.03</em> from two sits looks identical to one from twenty.
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  const qSel = document.getElementById('qSel');
+  const expSel = document.getElementById('expSel');
+  const winSel = document.getElementById('winSel');
+  if (qSel) qSel.addEventListener('change', () => { exploreState.question = qSel.value; renderExplore(); });
+  if (expSel) expSel.addEventListener('change', () => { exploreState.experience = expSel.value; renderExplore(); });
+  if (winSel) winSel.addEventListener('change', () => {
+    exploreState.windowSec = Number(winSel.value); renderExplore();
+  });
+  const go = document.getElementById('qGo');
+  if (go) go.addEventListener('click', () => renderExplore());
+}
+
+/* ==========================================================================
+ * LEARN — what each number is, and what it is not
+ * ==========================================================================
+ * Built from the registries rather than written out again. metrics.js already carries a tier, a source
+ * and a caveat for every metric, and explore.js carries a plain description and a comparability flag
+ * for every signal. A second hand-written copy of that vocabulary would drift from the first, which has
+ * already happened twice in this project — a palette between a visual and its chart, and a label set
+ * between two files.
+ */
+function renderLearn() {
+  const host = document.getElementById('learn');
+  if (!host) return;
+  const signals = Explore.SIGNALS.map((s) => `<div class="finding">
+    <div class="body">
+      <div class="say"><strong>${esc(s.label)}</strong> — ${esc(s.plain)}</div>
+      <div class="why">${esc(s.caveat)}</div>
+    </div>
+    <span class="badge ${s.comparable ? 'repeats' : 'unclear'}">${
+      s.comparable ? 'comparable between sits' : 'this sit only'}</span>
+  </div>`).join('');
+
+  host.innerHTML = `<h2>What these numbers are</h2>
+    <div class="card note">The single most useful thing on this page: <strong>most of the app's scores
+    cannot be compared between sits.</strong> They are rescaled against each recording's own recent
+    range, so a uniformly calm sit and a uniformly busy one both land near the middle. Measured across
+    seven real sits, the displayed calm score spanned 42 to 53 while the underlying physiology spanned
+    more than twofold — and the two ranked the sits in slightly OPPOSITE order.</div>
+    <div class="card">
+      <div class="sideHead">The signals</div>
+      ${signals}
+    </div>
+    <div class="card">
+      <div class="sideHead">What this lab cannot tell you</div>
+      <div style="line-height:1.65">
+        <p>Whether a sit was <em>good</em>. Nothing here is validated against anything outside itself:
+        the app measures what a headband and a chest strap can measure, and neither has been shown to
+        track the quality of a meditation.</p>
+        <p>Whether a pattern is <em>caused</em> by a state. Everything on the Explore tab is an
+        association across a handful of recordings from one person.</p>
+        <p>Anything at all about a signal whose sensor was not worn, or whose electrodes were not making
+        contact. An absent measurement reads exactly like a null result unless you check, which is why
+        Sessions reports how much of each sit was usable.</p>
+      </div>
+    </div>`;
+}
+
+/*
+ * EVERY PANE RENDERS; THE TABS ONLY CONTROL WHAT IS VISIBLE.
+ *
+ * The first version of this rendered lazily — only the pane on screen — which looked like a sensible
+ * optimisation and was not. Two things went wrong immediately. A dropped archive left no trace anywhere
+ * until the reader happened to click Sessions, because the list that acknowledges a drop lives there.
+ * And six existing tests broke, not because the behaviour they check regressed but because the thing
+ * they check no longer existed until clicked — which is coverage traded for a speed problem nobody had
+ * reported.
+ *
+ * This page handled a retreat's worth of archives on one scroll before the tabs existed. If it ever
+ * does become slow, the fix is a measurement first.
+ */
 function render() {
   renderLoaded();
+  renderExplore();
+  renderLearn();
   renderWhole();
   renderAlpha();
   renderTimelines();

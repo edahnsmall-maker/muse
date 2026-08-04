@@ -255,6 +255,23 @@ async function drop(page, archives, expectRows = archives.length) {
   await page.waitForTimeout(400);
 }
 
+/*
+ * Switch tabs, and wait for the pane to actually render.
+ *
+ * The lab is tabbed now (Explore / Sessions / Compare / Signals / Learn) and renders only the visible
+ * pane, because each renderer walks every loaded session. These tests were written when everything was
+ * on one scroll, so each one now has to go to the tab that owns the thing it is asserting about — which
+ * is also a better test, since it exercises the path a reader actually takes.
+ */
+async function showTab(page, tab) {
+  await page.click(`.tab[data-tab="${tab}"]`);
+  await page.waitForFunction((t) => {
+    const el = document.querySelector('.pane:not([hidden])');
+    return el && el.dataset.pane === t;
+  }, tab, { timeout: 8000 });
+  await page.waitForTimeout(500);
+}
+
 (async () => {
   const browser = await chromium.launch();
   /* An EXPLICIT context, because one test needs a second page in the same storage.
@@ -294,6 +311,12 @@ async function drop(page, archives, expectRows = archives.length) {
   // 2) The timeline must draw, and must NOT bridge gaps in the data. Joining across a
   //    dropout invents values and hides the artifacts a reader most needs to see.
   {
+    /* THE TAB MUST BE OPEN FOR A CANVAS TEST. A canvas inside a display:none pane measures zero
+       width, so it draws into a degenerate box — 190 lit pixels instead of thousands. That is the
+       real behaviour and the right one: the page re-renders on tab switch precisely so a chart is
+       correct once it can measure itself. Which means a canvas assertion has to take the path a
+       reader takes. Text assertions do not; they read fine from a hidden subtree. */
+    await showTab(page, 'sessions');
     const drawn = await page.evaluate(() => {
       const c = document.querySelector('#timelines canvas');
       if (!c) return null;
@@ -1091,6 +1114,175 @@ async function drop(page, archives, expectRows = archives.length) {
     await page.evaluate(async () => { await LabStore.clearSessions(store); });
     console.log('✓ the same recording under a different filename is refused, by recording identity'
       + ' rather than by name, and a genuinely different sit still loads');
+  }
+
+  /* THE SHELL AND THE EXPLORE TAB.
+   *
+   * Built after a mockup, for a stated reason: "the lab is a bit hard to use for a novice like that."
+   * Everything on this page used to be one scroll of six analyses with no indication of where to start.
+   *
+   * The assertions that matter here are the honesty ones, because a screen that answers in SENTENCES
+   * can mislead in ways a table cannot. Three of them:
+   *   - a question with no possible answer must not be offered;
+   *   - "not enough data" must never be phrased as "no effect";
+   *   - when every available signal is one that cannot be compared between sits, the screen must say so
+   *     rather than quietly answering a between-sits question with within-sit numbers.
+   */
+  {
+    const ctx = await browser.newContext({ viewport: { width: 1500, height: 1000 } });
+    const pg = await ctx.newPage();
+    const shellErrors = [];
+    pg.on('pageerror', (e) => shellErrors.push(e.message));
+    await pg.goto(PAGE);
+
+    const tabs = await pg.$$eval('.tab', (els) => els.map((e) => e.dataset.tab));
+    assert.deepStrictEqual(tabs, ['explore', 'sessions', 'compare', 'signals', 'learn'],
+      'five tabs, in order');
+    /* NO "My model" TAB. The mockup showed one, next to "Confidence 82%" and "Personalized model".
+       Nothing here is fitted and there is no basis for 82, and a tab named for a thing that does not
+       exist is worse than a missing tab. */
+    assert.ok(!tabs.includes('model'), 'there must be no model tab, because there is no model');
+
+    // Explore is what you land on: a question, not the sixth-most-important table.
+    assert.strictEqual(await pg.$eval('.pane:not([hidden])', (e) => e.dataset.pane), 'explore',
+      'the lab must open on Explore');
+    assert.match(await pg.$eval('#explore h2', (e) => e.textContent), /what do you want to understand/i,
+      'and lead with the question');
+
+    /*
+     * FOUR SITS WITH A PLANTED EFFECT, because the first version of this test used makeArchive() and
+     * passed VACUOUSLY: that fixture carries exactly one transition, so no mark kind reached the
+     * three-per-sit floor, the experience dropdown was empty, and every assertion about its contents
+     * was true of nothing. A test that cannot fail is worse than no test.
+     *
+     * Five 'lost' marks per sit, four sits (above the three-session floor), and calmAbs genuinely
+     * raised in the twenty seconds before each mark — so this exercises the answer path all the way to
+     * the "Repeats" badge rather than only the not-enough-data path.
+     */
+    const shellArchive = (id, seed) => {
+      const t0 = Date.parse('2026-08-02T08:00:00Z') + seed * 86400000;
+      const marks = [40, 90, 140, 190, 240];
+      let sd = seed * 7919 + 11;
+      const rnd = () => { sd = (sd * 1103515245 + 12345) & 0x7fffffff; return sd / 0x7fffffff - 0.5; };
+      const rows = [];
+      for (let t = 0; t < 300; t++) {
+        const near = marks.some((m) => t >= m - 20 && t <= m);
+        rows.push({ t, epochMs: t0 + t * 1000, noise: 0.02,
+          calm: 0.5 + rnd() * 0.1,
+          calmAbs: 0.30 + (near ? 0.06 : 0) + rnd() * 0.01 });
+      }
+      const notes = marks.map((m, i) => ({ id: i + 1, kind: 'transition', at: t0 + m * 1000,
+        offsetSec: m, transition: 'lost', tapCategory: 'lost', text: 'Thinking', anchored: true }));
+      const { files } = Exporter.buildFiles({
+        meta: { startedAt: t0, durationSec: 300, bytes: 1e6, ended: true, eegHz: 256 },
+        eeg: [[1, 2, 3], [4, 5, 6], [], []], acc: [], rr: [], rows, notes,
+      }, {});
+      return { name: `shell-${id}.zip`,
+        bytes: Buffer.from(Exporter.zip(files, { date: new Date(t0) })) };
+    };
+    const shellArchives = [1, 2, 3, 4].map((i) => shellArchive(i, i));
+    await pg.setInputFiles('#file', shellArchives.map((a) => ({
+      name: a.name, mimeType: 'application/zip', buffer: a.bytes,
+    })));
+    await pg.waitForFunction(() => sessions.filter((x) => !x.error).length >= 4, null, { timeout: 20000 });
+    await pg.waitForTimeout(800);
+
+    const ex = await pg.evaluate(() => ({
+      experiences: [...(document.getElementById('expSel') || { options: [] }).options]
+        .map((o) => o.textContent),
+      findings: [...document.querySelectorAll('#explore .finding')].map((f) => ({
+        say: f.querySelector('.say').textContent.replace(/\s+/g, ' '),
+        badge: (f.querySelector('.badge') || {}).textContent || '',
+        why: (f.querySelector('.why') || {}).textContent || '',
+      })),
+      body: document.querySelector('[data-pane="explore"]').textContent.replace(/\s+/g, ' '),
+    }));
+
+    /* NOT VACUOUS. The assertions below are about the CONTENTS of the experience list, so an empty list
+       would make every one of them true of nothing — which is exactly how the first version of this
+       test passed while proving nothing. */
+    assert.ok(ex.experiences.length >= 1,
+      'at least one answerable experience must be offered, or the assertions below test nothing');
+    assert.ok(ex.findings.length >= 1, 'and at least one finding must be produced');
+
+    /* THE PLANTED EFFECT MUST BE FOUND, AND CALLED WHAT IT IS. The positive control for the whole
+       screen: calmAbs was raised before every mark in all four sits, so the badge has to say it
+       repeats. Without this, all the honesty assertions could be satisfied by a screen that finds
+       nothing ever. */
+    const alphaFinding = ex.findings.find((f) => /alpha share/i.test(f.say));
+    assert.ok(alphaFinding, `the alpha-share finding must appear (got ${JSON.stringify(
+      ex.findings.map((f) => f.say.slice(0, 40)))})`);
+    assert.match(alphaFinding.badge, /Repeats/,
+      `a planted effect in all four sits must read as repeating, got "${alphaFinding.badge}"`);
+    assert.match(alphaFinding.say, /higher/, 'and name the direction it was planted in');
+    assert.match(alphaFinding.badge, /4 of 4/, 'and count all four sits');
+
+    /* NO UNANSWERABLE QUESTIONS OFFERED. The first version listed every kind found in the archives,
+       including "text · 9 marks in 0 sits" and "voice · 3 marks in 0 sits" — general notes and voice
+       memos, which are not moments at all. Picking one returned "not enough", indistinguishable from a
+       real null. */
+    for (const label of ex.experiences) {
+      assert.doesNotMatch(label, /in 0 sits/,
+        `"${label}" cannot answer anything and must not be offered`);
+      assert.doesNotMatch(label, /^(text|voice)\b/,
+        `"${label}" is not a marked moment and must not be offered as an experience`);
+    }
+
+    // Every finding carries a badge whose text is a COUNT, never a percentage.
+    for (const f of ex.findings) {
+      assert.ok(f.badge, `a finding with no badge hides its own evidence: "${f.say}"`);
+      assert.doesNotMatch(f.badge, /%/, `badge "${f.badge}" must not carry a confidence percentage`);
+      assert.ok(f.why.length > 20, 'and must explain the basis of that badge');
+      // Two explanations joined into prose, not run together: the first version produced "3 are needed
+      // before a count means anything CANNOT be compared between sits" as one sentence.
+      assert.doesNotMatch(f.why, /[a-z] [A-Z]{4,}/,
+        `two sentences ran together without punctuation: "${f.why}"`);
+    }
+    assert.doesNotMatch(ex.body, /confidence/i,
+      'nothing on this screen may report a confidence — there is no model behind one');
+
+    /* "NOT ENOUGH" MUST NOT READ AS "NO EFFECT". These fixtures have two sits, which is below the
+       three-session floor, so this is the exact case where the two get conflated. */
+    const short = ex.findings.filter((f) => /Not enough/i.test(f.badge));
+    for (const f of short) {
+      assert.doesNotMatch(f.say, /no consistent pattern|no difference|no effect/i,
+        `"${f.say}" is an absence of DATA and must never be phrased as an absence of effect`);
+      assert.match(f.say, /Not enough/i, 'and must say so plainly');
+    }
+
+    // And the tabs must actually switch, each to its own content.
+    for (const [tab, heading] of [['sessions', /Loaded/], ['compare', /Whole sessions|Patterns/],
+      ['signals', /alpha|Clip/i], ['learn', /What these numbers are/]]) {
+      await pg.click(`.tab[data-tab="${tab}"]`);
+      await pg.waitForTimeout(1200);
+      assert.strictEqual(await pg.$eval('.pane:not([hidden])', (e) => e.dataset.pane), tab,
+        `the ${tab} tab must show the ${tab} pane`);
+      const h = await pg.evaluate(() => {
+        const el = document.querySelector('.pane:not([hidden]) h2');
+        return el ? el.textContent : '';
+      });
+      assert.match(h, heading, `the ${tab} pane must render its own content, got "${h}"`);
+    }
+
+    /* LEARN MUST LEAD WITH THE COMPARABILITY WARNING. It is the single most consequential thing about
+       these numbers and it was discovered the hard way: measured over seven real sits the displayed calm
+       score spanned 42-53 while the physiology spanned twofold, ranking the sits in slightly OPPOSITE
+       order. Anyone comparing sits on that score reaches a conclusion that is worse than none. */
+    await pg.click('.tab[data-tab="learn"]');
+    await pg.waitForTimeout(600);
+    const learn = await pg.$eval('[data-pane="learn"]', (e) => e.textContent.replace(/\s+/g, ' '));
+    assert.match(learn, /cannot be compared between sits/i,
+      'Learn must warn that most scores cannot be compared between sits');
+    assert.match(learn, /OPPOSITE order|opposite/i, 'and give the measured reason');
+    assert.match(learn, /cannot tell you/i, 'and state what this lab cannot do');
+
+    assert.deepStrictEqual(shellErrors, [],
+      `the shell must render without errors:\n  ${shellErrors.join('\n  ')}`);
+    await pg.close();
+    await ctx.close();
+    console.log(`✓ five tabs, Explore first, ${ex.experiences.length} answerable experiences offered`
+      + ' (none unanswerable), badges are counts not percentages, "not enough" never reads as "no'
+      + ' effect", and Learn leads with what cannot be compared');
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);
