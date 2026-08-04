@@ -417,4 +417,50 @@ fs.rmSync(tmp, { recursive: true, force: true });
     + ' revisions preserved, and absent when there is nothing to say');
 }
 
+/* THE PHYSICAL MEASUREMENTS MUST REACH metrics.csv, AND THE FILE MUST SAY WHAT IS COMPARABLE.
+ *
+ * Asked: "did the breathing rate give us anything valuable? diff during calm sessions? any markers?"
+ * It could not have. The breathing rate was written exactly once per sit, in prose, in the report —
+ * it never reached metrics.csv, so the analysis lab had never seen one. There was nothing to find
+ * because nothing was kept, and that is the worst kind of null result: indistinguishable from a real
+ * one until you go looking for the column.
+ *
+ * The second half matters as much. Every EEG composite here is normalised within the sit, so pooling
+ * them across sessions compares each sit against itself. Someone reading this archive a month from now
+ * has no way to know which columns are safe to compare unless the file says so.
+ */
+{
+  const meta = { startedAt: Date.parse('2026-08-04T09:00:00Z'), durationSec: 3, bytes: 100,
+    ended: true, eegHz: 256 };
+  const rows = [
+    { t: 0, calm: 0.4, breathPerMin: 6.2, hrBpm: 61, hrvMs: 48, levels: [0.18, 0.17, 0.19, 0.17] },
+    { t: 1, calm: 0.5, breathPerMin: 5.9, hrBpm: 60, hrvMs: 51, levels: [0.19, 0.18, 0.2, 0.18] },
+    // Strap unreliable for this second: nulls, not zeros. A zero breath rate is a claim about a
+    // person who has stopped breathing.
+    { t: 2, calm: 0.5, breathPerMin: null, hrBpm: null, hrvMs: null, levels: [0.2, 0.19, 0.2, 0.19] },
+  ];
+  const csv = Exporter.toCsv(rows);
+  const header = csv.split('\n')[0].split(',');
+  for (const col of ['breathPerMin', 'hrBpm', 'hrvMs']) {
+    assert.ok(header.includes(col),
+      `metrics.csv must carry ${col} — a measurement kept only in prose cannot be analysed`);
+  }
+  const lines = csv.trim().split('\n');
+  assert.match(lines[1], /6\.2/, 'and the values must actually be written');
+  // The unreliable second must be blank, which pandas and Excel both read as missing rather than as 0.
+  const iBreath = header.indexOf('breathPerMin');
+  assert.strictEqual(lines[3].split(',')[iBreath], '',
+    'an unreliable second must be blank, not zero — zero is a claim, absence is the truth');
+
+  const { files } = Exporter.buildFiles({ meta, rows, notes: [] });
+  const readme = new TextDecoder().decode(files.find((f) => f.name === 'README.txt').bytes);
+  assert.match(readme, /breathPerMin/, 'the README must name the comparable columns');
+  assert.match(readme, /normalised\s+WITHIN the sit/,
+    'and must warn that the composites are normalised within the sit');
+  assert.match(readme, /compares each sit against itself/,
+    'in words that say what goes wrong, not just that something might');
+  console.log('✓ breath rate, heart rate and HRV reach metrics.csv in real units, blank when'
+    + ' unreliable, and the README says which columns survive a comparison between sits');
+}
+
 console.log('\nAll export tests passed.');

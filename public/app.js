@@ -511,6 +511,36 @@ function logSessionSample(result, channels) {
     noise: result.artifactRate,
     levels: channels.map((c) => (c.pct == null ? null : c.pct)),
     spikes: bandState.filter((s) => s.spike > 0.9).length,
+    /*
+     * THE MEASUREMENTS IN REAL UNITS, ONE ROW PER SECOND. Absent until now, and their absence made a
+     * reasonable question unanswerable: "did the breathing rate give us anything valuable? diff during
+     * calm sessions? any markers?"
+     *
+     * It could not have. The breathing rate was written exactly ONCE per sit, as a single number in
+     * prose in the report markdown. It never reached metrics.csv, so the analysis lab has never seen a
+     * breathing rate at all — not across sessions, not at a marked moment, not anywhere. There was
+     * nothing to find because nothing was kept.
+     *
+     * WHY THESE THREE MATTER MORE THAN THE COMPOSITES, which is the part worth understanding: every
+     * EEG composite in this app is normalised WITHIN the sit. AdaptiveNormalizer re-centres on a
+     * ~250-second baseline, so "Calm 32" means "low compared with the last few minutes of this
+     * recording", not "low compared with your other sits". Pooling those numbers across sessions
+     * compares each sit to itself and calls the result a difference between sits.
+     *
+     * Breaths per minute, beats per minute and RMSSD in milliseconds have none of that problem. They
+     * are physical quantities on fixed scales, identical in meaning on Tuesday and Thursday. Together
+     * with each channel's alpha SHARE above — also a bounded ratio rather than a normalised score —
+     * they are the only columns in this file that can honestly be compared between one sit and
+     * another, which is exactly the comparison the whole-session analysis was asked for.
+     */
+    breathPerMin: (() => {
+      const sec = strapBreathSec != null ? strapBreathSec : breathPeriod;
+      // Null rather than a number when the strap is unreliable: a rate derived from rejected beats is
+      // a guess, and a guess in a column of measurements cannot be told apart later.
+      return sec != null && sec > 0 && !strapUnreliable() ? 60 / sec : null;
+    })(),
+    hrBpm: strapUnreliable() ? null : hrBpm,
+    hrvMs: strapUnreliable() ? null : hrvRmssd,
   };
   // Composites too, so a marked moment can be compared against every score
   // that was on screen at the time — that comparison is the whole point.
@@ -745,8 +775,23 @@ function showSummaryStats(stats) {
     + `<span class="pill" id="sumDownload">Download report (.md)</span>`
     + (summarySessionId() != null
       ? '<span class="pill" id="sumData">Download data (.zip)</span>'
-        + '<span class="pill" id="sumLab">Open in analysis lab</span>' : '')
+        + '<span class="pill" id="sumLab">Open in analysis lab</span>'
+      /* NOT RECORDED, AND STILL RECOVERABLE. See saveUnrecordedSit(): every per-second row and every
+         mark is in memory at this point, so this is the last moment they exist. Offered as the
+         PRIMARY action, because the alternative is that a ten-minute sit and eleven marks are
+         discarded by closing a screen. */
+      : (sessionLog.length
+        ? '<span class="pill active" id="sumRescue">Save this sit</span>' : ''))
     + `<span class="pill" id="sumClose">Close</span></div>`
+    + (summarySessionId() == null && sessionLog.length
+      ? '<div style="margin-top:12px;font-size:12.5px;color:#ffc98a;max-width:520px;'
+        + 'margin-left:auto;margin-right:auto;line-height:1.5">'
+        + '<b>This sit was not recorded.</b> Record was never armed, so nothing here has been'
+        + ` saved — including your ${markerLog.markers.length} mark`
+        + `${markerLog.markers.length === 1 ? '' : 's'}. The per-second scores and the marks are`
+        + ' still in memory and can be saved now; the raw EEG was never captured and cannot be.'
+        + ' Closing this screen loses all of it.</div>'
+      : '')
     + '<div id="labFallback" style="margin-top:10px;font-size:13px"></div>';
   summaryEl.classList.add('show');
   document.getElementById('sumClose').addEventListener('click', closeSummary);
@@ -755,6 +800,8 @@ function showSummaryStats(stats) {
   if (sumDataEl) sumDataEl.addEventListener('click', () => downloadSummaryData(sumDataEl));
   const sumLabEl = document.getElementById('sumLab');
   if (sumLabEl) sumLabEl.addEventListener('click', () => openInLab(sumLabEl));
+  const sumRescueEl = document.getElementById('sumRescue');
+  if (sumRescueEl) sumRescueEl.addEventListener('click', () => saveUnrecordedSit(sumRescueEl));
   wireMarkerEditor();
 
   // Sparkline of the whole sit — the "shape", not a grade.
@@ -961,6 +1008,85 @@ function summarySessionId() {
 }
 
 /*
+ * SAVE A SIT THAT WAS NEVER RECORDED, from what is still in memory.
+ *
+ * Reported as "i just did a session for 10 m and i dont see it at all in the saved sessions." The sit
+ * was real, the summary was real, the eleven marks were real — and none of it was written, because
+ * Record was never armed.
+ *
+ * The app did warn, once per mark, in the transient status line: "not recording, this won't be saved".
+ * Eleven times, in small text, on a dark screen, to somebody sitting with their eyes half closed. A
+ * warning nobody can read at the moment it matters is not a safeguard, it is a record of having
+ * technically mentioned it.
+ *
+ * What makes this recoverable is that nothing was lost yet at the summary screen: sessionLog holds
+ * every per-second row and markerLog holds every mark, both in memory. So the honest fix is not
+ * another warning — it is a button.
+ *
+ * WHAT CANNOT BE RECOVERED is the raw EEG. The sample buffers hold a few seconds, not ten minutes, so
+ * a rescued sit has metrics.csv and notes.csv and no eeg-ch*.f32. That is most of what the marker
+ * analysis needs and none of what recomputing a formula later needs, and the saved session says so
+ * rather than looking like a complete one.
+ */
+async function saveUnrecordedSit(btn) {
+  if (!sessionLog.length) {
+    setStatus('there is nothing in memory to save');
+    statusLockUntil = Date.now() + 4000;
+    return;
+  }
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Saving…';
+  try {
+    const db = recDb || await Recorder.open();
+    recDb = db;
+    const session = await Recorder.startSession(db, {
+      startedAt: sessionClock(),
+      userAgent: navigator.userAgent,
+      simulated: SIM_ACTIVE || undefined,
+      /* Marked as recovered, and WHY, so a sit with no raw EEG is never mistaken for one whose
+         electrodes failed. Those look identical in the archive and have opposite explanations. */
+      recovered: true,
+      recoveredNote: 'Saved after the fact from the summary screen. Recording was not armed during'
+        + ' this sit, so the per-second scores and the marks were rescued from memory and the RAW EEG'
+        + ' was never captured — it cannot be recomputed from this archive.',
+    });
+    for (const row of sessionLog) session.pushRow(row);
+    /* Marks written with their ORIGINAL instants.
+       addNote() normally derives `at` and `offsetSec` itself, and its comment is right that callers
+       must not pass their own — two fields for one live instant, computed in two places, drift. A
+       recovery is the exception that proves the rule: these instants are in the past, and letting the
+       default fire would stamp all eleven marks at the same moment, which is the one thing that would
+       make them useless. Both fields are passed together so they cannot disagree. */
+    const started = sessionClock();
+    for (const m of markerLog.markers) {
+      await session.addNote({
+        kind: 'transition', transition: m.kind, tapCategory: m.kind,
+        text: Markers.kindLabel ? Markers.kindLabel(m.kind) : m.kind,
+        note: m.note || null, durationSec: m.durationSec || null,
+        anchored: true,
+        at: started + m.tSec * 1000,
+        offsetSec: m.tSec,
+      });
+    }
+    if (sitNoteText) {
+      await session.addNote({ kind: 'text', anchored: false, text: sitNoteText });
+    }
+    await session.end();
+    lastRecSession = session;
+    setStatus(`saved — ${sessionLog.length} rows and ${markerLog.markers.length} marks.`
+      + ' The raw EEG was never captured, so this sit has scores and marks only.');
+    statusLockUntil = Date.now() + 9000;
+    btn.textContent = 'Saved';
+  } catch (err) {
+    btn.textContent = label;
+    btn.disabled = false;
+    setStatus(`could not save it: ${escapeHtml((err && err.message) || 'unknown')}`);
+    statusLockUntil = Date.now() + 8000;
+  }
+}
+
+/*
  * Hand this sit straight to the analysis lab.
  *
  * Asked for: "at the end of a recording session, open the data directly in the analysis
@@ -978,8 +1104,16 @@ function summarySessionId() {
  * startup, which drains the inbox once — and losing that race looks like the button
  * doing nothing.
  */
-async function openInLab(btn) {
-  const id = summarySessionId();
+/*
+ * Hand ANY saved sit to the lab, not only the one that just finished.
+ *
+ * Asked for: "maybe from the saved sessions i can ... open it in another page and view it? or add it
+ * directly to the analysis tab with a click?" It was already possible for exactly one sit — the one on
+ * the summary screen — and unreachable for every sit before it, which meant re-recording or hunting
+ * for a downloaded .zip. The whole body was already generic apart from where it got the id.
+ */
+async function openInLab(btn, sessionId) {
+  const id = sessionId != null ? sessionId : summarySessionId();
   /* NEVER RETURN SILENTLY. Reported as "open in lab button doesn't work after i stop
    * recording and fill out the form" — and a bare `return` here is indistinguishable from a
    * dead button. There are two ways to get here with nothing to hand over, and they have
@@ -3417,8 +3551,27 @@ async function openSessions() {
        plus a duration does not say which those are. Shown plainly, and called out when
        it is zero rather than left as a quiet "0" to be scanned past. */
     const marks = m.markCount || 0;
+    /* THE BREAKDOWN, not just the total. Eleven marks all of one kind cannot support any comparison
+       BETWEEN kinds, which is the analysis these marks exist for — so a sit that looks rich in the
+       list can be useless, and the total alone never says which. */
+    /* Names from the same registries the keys are bound to, in the same order the note is read:
+       probes.js TAP_BY_KEY is the authority on the arrow-key categories, Labels.TRANSITION_BY_KEY on
+       the older transitions, Markers.KIND_BY_KEY on the typed marks. Falling back to the raw key
+       rather than hiding an unrecognised kind — a mark whose category this file does not know about
+       still happened, and dropping it from the tally would make the total disagree with the parts. */
+    const kindLabel = (kind) => {
+      const t = (typeof Probes !== 'undefined' && Probes.TAP_BY_KEY && Probes.TAP_BY_KEY[kind])
+        || (typeof Labels !== 'undefined' && Labels.TRANSITION_BY_KEY && Labels.TRANSITION_BY_KEY[kind])
+        || (typeof Markers !== 'undefined' && Markers.KINDS
+            && Markers.KINDS.find((x) => x.key === kind));
+      return (t && t.label) || kind;
+    };
+    const tally = (m.markTally || [])
+      .map(([kind, n]) => `${n}\u00d7 ${escapeHtml(kindLabel(kind))}`).join(', ');
     const markText = marks
-      ? `${marks} mark${marks === 1 ? '' : 's'}`
+      ? `${marks} mark${marks === 1 ? '' : 's'}${tally ? ` <span style="opacity:.65">(${tally})</span>` : ''}`
+        + ((m.markTally || []).length === 1 && marks > 1
+          ? ' <span style="color:#ffc98a">— all one kind, so nothing to compare against</span>' : '')
       : '<span style="color:#ffc98a">no marks</span>';
     /* SAY WHEN A SESSION IS TOO LONG TO BE ONE SIT.
      *
@@ -3444,6 +3597,7 @@ async function openSessions() {
       + `<br><span class="sesMeta">${mins}m ${secs}s \u00b7 ${markText}`
       + ` \u00b7 ${((m.bytes || 0) / 1e6).toFixed(1)}MB`
       + `${live ? ' \u00b7 recording now' : (m.ended ? '' : ' \u00b7 interrupted')}</span></span>`
+      + `<button data-act="lab">Send to lab</button>`
       + `<button data-act="dl">Download .zip</button>`
       + `<button data-act="rm" class="danger">Delete</button></div>`;
   }).join('');
@@ -3516,6 +3670,14 @@ async function openSessions() {
         }
         await Recorder.deleteSession(db, id);
         openSessions();
+        return;
+      }
+      /* SEND TO LAB, for any sit in the list. The handoff writes archive bytes into the lab's inbox
+         and opens the lab in a new tab; openInLab() reports its own failures, including the blocked
+         popup and the file:// storage case, so there is nothing to add here beyond passing the id. */
+      if (btn.dataset.act === 'lab') {
+        recDb = db;                    // openInLab reads recDb, which may not be set yet on this path
+        await openInLab(btn, id);
         return;
       }
       btn.disabled = true;

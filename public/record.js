@@ -255,6 +255,7 @@
     const all = await promisify(tx.objectStore(STORE_SESSIONS).getAll());
     const notes = await promisify(tx.objectStore(STORE_NOTES).getAll());
     const counts = new Map();
+    const byKind = new Map();
     for (const n of notes || []) {
       if (!n || n.sessionId == null) continue;
       // What counts as a mark: anything that names a moment. Probe answers included —
@@ -264,9 +265,26 @@
         || n.kind === 'tap-grade' || n.transition || n.tapCategory || n.markKind;
       if (!isMark || n.anchored === false) continue;
       counts.set(n.sessionId, (counts.get(n.sessionId) || 0) + 1);
+      /* A TALLY BY KIND, not just a total. Asked for: "maybe from the saved sessions i can see more
+         detail (tally of marks)". A total of eleven does not say whether a sit is usable — eleven
+         marks all of one kind cannot support any comparison between kinds, and that is exactly the
+         analysis these marks exist for. The breakdown makes an unusable sit visible in the list
+         instead of after an export.
+         Keyed on whatever the note actually carries, in the order the app itself prefers: the tap
+         category first (that is what the arrow keys write), then the transition, then the mark kind. */
+      const kind = n.tapCategory || n.transition || n.markKind || n.kind || 'mark';
+      if (!byKind.has(n.sessionId)) byKind.set(n.sessionId, new Map());
+      const m = byKind.get(n.sessionId);
+      m.set(kind, (m.get(kind) || 0) + 1);
     }
     return all
-      .map((m) => Object.assign({}, m, { markCount: counts.get(m.id) || 0 }))
+      .map((m) => Object.assign({}, m, {
+        markCount: counts.get(m.id) || 0,
+        // Plain array of [kind, count], commonest first, so the caller does no sorting and the
+        // structure survives being cloned or serialised — a Map would not.
+        markTally: Array.from((byKind.get(m.id) || new Map()).entries())
+          .sort((x, y) => y[1] - x[1]),
+      }))
       .sort((a, b) => b.startedAt - a.startedAt);
   }
 
