@@ -24,6 +24,21 @@
     <button class="place" id="placeTrain">Train</button>
     <a class="place" href="lab.html" target="_blank" rel="noopener">Lab</a>
   </nav>
+  <!--
+    NAME THE SIT, ALWAYS ON SCREEN.
+
+    Asked for: "a permanent area to label the whole sit. Not inside a panel that has to be opened —
+    always on screen. The general note is how sits get named, so it must be as easy as marking."
+
+    In the bar rather than in a panel because that is the whole point — it has to be reachable without
+    a decision. One line here, and the longer reflection still has its textarea on the summary; both
+    write ONE note, so the lab has one candidate name for the sit rather than two. See saveSitNoteFrom.
+  -->
+  <label id="sitLabelWrap" title="What is true of this whole sit? This is what names it in the lab.">
+    <input id="sitLabel" placeholder="name this sit — how is it going?" maxlength="200"
+      autocomplete="off" />
+    <span id="sitLabelState" class="dim"></span>
+  </label>
   <div id="barStatus" class="dim"></div>
 </header>
 <canvas id="gl"></canvas>
@@ -107,7 +122,11 @@
         <button id="noteSave">Save</button>
       </div>
       <div id="noteList"></div>
-      <div id="arrowEditor"></div>
+      <!-- The arrow-key assignment used to live here and has moved into the mark bar, as asked:
+           "the arrow key assignment makes much more sense from the Mark panel than the notes panel."
+           It is a control over what the marks are; having it here meant opening the panel for
+           writing prose in order to change a key that marks something else. -->
+
     </div>
   </div>
   <div id="dataPanel" class="panelClosed">

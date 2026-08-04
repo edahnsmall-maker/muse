@@ -62,6 +62,32 @@
    * Vertically the lower bound stays at 0 rather than going negative: the drag grip is at the TOP of
    * a panel, so a tall panel pushed up loses the only handle that could bring it back.
    */
+  /*
+   * ROUNDED INWARD, and that is not a detail.
+   *
+   * This used to be Math.round(clamp(...)), which rounds a value pinned to a bound straight back
+   * across it. Panel heights are fractional — text wraps, borders land on half pixels — so with
+   * vh = 800 and h = 287.5 the maximum y is 512.5, Math.round makes it 513, and the panel's bottom
+   * edge is at 800.5. One pixel outside the viewport, from the function whose entire job is keeping
+   * panels inside it.
+   *
+   * Found because a one-line caption added to the live feed grew that panel by a pixel and turned a
+   * silent off-by-one into a failing assertion. It had been wrong the whole time; nothing had been
+   * exactly on the boundary before.
+   *
+   * So the bounds are floored/ceiled toward the inside BEFORE the value is rounded to them. Both
+   * cases still fall out of the one expression, including a panel wider than the viewport, where minX
+   * is negative and ceiling it moves toward zero.
+   */
+  function clampRound(v, lo, hi) {
+    const inLo = Math.ceil(lo);
+    const inHi = Math.floor(hi);
+    // A gap narrower than a whole pixel: prefer the lower bound, which for y is the side carrying
+    // the drag grip. Losing the grip is unrecoverable; losing a pixel at the bottom is not.
+    if (inHi < inLo) return inLo;
+    return Math.min(inHi, Math.max(inLo, Math.round(Math.min(hi, Math.max(lo, v)))));
+  }
+
   function clampPosition({ x, y, w, h, vw, vh }) {
     const fitsX = vw - w;
     const minX = Math.min(0, fitsX);
@@ -69,8 +95,8 @@
     const minY = 0;
     const maxY = Math.max(0, vh - h);
     return {
-      x: Math.round(Math.min(maxX, Math.max(minX, x))),
-      y: Math.round(Math.min(maxY, Math.max(minY, y))),
+      x: clampRound(x, minX, maxX),
+      y: clampRound(y, minY, maxY),
     };
   }
 

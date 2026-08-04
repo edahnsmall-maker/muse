@@ -2871,10 +2871,23 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       await press({ key: 'T', shiftKey: true });
       const afterShift = trainingMode;
       await press({ key: 'T', shiftKey: true });        // back off
+      /* PAST THE DOUBLE-TAP WINDOW FIRST. ArrowRight above is also Thinking, and a T within
+         Probes.DOUBLE_TAP_MS of it is now the deep-thinking gesture — which removes the first mark and
+         adds one, for no net change in length. That is correct behaviour and it made this assertion
+         read as "plain T did nothing". Waiting clears the gesture so this measures what it means to. */
+      await new Promise((r) => setTimeout(r, Probes.DOUBLE_TAP_MS + 150));
       const beforePlain = markerLog.length;
       await press({ key: 't' });
       const plainTapped = markerLog.length - beforePlain;
       const plainKind = markerLog.list()[markerLog.length - 1].kind;
+
+      /* AND THE GESTURE ITSELF: a second T straight after the one above must REPLACE it rather than
+         add to it. Two marks 400ms apart recorded as two separate returns to thinking is a count the
+         analysis cannot afford to get wrong — explore.js compares marks by counting them. */
+      const beforeDouble = markerLog.length;
+      await press({ key: 't' });
+      const doubleDelta = markerLog.length - beforeDouble;
+      const doubleKind = markerLog.list()[markerLog.length - 1].kind;
 
       const id = recSession && recSession.id;
       const stored = id ? await Recorder.listNotes(recDb, id) : [];
@@ -2890,7 +2903,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         && markerLog.list()[markerLog.length - 1].kind === 'drowsy';
 
       return { prevented, arrowKinds, trainBefore, afterShift, drowsyRecorded,
-        plainTapped, plainKind, cuesOn: cueEngine.enabled,
+        plainTapped, plainKind, doubleDelta, doubleKind, cuesOn: cueEngine.enabled,
         cuePill: document.getElementById('cueToggle').textContent,
         storedKinds: stored.filter((n) => n.transition).map((n) => n.transition) };
     });
@@ -2907,6 +2920,12 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(out.afterShift, true, 'Shift+T must toggle Training');
     assert.strictEqual(out.plainTapped, 1,
       'plain T must record a tap, not toggle Training — it is the most-pressed category');
+    /* DOUBLE-TAP T = DEEP THINKING, and it must REPLACE the first mark. A net zero change in the
+       marker count is the whole point: one event, one mark. */
+    assert.strictEqual(out.doubleDelta, 0,
+      `a second T must replace the first mark, not add one (count moved by ${out.doubleDelta})`);
+    assert.strictEqual(out.doubleKind, 'deep-thinking',
+      `and the surviving mark must be deep thinking (got ${out.doubleKind})`);
     assert.strictEqual(out.plainKind, 'lost', 'and that tap is Thinking');
     // Drowsy is markable. Dullness is not restlessness and not absorption, and on the EEG
     // side it is the state most easily mistaken for calm — theta and alpha both rise as you
@@ -3630,7 +3649,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const afterInnerDrag = el.getBoundingClientRect();
 
       return {
-        dx: Math.round(to.left - from.left), dy: Math.round(to.top - from.top),
+        dx: to.left - from.left, dy: to.top - from.top,
         saved: saved ? JSON.parse(saved) : null,
         resetBack: Math.abs(reset.left - from.left) < 2 && Math.abs(reset.top - from.top) < 2,
         clearedStore,
@@ -3639,8 +3658,20 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     });
 
     assert.ok(!out.noGrip, 'every draggable panel must carry a grip to drag it by');
-    assert.strictEqual(out.dx, 120, `dragging right 120px must move the panel 120px (got ${out.dx})`);
-    assert.strictEqual(out.dy, -80, `and up 80px (got ${out.dy})`);
+    /*
+     * WITHIN A PIXEL, not exactly. A panel's starting position comes from the stylesheet and is
+     * routinely fractional — this one starts at top 412.5 — while Panels.place writes whole pixels, so
+     * a 80px drag from a half-pixel start legitimately lands 79.5px away.
+     *
+     * This was asserted as an exact integer and passed by luck. Adding one line of caption to the live
+     * feed changed that panel's height by a pixel, moved its stylesheet position by half of one, and
+     * the assertion failed with no drag bug anywhere near it. The property worth pinning is that the
+     * panel follows the pointer; a drag that is actually broken misses by tens of pixels or by all of
+     * them, never by half.
+     */
+    assert.ok(Math.abs(out.dx - 120) <= 1,
+      `dragging right 120px must move the panel 120px (got ${out.dx})`);
+    assert.ok(Math.abs(out.dy - (-80)) <= 1, `and up 80px (got ${out.dy})`);
     assert.ok(out.saved && Number.isFinite(out.saved.x),
       `the position must persist, got ${JSON.stringify(out.saved)}`);
     assert.ok(out.resetBack, 'double-clicking the grip must put the panel back where it started');

@@ -122,5 +122,50 @@ const VW = 1280, VH = 800;
   assert.strictEqual(Panels.load('x', hostile), null);
 }
 
+/*
+ * A CLAMPED PANEL MUST NOT LAND OUTSIDE THE VIEWPORT, EVER — including when its size is fractional.
+ *
+ * The bug: Math.round(clamp(...)) rounds a value pinned to a bound back across it. Panel heights are
+ * fractional because text wraps and borders land on half pixels, so vh 800 with h 287.5 gave a maximum
+ * y of 512.5, rounded to 513, putting the bottom edge at 800.5 — one pixel outside, from the function
+ * whose only job is keeping panels inside.
+ *
+ * It had always been wrong; nothing had happened to sit exactly on the boundary. Adding a one-line
+ * caption to the live feed grew that panel by a pixel and turned it into a failure.
+ */
+{
+  const vw = 1280, vh = 800;
+  // Every half-pixel height across a range, each asked to sit as low as it can.
+  for (let h = 100; h < 400; h += 0.5) {
+    const { y } = Panels.clampPosition({ x: 0, y: 99999, w: 300, h, vw, vh });
+    assert.ok(Number.isInteger(y), `y must be a whole pixel, got ${y} for h ${h}`);
+    assert.ok(y >= 0, `y must not go negative (h ${h})`);
+    assert.ok(y + h <= vh,
+      `a clamped panel must stay inside: y ${y} + h ${h} = ${y + h} exceeds vh ${vh}`);
+  }
+  // The same on the horizontal axis, both narrower and wider than the viewport.
+  for (let w = 200; w < 1400; w += 0.5) {
+    const { x } = Panels.clampPosition({ x: 99999, y: 0, w, h: 200, vw, vh });
+    assert.ok(Number.isInteger(x), `x must be a whole pixel, got ${x} for w ${w}`);
+    if (w <= vw) {
+      assert.ok(x >= 0 && x + w <= vw,
+        `a panel narrower than the viewport must fit: x ${x} + w ${w} vs vw ${vw}`);
+    } else {
+      // A panel wider than the viewport cannot fit; it must span it rather than leaving a gap.
+      assert.ok(x <= 0 && x + w >= vw,
+        `a panel wider than the viewport must span it: x ${x} + w ${w} vs vw ${vw}`);
+    }
+  }
+  // Dragged the other way, a panel must not be rounded off the top or the left either.
+  for (let h = 100.5; h < 300; h += 1) {
+    assert.strictEqual(Panels.clampPosition({ x: 0, y: -99999, w: 300, h, vw, vh }).y, 0,
+      'the top bound is exact — the drag grip is up there and losing it is unrecoverable');
+  }
+  // A panel taller than the viewport keeps its grip on screen rather than centring the overflow.
+  assert.strictEqual(Panels.clampPosition({ x: 0, y: 500, w: 300, h: 900.5, vw, vh }).y, 0,
+    'a panel taller than the viewport must stay pinned to the top');
+  console.log('✓ clamping rounds INWARD: no fractional panel size can put a panel outside the viewport');
+}
+
 console.log('✓ panel positions stay reachable, round-trip, and refuse junk');
 console.log('\nAll panel tests passed.');

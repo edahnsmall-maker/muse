@@ -882,19 +882,36 @@ function renderSitNote() {
     + `</div>`;
 }
 
-function wireSitNote() {
-  const box = document.getElementById('sitNote');
-  if (!box) return;
-  const state = document.getElementById('sitNoteState');
-  const say = (t) => { if (state) state.textContent = t; };
-  // Debounced, because saving on every keystroke means a transaction per character. Two
-  // seconds is short enough that closing the screen mid-thought does not lose the sentence,
-  // and `blur` catches the case where it does.
-  const save = async () => {
-    const text = box.value.trim();
-    sitNoteText = text;
-    const sess = recSession || lastRecSession;
-    if (!sess) { say('not recording — this note cannot be saved'); return; }
+/*
+ * ONE WHOLE-SIT NOTE, WRITTEN FROM TWO PLACES.
+ *
+ * "A permanent area to label the whole sit. Not inside a panel that has to be opened — always on
+ * screen. The general note is how sits get named, so it must be as easy as marking."
+ *
+ * It was only on the end-of-sit summary, which is the wrong moment for two reasons: the sentence you
+ * would write is clearest while the sit is still happening, and the lab names every sit by this note
+ * (see listAppSits) — so a sit that ended without one is a row in a list called by its date.
+ *
+ * There are now two inputs for it: a one-line field always on screen, and the textarea on the summary
+ * for the longer reflection. ONE NOTE behind both, sharing sitNoteId. Two notes would mean two
+ * candidate names for the same sit and the lab picking whichever it saw first.
+ */
+function saveSitNoteFrom(el, say) {
+  const text = el.value.trim();
+  sitNoteText = text;
+  // Keep the other field in step, so the summary does not show a stale copy of what is on screen.
+  for (const other of [document.getElementById('sitNote'), document.getElementById('sitLabel')]) {
+    if (other && other !== el && other.value !== text) other.value = text;
+  }
+  const sess = recSession || lastRecSession;
+  if (!sess) {
+    /* SAID, NOT SWALLOWED. Typing a name with nothing recording used to look identical to typing one
+       that was saved, and this is the field the lab names sits by — so losing it silently costs the
+       name of the sit. */
+    say('not recording — press Record and this will be saved');
+    return Promise.resolve();
+  }
+  return (async () => {
     try {
       if (sitNoteId == null) {
         if (!text) return;                 // nothing typed yet; do not create an empty note
@@ -906,13 +923,42 @@ function wireSitNote() {
     } catch (err) {
       say(`could not save: ${(err && err.message) || 'unknown'}`);
     }
-  };
+  })();
+}
+
+// Debounced, because saving on every keystroke means a transaction per character. Two seconds is
+// short enough that closing the screen mid-thought does not lose the sentence, and `blur` catches
+// the case where it does.
+function wireSitNoteField(box, state) {
+  if (!box || box.dataset.wired) return;
+  box.dataset.wired = '1';
+  const say = (t) => { if (state) state.textContent = t; };
+  let timer = null;
+  const save = () => saveSitNoteFrom(box, say);
   box.addEventListener('input', () => {
     say('…');
-    clearTimeout(sitNoteTimer);
-    sitNoteTimer = setTimeout(save, 2000);
+    clearTimeout(timer);
+    timer = setTimeout(save, 2000);
   });
-  box.addEventListener('blur', () => { clearTimeout(sitNoteTimer); save(); });
+  box.addEventListener('blur', () => { clearTimeout(timer); save(); });
+  // Off the global shortcuts, or typing "t" in the name of a sit would mark Thinking.
+  box.addEventListener('keydown', (e) => {
+    e.stopPropagation();
+    if (e.key === 'Enter' && box.tagName === 'INPUT') { e.preventDefault(); box.blur(); }
+  });
+}
+
+function wireSitNote() {
+  wireSitNoteField(document.getElementById('sitNote'), document.getElementById('sitNoteState'));
+}
+
+/* The always-on-screen one. Wired once at boot to a node that lives for the life of the page, and
+   kept in step with sitNoteText so it shows the name after a reload mid-sit. */
+function wireSitLabel() {
+  const box = document.getElementById('sitLabel');
+  if (!box) return;
+  wireSitNoteField(box, document.getElementById('sitLabelState'));
+  if (box.value !== sitNoteText) box.value = sitNoteText;
 }
 
 function renderMarkerEditor() {
@@ -3245,8 +3291,48 @@ async function markTransition(key) {
  */
 let pendingGrade = null;   // { noteId, category, until }
 
+/*
+ * THE PREVIOUS TAP, so a second press of the same key within the window can upgrade it.
+ *
+ * "Double-tap Thinking = deep thinking." The second press REPLACES the first rather than adding to
+ * it, which is the part that has to be right: two marks 400ms apart recorded as two separate returns
+ * to thinking is a count this dataset cannot afford to get wrong, because the marks-versus-marks
+ * comparison in explore.js is built entirely on counts.
+ *
+ * The decision itself is in Probes.doubleTap, pure and tested. This holds only the state it needs.
+ */
+let lastTap = null;        // { key, at, markId, noteId }
+
 async function markTap(tap) {
   const tSec = sessionTSec();
+  const now = Date.now();
+
+  /* WHAT THIS PRESS MEANS, given the one before it. */
+  const decided = Probes.doubleTap(tap.key, {
+    lastKey: lastTap && lastTap.key, lastAt: lastTap && lastTap.at,
+    lastId: lastTap && lastTap.markId, at: now,
+  });
+  if (decided.upgraded) {
+    const upgraded = Probes.TAP_BY_KEY[decided.category];
+    /* UNDO THE FIRST PRESS, in both places it landed. The on-screen mark and the stored note are
+       separate records of one event, and leaving either behind would mean the tally on screen and
+       notes.csv disagreed about how many times thinking was marked. */
+    if (decided.replaces != null) markerLog.remove(decided.replaces);
+    if (lastTap && lastTap.noteId != null && recDb) {
+      /* Best effort, through recDb — the same handle the Notes panel deletes with. A failed delete
+         must not cost the upgraded mark: a duplicate note is recoverable from the timestamps, a
+         missing mark is not. Said out loud in the console if it happens. */
+      try {
+        await Recorder.deleteNote(recDb, lastTap.noteId);
+      } catch (err) {
+        console.log('[mark] could not remove the upgraded tap’s first note:', err && err.message);
+      }
+    }
+    lastTap = null;
+    // Recurse once, with the upgraded category, so there is one implementation of writing a mark.
+    if (upgraded) return markTap(upgraded);
+  }
+
   const mark = markerLog.add(tSec, { kind: tap.key, note: null });
   renderMarkCount();
   markFlashEl.classList.add('on');
@@ -3262,6 +3348,9 @@ async function markTap(tap) {
     // So context typed at the summary reaches notes.csv and not just the report.
     if (noteId != null) markerLog.setNoteId(mark.id, noteId);
   }
+  /* Remembered AFTER the write, with the note id, so an upgrade has both records to undo. Set here
+     rather than at the top of the function because the note id does not exist until now. */
+  lastTap = { key: tap.key, at: now, markId: mark.id, noteId };
   if (tap.grades && noteId != null) {
     pendingGrade = { noteId, category: tap.key, until: Date.now() + 4000 };
     setStatus(`${tap.label} \u00b7 ${tap.grades.map((g) => `${g.value}=${g.label}`).join(' ')}`);
@@ -3565,17 +3654,27 @@ function renderArmedBar() {
      two pieces of furniture for one sentence, and the clock itself was not wanted:
      an elapsed-time readout is a thing to watch, which is the opposite of what a sit
      needs. The sentence belongs with the keys it is talking about. */
+  /* PRIMARY_TAP_CATEGORIES, not TAP_CATEGORIES. Deep thinking is reached by pressing T twice and has
+     no letter of its own; listing it here would show a row with an empty key and invite pressing both
+     it and Thinking for one event, which splits one state's marks across two buckets. It is announced
+     under Thinking instead, where the gesture is. */
   armedBarEl.innerHTML = '<div class="armedHint">press <b>M</b> to mark</div>'
-    + Probes.TAP_CATEGORIES.map((t) =>
-    `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
-    + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}${t.arrow
-      ? ` ${arrowGlyphFor(t)}` : ''}</b>${escapeHtml(t.label)}`
-    + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('');
+    + Probes.PRIMARY_TAP_CATEGORIES.map((t) => {
+      const dbl = Probes.DOUBLE_TAP_OF[t.key];
+      return `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
+      + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}${t.arrow
+        ? ` ${arrowGlyphFor(t)}` : ''}</b>${escapeHtml(t.label)}`
+      + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}`
+      // The gesture, said where the key is. A double-tap nobody knows about is a feature nobody has.
+      + `${dbl ? ` <i style="opacity:.5">×2 = ${escapeHtml(dbl.label.toLowerCase())}</i>` : ''}</span>`;
+    }).join('')
+    + renderArrowEditorHtml();
   ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
   renderMarkCount();       // the hint carries the tally, and was just rebuilt with it
   armedBarEl.querySelectorAll('[data-arm]').forEach((el) => {
     el.addEventListener('click', () => { armedTap = el.dataset.arm; renderArmedBar(); });
   });
+  wireArrowEditor(armedBarEl);
 }
 
 function fireProbe(due) {
@@ -3964,12 +4063,23 @@ function arrowGlyphFor(tap) {
  * The four arrows are the only marks that can be made without looking at anything, so which categories
  * they carry is worth choosing rather than inheriting. One text box per arrow, holding the keyboard
  * letter of the category it should mark; empty unbinds it.
+ *
+ * IT LIVES IN THE MARK PANEL NOW, not in Notes. Asked for directly: "the arrow key assignment makes
+ * much more sense from the Mark panel than the notes panel." Obviously right — it is a control over
+ * what the marks are, and it sat in the panel for writing prose, which meant opening Notes mid-sit to
+ * change a key that marks something else.
+ *
+ * SPLIT INTO MARKUP AND WIRING because the mark bar rebuilds its whole innerHTML on every render, so
+ * the editor has to be part of that string rather than something injected into a host afterwards —
+ * otherwise every re-render would wipe it.
  */
-function renderArrowEditor(host) {
-  if (!host) return;
+function renderArrowEditorHtml() {
   const map = Probes.readArrowMap();
-  const letters = Probes.TAP_CATEGORIES.map((t) => `${t.kbd} = ${t.label}`).join(' · ');
-  host.innerHTML = `<div class="sideHead" style="margin-bottom:6px">Arrow keys</div>`
+  /* Only categories with a letter. Deep thinking has none — it is the double-tap of Thinking — and
+     listing "null = Deep thinking" in the key legend would be worse than omitting it. */
+  const letters = Probes.PRIMARY_TAP_CATEGORIES.map((t) => `${t.kbd} = ${t.label}`).join(' · ');
+  return `<div class="arrowEditor">`
+    + `<div class="sideHead" style="margin-bottom:6px">Arrow keys</div>`
     + `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">`
     + Probes.ARROWS.map((a) => `<label style="display:flex;gap:5px;align-items:center">`
       + `<span style="font:15px ui-monospace,monospace">${Probes.ARROW_GLYPH[a]}</span>`
@@ -3978,7 +4088,11 @@ function renderArrowEditor(host) {
       + `></label>`).join('')
     + `</div><div style="font-size:11.5px;opacity:.6;margin-top:8px;line-height:1.5">`
     + `Type the letter of the mark each arrow should make; leave one blank to unbind it.<br>`
-    + `${escapeHtml(letters)}</div>`;
+    + `${escapeHtml(letters)}</div></div>`;
+}
+
+function wireArrowEditor(host) {
+  if (!host) return;
   host.querySelectorAll('[data-arrowkey]').forEach((input) => {
     // Kept off the global shortcuts, or typing a letter here would also fire the mark it names.
     input.addEventListener('keydown', (e) => e.stopPropagation());
@@ -3993,10 +4107,13 @@ function renderArrowEditor(host) {
       host.querySelectorAll('[data-arrowkey]').forEach((el) => {
         el.value = saved[el.dataset.arrowkey] || '';
       });
-      renderArmedBar();
-      renderPatternBar();
       setStatus('arrow keys updated');
       statusLockUntil = Date.now() + 1600;
+      /* renderPatternBar only. Re-rendering the ARMED bar from here would destroy the input that is
+         mid-blur and, on a `change` followed by a `blur`, run this twice against a detached node. The
+         glyphs it would refresh are in the same string this editor lives in, so they are already
+         redrawn on the next tick. */
+      renderPatternBar();
     };
     input.addEventListener('change', apply);
     input.addEventListener('blur', apply);
@@ -4032,7 +4149,6 @@ function toggleNotes(force) {
   renderNotesPanel();
   if (!notesOpen) return;
   renderNoteList();
-  renderArrowEditor(document.getElementById('arrowEditor'));
   const box = document.getElementById('noteBox');
   if (box) box.focus();
 }
@@ -4615,6 +4731,9 @@ addEventListener('resize', () => {
    declared halfway down this file — and anything above that declaration reads it inside its temporal
    dead zone and throws. Two of this project's three total outages were exactly that. */
 renderPlaces();
+/* The always-on-screen sit name. Wired here for the same reason: it reads `sitNoteText`, another `let`
+   declared partway down this file, so wiring it earlier would touch it in its temporal dead zone. */
+wireSitLabel();
 
 if (SIM_ACTIVE) {
   setTimeout(() => { connect(); }, 200);

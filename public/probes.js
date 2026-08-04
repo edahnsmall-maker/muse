@@ -142,6 +142,33 @@
       grades: null,
     },
     {
+      /*
+       * DEEP THINKING, reached by pressing T twice quickly rather than by its own letter.
+       *
+       * Asked for as a distinct category, and the double-tap is the right gesture for it: Thinking is
+       * the most-pressed mark by a distance, and being deep in it is a different report from noticing
+       * a passing thought. Giving it a letter of its own would mean choosing between two letters at
+       * the moment of noticing, which is exactly when there is least attention to spare.
+       *
+       * A DISTINCT CATEGORY, NOT A GRADE. Grades on `restless` are an intensity of one state; this is
+       * closer to a different one — a thought you surfaced from rather than one you watched go past —
+       * and the whole reason for separate categories is that a single scale cannot tell those apart.
+       *
+       * The second press REPLACES the first rather than adding to it: see Probes.doubleTap. Two marks
+       * 400ms apart would otherwise be recorded as two separate returns to thinking, which is a count
+       * this data cannot afford to have wrong — the marks-versus-marks comparison is built on counts.
+       *
+       * No arrow by default. It is reachable by double-tapping whichever arrow carries Thinking, which
+       * falls out of the aliasing for free.
+       */
+      key: 'deep-thinking', kbd: null, label: 'Deep thinking',
+      hint: 'surfaced from a long one — press T twice quickly, rather than T once',
+      // Never offered as a first-class choice in the mark bar: it is the double-tap of another
+      // category, and listing it beside Thinking would invite pressing both.
+      viaDoubleTap: 'lost',
+      grades: null,
+    },
+    {
       key: 'returned', kbd: 'R', label: 'Returned to the object', arrow: 'ArrowLeft',
       hint: 'back on the breath or whatever you are holding',
       grades: null,
@@ -182,7 +209,57 @@
   ];
 
   const TAP_BY_KEY = TAP_CATEGORIES.reduce((m, t) => { m[t.key] = t; return m; }, {});
-  const TAP_BY_KBD = TAP_CATEGORIES.reduce((m, t) => { m[t.kbd] = t; return m; }, {});
+  /* Only categories that HAVE a letter. A double-tap category has kbd null, and without this guard
+     it would be indexed under the string "null" and answer to nothing — or worse, shadow a real
+     lookup if another ever shared that fate. */
+  const TAP_BY_KBD = TAP_CATEGORIES.reduce((m, t) => {
+    if (t.kbd) m[t.kbd] = t;
+    return m;
+  }, {});
+  /* The categories a mark bar should offer: everything reachable by a deliberate keystroke. A
+     double-tap category is deliberately absent — it is a gesture on another category, and listing it
+     alongside would invite pressing both for one event. */
+  const PRIMARY_TAP_CATEGORIES = TAP_CATEGORIES.filter((t) => !t.viaDoubleTap);
+  // Which category a double-tap of `key` should produce, or null if none does.
+  const DOUBLE_TAP_OF = TAP_CATEGORIES.reduce((m, t) => {
+    if (t.viaDoubleTap) m[t.viaDoubleTap] = t;
+    return m;
+  }, {});
+
+  /*
+   * DOUBLE-TAP WINDOW. Two presses of the same category inside this become one mark of the
+   * double-tap category instead of two of the original.
+   *
+   * 1500ms because the gesture has to survive being made with the eyes closed and attention
+   * elsewhere, which is slower than a mouse double-click by a wide margin. The cost of it being
+   * generous is that two genuine, separate notices of thinking 1.4s apart collapse into one — and
+   * that is the right way to be wrong here, because noticing twice in 1.4 seconds is almost always
+   * one event being reported twice.
+   */
+  const DOUBLE_TAP_MS = 1500;
+
+  /*
+   * Decide what a tap means given the tap before it.
+   *
+   * PURE, and here rather than in the key handler, because it is the part that can be got subtly
+   * wrong: the second press must REPLACE the first, not add to it. Two marks 400ms apart recorded as
+   * two separate returns to thinking is a count this dataset cannot afford to have wrong — the
+   * marks-versus-marks comparison in explore.js is built entirely on counts.
+   *
+   * Returns { category, replaces } where `replaces` is the id of the mark to remove, or null.
+   */
+  function doubleTap(catKey, { lastKey = null, lastAt = null, lastId = null, at = 0,
+    windowMs = DOUBLE_TAP_MS } = {}) {
+    const upgrade = DOUBLE_TAP_OF[catKey];
+    const inWindow = lastKey === catKey && lastAt != null && (at - lastAt) <= windowMs
+      && (at - lastAt) >= 0;
+    if (upgrade && inWindow) {
+      return { category: upgrade.key, replaces: lastId == null ? null : lastId, upgraded: true };
+    }
+    /* A THIRD press does not climb further. There is no category above deep thinking, and treating
+       press three as a fresh single tap means holding the key down cannot manufacture marks. */
+    return { category: catKey, replaces: null, upgraded: false };
+  }
   /*
    * ARROWS for the four most-used categories, asked for so the common taps can be reached
    * without finding a letter with your eyes shut:
@@ -410,6 +487,7 @@
   return {
     RESPONSES, RESPONSE_BY_KEY, RESPONSE_BY_KBD,
     TAP_CATEGORIES, TAP_BY_KEY, TAP_BY_KBD, TAP_BY_ARROW, ARROW_GLYPH,
+    PRIMARY_TAP_CATEGORIES, DOUBLE_TAP_OF, DOUBLE_TAP_MS, doubleTap,
     ARROWS, ARROW_STORE_KEY, readArrowMap, writeArrowMap, tapForArrow,
     DEFAULTS, schedule, dueProbe, windowFor, unitsFromProbes, metaAwarenessGap,
     seededRandom,

@@ -549,7 +549,28 @@
     display: flex; align-items: center; gap: 18px; padding: 0 16px;
     background: linear-gradient(180deg, rgba(5,8,18,.82), rgba(5,8,18,0));
     pointer-events: none; }
-  #appBar .brand, #appBar #places { pointer-events: auto; }
+  #appBar .brand, #appBar #places, #appBar #sitLabelWrap { pointer-events: auto; }
+  /* NAME THE SIT. Quiet until touched — it is on screen for the whole sit, so it must not compete
+     with the visual. `margin-left: auto` puts it after the places and before the status, and it is
+     the only flexible item in the bar so it takes the slack. */
+  #sitLabelWrap { margin-left: auto; display: flex; align-items: center; gap: 8px;
+    flex: 0 1 340px; min-width: 0; }
+  #sitLabel { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 12.5px; padding: 5px 10px;
+    border-radius: 9px; color: rgba(255,255,255,.88);
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10);
+    transition: background .18s, border-color .18s; }
+  #sitLabel::placeholder { color: rgba(255,255,255,.34); }
+  #sitLabel:hover { background: rgba(255,255,255,.08); }
+  #sitLabel:focus { outline: none; background: rgba(255,255,255,.11);
+    border-color: rgba(125,211,252,.45); }
+  #sitLabelState { font-size: 10.5px; flex: 0 0 auto; white-space: nowrap; }
+  /* The bar is 44px and the name is the first thing to give up room on a phone, where the visual
+     matters more and the summary's textarea is still there for it. */
+  @media (max-width: 720px) { #sitLabelWrap { display: none; } }
+  /* The arrow-key assignment, now inside the mark bar. Its own line under the categories, separated,
+     because it is a setting rather than one of the things you press. */
+  .arrowEditor { flex-basis: 100%; margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,.09); }
   #appBar .brand { font-size: 14px; font-weight: 600; letter-spacing: .02em;
     color: rgba(255,255,255,.82); }
   #appBar .brand .mark { color: #7dd3fc; margin-right: 4px; }

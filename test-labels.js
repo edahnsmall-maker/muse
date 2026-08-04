@@ -120,12 +120,20 @@ const Labels = require('./public/labels.js');
 //    `lost` because they are different moments.
 {
   assert.ok(Labels.TRANSITIONS.length >= 4);
-  const kbds = Labels.TRANSITIONS.map((t) => t.kbd);
+  /* KEYED transitions only. Deep thinking is reached by double-tapping Thinking rather than by a
+     letter, so it has kbd null — but it still needs a row in this table, because this is what names a
+     mark in notes.csv and in the report, and a category the export cannot name lands in the data as a
+     bare key. Every OTHER invariant here still applies to it, and is checked below. */
+  const keyed = Labels.TRANSITIONS.filter((t) => t.kbd != null);
+  const kbds = keyed.map((t) => t.kbd);
   assert.strictEqual(new Set(kbds).size, kbds.length, 'no two transitions may share a key');
-  for (const t of Labels.TRANSITIONS) {
+  for (const t of keyed) {
     assert.match(t.kbd, /^[A-Z]$/, `${t.key} must be a single letter to be usable eyes-closed`);
-    assert.ok(t.hint && t.hint.length > 10, `${t.key} needs a hint saying exactly what it marks`);
     assert.strictEqual(Labels.TRANSITION_BY_KBD[t.kbd], t);
+  }
+  for (const t of Labels.TRANSITIONS) {
+    assert.ok(t.label, `${t.key} must have a label — this table is what names it in the export`);
+    assert.ok(t.hint && t.hint.length > 10, `${t.key} needs a hint saying exactly what it marks`);
     assert.strictEqual(Labels.TRANSITION_BY_KEY[t.key], t);
   }
   assert.ok(Labels.TRANSITION_BY_KEY.returned && Labels.TRANSITION_BY_KEY.lost,
@@ -147,6 +155,9 @@ const Labels = require('./public/labels.js');
   for (const t of Labels.TRANSITIONS) {
     const tap = Probes.TAP_BY_KEY[t.key];
     assert.ok(tap, `labels.js knows "${t.key}" but probes.js does not — they must agree`);
+    /* The keys must match INCLUDING when both are null. A letterless category here paired with a
+       lettered one there would mean the app can make a mark the export names under a different
+       gesture, which is the same two-vocabularies-for-one-event drift this block exists to catch. */
     assert.strictEqual(tap.kbd, t.kbd,
       `"${t.key}" is ${t.kbd} in labels.js and ${tap.kbd} in probes.js`);
   }

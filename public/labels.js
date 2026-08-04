@@ -188,6 +188,18 @@
       hint: 'effortless, no object being held' },
     { key: 'lost', label: 'Thinking', kbd: 'T',
       hint: 'the moment of noticing you were gone' },
+    /*
+     * DEEP THINKING has no letter, because it is reached by pressing T twice quickly rather than by a
+     * key of its own — see the note on Probes.doubleTap. It still needs a row HERE, because this table
+     * is what names a mark in notes.csv and in the report, and a category the export cannot name would
+     * appear in the data as a bare key.
+     *
+     * `kbd: null` on purpose. It was tempting to give it a spare letter just to satisfy the table, and
+     * that would be a second way to make the mark — which splits one state's marks across two
+     * gestures, the exact failure the just-sitting/Being note describes avoiding.
+     */
+    { key: 'deep-thinking', label: 'Deep thinking', kbd: null,
+      hint: 'surfaced from a long one, rather than watching a thought go past' },
     { key: 'returned', label: 'Returned to the object', kbd: 'R',
       hint: 'back on the breath' },
     { key: 'returned-effortless', label: 'Returned to effortlessness', kbd: 'E',
