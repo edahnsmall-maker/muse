@@ -1165,18 +1165,28 @@ async function showTab(page, tab) {
       'and the failure handler must be installed before the first module can throw');
 
     const tabs = await pg.$$eval('.tab', (els) => els.map((e) => e.dataset.tab));
-    assert.deepStrictEqual(tabs, ['explore', 'sessions', 'compare', 'signals', 'learn'],
-      'five tabs, in order');
+    /* Your sits leads. See the note on the landing pane below: with nothing analysed until it is
+       asked for, a page that opens on a question opens on "not enough data". */
+    assert.deepStrictEqual(tabs, ['sessions', 'explore', 'compare', 'signals', 'learn'],
+      'five tabs, in order, with Your sits first');
     /* NO "My model" TAB. The mockup showed one, next to "Confidence 82%" and "Personalized model".
        Nothing here is fitted and there is no basis for 82, and a tab named for a thing that does not
        exist is worse than a missing tab. */
     assert.ok(!tabs.includes('model'), 'there must be no model tab, because there is no model');
 
-    // Explore is what you land on: a question, not the sixth-most-important table.
-    assert.strictEqual(await pg.$eval('.pane:not([hidden])', (e) => e.dataset.pane), 'explore',
-      'the lab must open on Explore');
+    /* YOUR SITS is what you land on, and it changed FROM Explore deliberately.
+       Leading with a question made sense while the lab analysed every sit on page load — the sits were
+       all read by the time you looked. Nothing is analysed until it is asked for now, so a question
+       asked on arrival can only answer "not enough data", which teaches the reader that the page never
+       has an answer. The first screen has to be the one that says what there is. */
+    assert.strictEqual(await pg.$eval('.pane:not([hidden])', (e) => e.dataset.pane), 'sessions',
+      'the lab must open on Your sits');
+    assert.match(await pg.$eval('#loaded h2', (e) => e.textContent), /your sits/i,
+      'and lead with what there is to look at');
+    await pg.click('.tab[data-tab="explore"]');
+    await pg.waitForTimeout(600);
     assert.match(await pg.$eval('#explore h2', (e) => e.textContent), /what do you want to understand/i,
-      'and lead with the question');
+      'Explore still leads with the question');
 
     /*
      * FOUR SITS WITH A PLANTED EFFECT, because the first version of this test used makeArchive() and
@@ -1280,7 +1290,8 @@ async function showTab(page, tab) {
     }
 
     // And the tabs must actually switch, each to its own content.
-    for (const [tab, heading] of [['sessions', /Your sits/], ['compare', /Whole sessions|Patterns/],
+    for (const [tab, heading] of [['explore', /what do you want to understand/i],
+      ['compare', /Whole sessions|Patterns/],
       ['signals', /alpha|Clip/i], ['learn', /What these numbers are/]]) {
       await pg.click(`.tab[data-tab="${tab}"]`);
       await pg.waitForTimeout(1200);
@@ -1309,9 +1320,169 @@ async function showTab(page, tab) {
       `the shell must render without errors:\n  ${shellErrors.join('\n  ')}`);
     await pg.close();
     await ctx.close();
-    console.log(`✓ five tabs, Explore first, ${ex.experiences.length} answerable experiences offered`
+    console.log(`✓ five tabs, Your sits first, ${ex.experiences.length} answerable experiences offered`
       + ' (none unanswerable), badges are counts not percentages, "not enough" never reads as "no'
       + ' effect", and Learn leads with what cannot be compared');
+  }
+
+  /* 16) THE LAB MUST OPEN INSTANTLY, AND THE SITS LIST MUST BE USEFUL WITH NOTHING ANALYSED.
+   *
+   * This is the test for the freeze, and its absence is why the freeze shipped: nothing here had ever
+   * loaded lab.html with the app's database already full. Reported as "the lab is still freezing even
+   * after a hard reload", and the hard reload is the tell — it was never a caching problem.
+   *
+   * The lab used to analyse the twelve most recent sits on page load. Analysing a sit means reading its
+   * raw EEG out of IndexedDB, rebuilding it into an archive, parsing that back, and running an alpha
+   * peak and a spectral series over the samples. Measured before the fix, in this same headless
+   * Chromium: 9.3s before a single row appeared for 8 sits of 30 minutes, 19.9s for 14 of 40 — and
+   * identical on the second and third load, because none of it was cached. On a phone that is minutes,
+   * and it grows with every sit recorded.
+   *
+   * WHAT IS ASSERTED, and why each one is the property that actually matters:
+   *
+   *   - the list appears fast, with EVERY recording in it. A fast page that lists nothing is not a fix.
+   *   - it is useful with nothing analysed: the sit's own general note as its name, its length, and its
+   *     mark tally by kind. Those decide which sits are worth reading, so they must not cost a read.
+   *   - the heavy work happens on demand and STAYS done. A sit analysed once must never be analysed
+   *     again, which is the difference between a one-off wait and a wait on every visit.
+   *
+   * Seeded straight into the app's object stores rather than by driving a recording: the shape is
+   * record.js's own (see its onupgradeneeded), and a 30-minute sit cannot be recorded in a test.
+   */
+  {
+    const ctx = await browser.newContext();
+    const pg = await ctx.newPage();
+    const bootErrors = [];
+    pg.on('pageerror', (e) => bootErrors.push(e.message));
+
+    const SITS = 6, MINUTES = 12;
+    await pg.goto(PAGE.replace('lab.html', 'direct.html'));
+    const seeded = await pg.evaluate(async ({ sits, minutes }) => {
+      const HZ = 256, FLUSH = 4;
+      const db = await Recorder.open();
+      let bytes = 0;
+      for (let s = 0; s < sits; s++) {
+        const startedAt = Date.UTC(2026, 5, 3 + s, 6, 30, 0);
+        const id = `seeded-${s}`;
+        const durationSec = minutes * 60;
+        const tx = db.transaction([Recorder.STORE_SESSIONS, Recorder.STORE_CHUNKS,
+          Recorder.STORE_NOTES], 'readwrite');
+        const chunks = tx.objectStore(Recorder.STORE_CHUNKS);
+        let seq = 0, sitBytes = 0;
+        for (let t = 0; t < durationSec; t += FLUSH) {
+          for (let ch = 0; ch < 4; ch++) {
+            const d = new Float32Array(HZ * FLUSH);
+            for (let i = 0; i < d.length; i++) {
+              const tt = t + i / HZ;
+              d[i] = 22 * Math.sin(2 * Math.PI * 10.1 * tt) + 14 * Math.sin(2 * Math.PI * 6 * tt)
+                + 40 * (Math.sin(i * 12.9898) * 43758.5453 % 1 - 0.5);
+            }
+            chunks.put({ sessionId: id, seq: seq++, kind: 'eeg', channel: ch, t0: t, hz: HZ, data: d });
+            sitBytes += d.byteLength;
+          }
+          const rows = [];
+          for (let i = 0; i < FLUSH; i++) {
+            rows.push({ t: t + i, epochMs: startedAt + (t + i) * 1000,
+              absoluteTime: new Date(startedAt + (t + i) * 1000).toISOString(),
+              calm: 0.5, thinking: 0.4, focus: 0.5, noise: 0.05, calmAbs: 0.4 });
+          }
+          chunks.put({ sessionId: id, seq: seq++, kind: 'row', t0: t, data: rows });
+        }
+        const notes = tx.objectStore(Recorder.STORE_NOTES);
+        // The general note: unanchored, and the thing the row is named by.
+        notes.put({ sessionId: id, at: startedAt + 900, offsetSec: null, anchored: false,
+          kind: 'general', text: `day ${s + 1} — scattered at first, then settled` });
+        for (let k = 0; k < 8; k++) {
+          notes.put({ sessionId: id, at: startedAt + (40 + k * 60) * 1000, offsetSec: 40 + k * 60,
+            kind: 'transition', transition: k % 2 ? 'lost' : 'returned',
+            tapCategory: k % 2 ? 'lost' : 'returned' });
+        }
+        tx.objectStore(Recorder.STORE_SESSIONS).put({ id, startedAt, eegHz: HZ, accHz: 50,
+          durationSec, bytes: sitBytes, ended: true, label: '' });
+        await new Promise((res, rej) => { tx.oncomplete = res; tx.onerror = () => rej(tx.error); });
+        bytes += sitBytes;
+      }
+      db.close();
+      return { bytes };
+    }, { sits: SITS, minutes: MINUTES });
+
+    const openAt = Date.now();
+    await pg.goto(PAGE);
+    await pg.waitForSelector('#loaded table tr.sesMain', { timeout: 30000 });
+    const firstPaint = Date.now() - openAt;
+
+    const listed = await pg.$$eval('#loaded table tr.sesMain', (rows) => rows.length);
+    assert.strictEqual(listed, SITS,
+      `every recording on the device must be listed (got ${listed} of ${SITS})`);
+    /* 6 seconds against a pre-fix 9.3s for a comparable load, in the same browser. Deliberately loose:
+       this is a "did the O(sits) work leave the boot path" check running on shared CI hardware, not a
+       benchmark. The pre-fix code cannot pass it — it did not paint a row for 9 seconds. */
+    assert.ok(firstPaint < 6000,
+      `the sits list must appear without analysing anything (took ${firstPaint}ms for`
+      + ` ${(seeded.bytes / 1e6).toFixed(0)}MB of EEG)`);
+
+    // Nothing analysed, and every row says so rather than showing a blank.
+    assert.strictEqual(await pg.$$eval('[data-analyse]', (b) => b.length), SITS,
+      'each unread sit must offer to be analysed');
+
+    // USEFUL WITH NOTHING READ. The note names the sit, and the tally is there to choose by.
+    const firstRow = await pg.$eval('#loaded table tr.sesMain', (tr) => ({
+      name: tr.children[1].textContent.replace(/\s+/g, ' ').trim(),
+      length: tr.children[3].textContent.trim(),
+      marks: tr.children[4].textContent.replace(/\s+/g, ' ').trim(),
+    }));
+    assert.match(firstRow.name, /scattered at first/,
+      `the sit must be named by its own general note (got "${firstRow.name}")`);
+    assert.match(firstRow.length, /^\d+:\d\d$/, `and show its length (got "${firstRow.length}")`);
+    assert.match(firstRow.marks, /\d+×/,
+      `and its mark tally by kind, with nothing analysed (got "${firstRow.marks}")`);
+
+    // ---- on demand, and it stays done ------------------------------------------------
+    const analyseAt = Date.now();
+    await pg.click('[data-analyse]');
+    /* Waited on the PROGRESS element emptying, not on the buttons vanishing. They vanish the instant
+       the run starts — the cell reads "waiting..." — so the obvious condition is true immediately and a
+       test that used it would navigate away mid-analysis. It did, and it read as a persistence bug. */
+    await pg.waitForFunction(() => {
+      const p = document.getElementById('analyseProgress');
+      return p && !p.innerHTML.trim();
+    }, null, { timeout: 90000 });
+    assert.strictEqual(await pg.$$eval('[data-analyse]', (b) => b.length), SITS - 1,
+      'the analysed sit must drop out of the unread list');
+    const analysed = await pg.$eval('#loaded table tr.sesMain', (tr) =>
+      tr.children[6].textContent.replace(/\s+/g, ' ').trim());
+    assert.ok(/complete|warning/i.test(analysed),
+      `an analysed row must carry a signal verdict (got "${analysed}")`);
+    console.log(`  analysed one ${MINUTES}-minute sit on demand in ${Date.now() - analyseAt}ms`);
+
+    // THE POINT: it must not be analysed again. This is what turns a per-load wait into a one-off.
+    const reloadAt = Date.now();
+    await pg.reload();
+    await pg.waitForSelector('#loaded table tr.sesMain', { timeout: 30000 });
+    const reloadMs = Date.now() - reloadAt;
+    assert.strictEqual(await pg.$$eval('[data-analyse]', (b) => b.length), SITS - 1,
+      'an already-analysed sit must not need analysing again after a reload');
+    assert.ok(reloadMs < 6000, `and the reload must still be immediate (took ${reloadMs}ms)`);
+
+    /* SETTING A SIT ASIDE PERSISTS. Pressing x used to drop it from memory and from the lab's store,
+       which worked until the next reload read it back off the device — so the sit returned and the
+       button read as broken. */
+    await pg.click('[data-exclude]');
+    await pg.waitForSelector('[data-include]', { timeout: 10000 });
+    await pg.reload();
+    await pg.waitForSelector('#loaded table tr.sesMain', { timeout: 30000 });
+    assert.strictEqual(await pg.$$eval('[data-include]', (b) => b.length), 1,
+      'a set-aside sit must stay set aside across a reload');
+    assert.strictEqual(await pg.$$eval('#loaded table tr.sesMain', (r) => r.length), SITS - 1,
+      'and must be out of the main list, without deleting the recording');
+
+    assert.deepStrictEqual(bootErrors, [],
+      `the lab must boot without errors:\n  ${bootErrors.join('\n  ')}`);
+    await pg.close();
+    await ctx.close();
+    console.log(`✓ the lab opens in ${firstPaint}ms with ${SITS} sits and`
+      + ` ${(seeded.bytes / 1e6).toFixed(0)}MB of EEG on the device, names each by its own note, shows`
+      + ` its mark tally with nothing analysed, analyses on demand, and never re-analyses`);
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

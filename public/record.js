@@ -269,8 +269,29 @@
     const notes = await promisify(tx.objectStore(STORE_NOTES).getAll());
     const counts = new Map();
     const byKind = new Map();
+    /*
+     * THE GENERAL NOTE, carried in the listing.
+     *
+     * "since i've been leaving notes that describe my general state of mind, it would be
+     * useful to see that to know what to add to the analysis." It is the best name a sit
+     * has — written at the one moment the sit is still fresh — and it costs nothing to
+     * include here, because this function already reads every note to count the marks.
+     *
+     * That it is free is the whole point. The lab used to get this by rebuilding each sit's
+     * archive from its raw EEG and re-parsing it, which is ~1.2 seconds per sit of work to
+     * recover a string that was two object stores away.
+     *
+     * The GENERAL one specifically: `anchored === false` means it describes the whole sit
+     * rather than a moment in it, and a timed mark's text would name the sit after one
+     * thing that happened inside it.
+     */
+    const general = new Map();
     for (const n of notes || []) {
       if (!n || n.sessionId == null) continue;
+      if ((n.anchored === false || n.anchored === 'no') && n.text && String(n.text).trim()
+          && !general.has(n.sessionId)) {
+        general.set(n.sessionId, String(n.text).trim().replace(/\s+/g, ' '));
+      }
       // What counts as a mark: anything that names a moment. Probe answers included —
       // they are labelled moments too — but not the closing whole-sit reflection, which
       // describes the sit rather than a point in it.
@@ -293,6 +314,9 @@
     return all
       .map((m) => Object.assign({}, m, {
         markCount: counts.get(m.id) || 0,
+        // '' rather than null for a sit with no general note: it is a name that was not
+        // written, not a reading that is missing, and every caller treats it as a string.
+        generalNote: general.get(m.id) || '',
         // Plain array of [kind, count], commonest first, so the caller does no sorting and the
         // structure survives being cloned or serialised — a Map would not.
         markTally: Array.from((byKind.get(m.id) || new Map()).entries())

@@ -138,6 +138,11 @@
       // Identity of the RECORDING rather than of the file — see the duplicate note in lab.html.
       // Persisted so a restored sit still rejects a re-dropped copy of itself.
       contentKey: session.contentKey || null,
+      /* WHICH RECORDING IN THE APP'S DATABASE this was analysed from, or null for a dropped
+       * archive. Persisted because it is what lets the sits list say "already analysed"
+       * without parsing anything — and needing to parse to find that out is precisely why
+       * the lab used to analyse every sit on every page load and freeze doing it. */
+      recorderId: session.recorderId || null,
       movement: session.movement || null,
       wholeStats: session.wholeStats || null,
       storedAt: session.storedAt || null,
@@ -148,7 +153,8 @@
   // downstream, or the views quietly behave differently depending on where the data came
   // from. The absent raw EEG is represented as four empty channels rather than missing.
   function rehydrate(stored) {
-    const s = Object.assign({ alpha: null, spectra: null, movement: null, wholeStats: null, label: '', contentKey: null }, stored);
+    const s = Object.assign({ alpha: null, spectra: null, movement: null, wholeStats: null,
+      label: '', contentKey: null, recorderId: null }, stored);
     s.read = Object.assign({ eeg: [[], [], [], []], acc: [], rr: [], audio: {}, markdown: '' },
       stored.read || {});
     return s;

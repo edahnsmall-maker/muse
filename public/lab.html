@@ -181,9 +181,18 @@
   <div class="barNote dim">Everything stays on this machine · works with no network</div>
 </header>
 
+<!--
+  YOUR SITS COMES FIRST, AND IT IS WHAT YOU LAND ON.
+
+  It used to be second, behind Explore. That was defensible when the lab analysed everything on load —
+  the sits were all read by the time you looked, so leading with a question made sense. It is not
+  defensible now: nothing is analysed until it is asked for, so the first screen has to be the one that
+  says what there is and lets you choose. A question asked before any sit has been read can only be
+  answered "not enough data", which is how the page taught its reader that it never has an answer.
+-->
 <nav id="tabs" role="tablist">
-  <button class="tab active" data-tab="explore" role="tab">Explore</button>
-  <button class="tab" data-tab="sessions" role="tab">Sessions</button>
+  <button class="tab active" data-tab="sessions" role="tab">Your sits</button>
+  <button class="tab" data-tab="explore" role="tab">Explore</button>
   <button class="tab" data-tab="compare" role="tab">Compare</button>
   <button class="tab" data-tab="signals" role="tab">Signals</button>
   <button class="tab" data-tab="learn" role="tab">Learn</button>
@@ -195,10 +204,10 @@
   <input type="file" id="file" multiple accept=".zip" hidden>
 </div>
 
-<section class="pane" data-pane="explore">
+<section class="pane" data-pane="explore" hidden>
   <div id="explore"></div>
 </section>
-<section class="pane" data-pane="sessions" hidden>
+<section class="pane" data-pane="sessions">
   <div id="loaded"></div>
   <!-- Pre-created so renderTimelines/renderTrials find a host instead of inserting one after the
        loaded list — which would land them in whichever pane happened to hold it. -->
@@ -248,20 +257,20 @@
   });
 }());
 </script>
-<script src="dsp.js?v=2026-08-04e"></script>
-<script src="movement.js?v=2026-08-04e"></script>
-<script src="labels.js?v=2026-08-04e"></script>
-<script src="trials.js?v=2026-08-04e"></script>
-<script src="import.js?v=2026-08-04e"></script>
-<script src="analysis.js?v=2026-08-04e"></script>
-<script src="findings.js?v=2026-08-04e"></script>
-<script src="explore.js?v=2026-08-04e"></script>
-<script src="labstore.js?v=2026-08-04e"></script>
+<script src="dsp.js?v=2026-08-04f"></script>
+<script src="movement.js?v=2026-08-04f"></script>
+<script src="labels.js?v=2026-08-04f"></script>
+<script src="trials.js?v=2026-08-04f"></script>
+<script src="import.js?v=2026-08-04f"></script>
+<script src="analysis.js?v=2026-08-04f"></script>
+<script src="findings.js?v=2026-08-04f"></script>
+<script src="explore.js?v=2026-08-04f"></script>
+<script src="labstore.js?v=2026-08-04f"></script>
 <!-- So the lab can read the app's own recordings instead of asking for an upload. Same origin, same
-     database; see loadFromApp(). export.js rebuilds each one into archive bytes so a saved sit and a
+     database; see listAppSits(). export.js rebuilds each one into archive bytes so a saved sit and a
      dropped file go through one parse. -->
-<script src="record.js?v=2026-08-04e"></script>
-<script src="export.js?v=2026-08-04e"></script>
+<script src="record.js?v=2026-08-04f"></script>
+<script src="export.js?v=2026-08-04f"></script>
 <script>
 /*
  * Sessions are held in memory AND persisted — see labstore.js.
@@ -356,7 +365,7 @@ function recordingKey(read) {
    look like the drop having failed. */
 const duplicates = [];
 
-async function ingest(name, bytes) {
+async function ingest(name, bytes, { recorderId = null } = {}) {
   {
     const f = { name };
     try {
@@ -453,6 +462,11 @@ async function ingest(name, bytes) {
       const fromNote = general ? String(general.text).trim().replace(/\s+/g, ' ') : '';
       sessions.push({
         contentKey,
+        /* WHICH RECORDING ON THIS DEVICE THIS IS, when it came from one. Persisted, and the
+           reason the sits list can tell an analysed sit from an unanalysed one without
+           parsing anything — which is what made the boot-time analysis look unavoidable.
+           Null for a dropped archive, which may well have come off another machine. */
+        recorderId,
         sessionId: f.name, file: f.name, read, notes, spans, wholeSit, trialBlocks,
         durationSec: duration, alpha, spectra, movement, wholeStats,
         // Only as a DEFAULT: a name typed into the list later must win, so setLabel() overwrites it.
@@ -502,34 +516,89 @@ async function openStore() {
     storeError = (err && err.message) || 'unavailable';
     console.log('[lab] storage unavailable:', storeError);
   }
-  // The app's own recordings, without an upload step. See loadFromApp().
-  await loadFromApp();
+  /* The app's own recordings — LISTED, not analysed. Metadata only, so this stays in the
+     milliseconds however much EEG is stored. See the long note on listAppSits. */
+  await listAppSits();
 }
 
 /* ==========================================================================
- * THE SITS ARE ALREADY ON THIS MACHINE — READ THEM
+ * THE SITS ARE ALREADY ON THIS MACHINE — LIST THEM CHEAPLY, ANALYSE ON DEMAND
  * ==========================================================================
  * Asked for: "since everything's saved in the site, instead of uploading everything could we just have
  * the files there ready for me to select? or even just autoload them when i finish a recording and give
  * me the option to exclude by clicking the x in the Loaded table?"
  *
  * Right, and the upload step was never necessary. The app and the lab are the same origin, so the
- * recordings the app wrote are readable from here directly. Every sit ever recorded has been sitting a
- * few hundred lines away while the instructions said to export a zip and drag it back in.
+ * recordings the app wrote are readable from here directly.
  *
- * THROUGH THE SAME PARSE AS A DROPPED FILE. Each session is rebuilt into archive bytes and handed to
- * ingest(), rather than shortcutting into the session list. A second ingest path would be a second
- * thing to keep correct, and the archive is the format every downstream view already understands.
+ * WHY THIS IS NOW TWO FUNCTIONS INSTEAD OF ONE. Reported as "the lab is still freezing even after a
+ * hard reload", and the hard reload is the tell: this was never a caching problem. The previous
+ * version analysed the twelve most recent sits on page load, and analysing a sit means reading its
+ * raw EEG out of IndexedDB, rebuilding it into an archive, parsing that back, and running an alpha
+ * peak and a spectral series over the samples. Measured in headless Chromium on a fast machine:
  *
- * NEWEST FIRST, WITH A CEILING. A retreat's worth of raw EEG is hundreds of megabytes, and reading all
- * of it on page load would look like the page hanging. The most recent AUTOLOAD_MAX are loaded and the
- * rest are listed as available, because silently analysing a subset while appearing to analyse
- * everything is the failure mode that matters here.
+ *     8 sits x 30 min    9.3s before the page showed a single row
+ *    14 sits x 40 min   19.9s
+ *
+ *   of which, per load:  alphaPeakByChannel 3.7s · bandSeries 1.9s · loadSession 1.4s
+ *                        readSessionArchive 0.9s · buildFiles 0.4s · zip 0.3s
+ *
+ * Identical on the second and third load, because none of it was cached. On a Chromebook or a phone
+ * that is minutes, it grows with every sit recorded, and it happens before anything is on screen — so
+ * the page is indistinguishable from one that has crashed.
+ *
+ * So the two jobs are separated:
+ *
+ *   listAppSits()   metadata only. Recorder.listSessions reads the sessions and notes stores and
+ *                   never touches a chunk, so it is milliseconds regardless of how much EEG is
+ *                   stored. It yields everything the list needs to be useful — the general note as
+ *                   the sit's name, length, mark tally by kind — which is most of what the sits list
+ *                   was ever showing.
+ *
+ *   analyseSits()   the expensive derivation, for sits the reader has actually chosen, with progress
+ *                   on screen and a cancel button. Once done, the result is persisted by LabStore and
+ *                   never recomputed: a sit is analysed once, ever, not once per page load.
+ *
+ * STILL THROUGH THE SAME INGEST PATH. Each session is rebuilt into archive bytes and handed to
+ * ingest(), rather than shortcutting into the session list. That round trip is ~1.2s of the per-sit
+ * cost and it would be tempting to skip, but a second ingest path is a second thing to keep correct
+ * and this project has already paid four times for a reader that agreed with its own writer. It is
+ * paid once per sit now instead of once per page load, which is the difference that mattered.
+ *
+ * NO CEILING ANY MORE. There was an AUTOLOAD_MAX of 12 because loading was unbounded work on boot;
+ * with nothing loaded on boot there is nothing to cap, and every sit on the device is listed. A
+ * silently truncated list was its own hazard — "silently analysing a subset while appearing to
+ * analyse everything is the failure mode that matters here" was true, and now there is no subset.
  */
-const AUTOLOAD_MAX = 12;
-const appSits = { available: [], loaded: 0, skipped: 0, error: null };
+const appSits = { available: [], error: null, listed: false };
 
-async function loadFromApp() {
+/* Progress for the on-demand analysis. On the state object rather than in the DOM so a re-render
+   cannot lose track of a run that is still going. */
+const analysing = { active: false, done: 0, total: 0, current: '', cancel: false, failed: [] };
+
+/*
+ * EXCLUSION IS A DECISION AND IT PERSISTS.
+ *
+ * "give me the option to exclude by clicking the x". Pressing × used to drop the sit from the
+ * in-memory list and from the lab's store — which worked until the next reload, when the sit was
+ * read from the app again and came straight back. That reads as the button not working.
+ *
+ * Kept by RECORDING id, in localStorage, separately from whether the sit has been analysed. It does
+ * not delete the recording and it is reversible, so the list shows what has been set aside rather
+ * than pretending those sits do not exist.
+ */
+const EXCLUDE_KEY = 'zenbio.lab.excluded';
+let excluded = new Set();
+try {
+  const raw = localStorage.getItem(EXCLUDE_KEY);
+  if (raw) excluded = new Set(JSON.parse(raw));
+} catch (err) { /* private mode, a full quota — the lab works without it */ }
+function saveExcluded() {
+  try { localStorage.setItem(EXCLUDE_KEY, JSON.stringify(Array.from(excluded))); }
+  catch (err) { /* additive */ }
+}
+
+async function listAppSits() {
   if (typeof Recorder === 'undefined' || typeof Exporter === 'undefined') return;
   let db = null;
   try {
@@ -537,41 +606,108 @@ async function loadFromApp() {
     const list = await Recorder.listSessions(db);
     appSits.available = list.map((m) => ({
       id: m.id, startedAt: m.startedAt, durationSec: m.durationSec || 0,
-      label: m.label || '', marks: m.markCount || 0, bytes: m.bytes || 0,
-      simulated: !!m.simulated, recovered: !!m.recovered,
+      label: m.label || '', marks: m.markCount || 0, markTally: m.markTally || [],
+      bytes: m.bytes || 0, simulated: !!m.simulated, recovered: !!m.recovered,
+      // The name the sit gave itself. See the note in record.js on why this is free here.
+      generalNote: m.generalNote || '',
+      /* The name the archive WOULD have. Computed from startedAt and the simulated flag alone, so
+         matching an app sit against an already-analysed one costs no parsing. It is the fallback for
+         records written before `recorderId` was stored; new ones match on the id itself. */
+      archiveName: Exporter.archiveName(m),
+      // A sit with no scored rows cannot contribute to any analysis. Listed anyway, and said so in
+      // the row: a recording that vanished from the list would look like data loss.
+      tooShort: (m.durationSec || 0) < 20,
     }));
-    // A sit with no scored rows cannot contribute to anything, and loading it only to have every view
-    // report it as empty is noise in the one list the reader is meant to choose from.
-    const worth = list.filter((m) => (m.durationSec || 0) >= 20);
-    appSits.skipped = list.length - worth.length;
-    for (const meta of worth.slice(0, AUTOLOAD_MAX)) {
-      try {
-        const loaded = await Recorder.loadSession(db, meta.id);
-        if (!loaded || !loaded.rows || !loaded.rows.length) continue;
-        const { files } = Exporter.buildFiles({
-          meta: loaded.meta, eeg: loaded.eeg, acc: loaded.acc, rr: loaded.rr,
-          rows: loaded.rows, notes: loaded.notes,
-          headAcc: loaded.headAcc, headRaw: loaded.headRaw,
-        }, {});
-        const bytes = new Uint8Array(Exporter.zip(files, { date: new Date(meta.startedAt) }));
-        // ingest() refuses a duplicate by content hash, so a sit already dropped by hand is not
-        // loaded twice — the same guard that stops the same seconds landing on both sides of a split.
-        const before = sessions.length;
-        await ingest(Exporter.archiveName(loaded.meta), bytes);
-        if (sessions.length > before) appSits.loaded++;
-      } catch (err) {
-        console.log('[lab] could not read saved sit', meta.id, err && err.message);
-      }
-    }
-    if (appSits.available.length > worth.slice(0, AUTOLOAD_MAX).length) {
-      appSits.skipped += worth.length - Math.min(worth.length, AUTOLOAD_MAX);
-    }
+    appSits.listed = true;
   } catch (err) {
     appSits.error = (err && err.message) || 'could not read the app’s recordings';
-    console.log('[lab] loadFromApp:', appSits.error);
+    console.log('[lab] listAppSits:', appSits.error);
   } finally {
     if (db && db.close) db.close();
   }
+}
+
+/* Which analysed session, if any, corresponds to a sit on the device. Exact by recorderId where it
+   was recorded; by archive name for sessions analysed before that field existed. */
+function analysedFor(sit) {
+  if (!sit) return null;
+  return sessions.find((s) => !s.error
+    && ((s.recorderId && s.recorderId === sit.id) || s.file === sit.archiveName)) || null;
+}
+function isAnalysed(sit) { return !!analysedFor(sit); }
+
+// Let the browser paint. Each sit's derivation is ~1.2s of unbroken synchronous work, so without a
+// yield between them the progress counter would jump from 0 to done in one frame.
+function paint() {
+  return new Promise((resolve) => requestAnimationFrame(() => setTimeout(resolve, 0)));
+}
+
+/*
+ * Analyse a chosen set of sits, one at a time, with the screen kept alive between them.
+ *
+ * Sequential on purpose. Each sit peaks at its own raw EEG plus an archive copy of it in memory, and
+ * running several at once on a phone is how a tab gets killed for memory rather than for time.
+ */
+async function analyseSits(ids) {
+  const todo = ids.filter((id) => {
+    const sit = appSits.available.find((a) => a.id === id);
+    return sit && !isAnalysed(sit) && !sit.tooShort;
+  });
+  if (!todo.length || analysing.active) return;
+  Object.assign(analysing, { active: true, done: 0, total: todo.length, current: '', cancel: false, failed: [] });
+  render();
+  let db = null;
+  try {
+    db = await Recorder.open();
+    for (const id of todo) {
+      if (analysing.cancel) break;
+      const sit = appSits.available.find((a) => a.id === id);
+      analysing.current = sitName(sit);
+      renderProgress();
+      await paint();
+      try {
+        const loaded = await Recorder.loadSession(db, id);
+        if (!loaded || !loaded.rows || !loaded.rows.length) {
+          analysing.failed.push({ name: sitName(sit), why: 'no scored rows in the recording' });
+        } else {
+          const { files } = Exporter.buildFiles({
+            meta: loaded.meta, eeg: loaded.eeg, acc: loaded.acc, rr: loaded.rr,
+            rows: loaded.rows, notes: loaded.notes,
+            headAcc: loaded.headAcc, headRaw: loaded.headRaw,
+          }, {});
+          const bytes = new Uint8Array(Exporter.zip(files, { date: new Date(sit.startedAt) }));
+          // ingest() refuses a duplicate by content hash, so a sit already dropped in by hand is not
+          // analysed twice — the same guard that stops the same seconds landing on both sides of a
+          // train/test split.
+          await ingest(Exporter.archiveName(loaded.meta), bytes, { recorderId: id });
+        }
+      } catch (err) {
+        /* NAMED, NOT SWALLOWED. A sit that failed to analyse and a sit nobody selected look identical
+           in the list otherwise, and the difference decides whether a comparison is missing data. */
+        analysing.failed.push({ name: sitName(sit), why: (err && err.message) || 'could not read it' });
+        console.log('[lab] could not analyse', id, err && err.message);
+      }
+      analysing.done++;
+      renderProgress();
+    }
+    await persist();
+  } catch (err) {
+    appSits.error = (err && err.message) || 'could not read the app’s recordings';
+  } finally {
+    if (db && db.close) db.close();
+    analysing.active = false;
+    analysing.current = '';
+    render();
+  }
+}
+
+/* The sit's name, from the best thing available: its own general note, then a label typed in the app,
+   then when it was. Never the filename — a reader comparing sits by filename is comparing strings. */
+function sitName(sit) {
+  if (!sit) return 'a sit';
+  if (sit.generalNote) return sit.generalNote;
+  if (sit.label) return sit.label;
+  return sit.startedAt ? new Date(sit.startedAt).toLocaleString() : 'a sit';
 }
 
 async function persist() {
@@ -656,7 +792,7 @@ function sessionsWithoutSpectra() {
  * novice like that" — and the fix is not prettier cards, it is that the first thing on screen should be
  * a question rather than the sixth-most-important table.
  */
-let pane = 'explore';
+let pane = 'sessions';
 function showPane(next) {
   pane = next;
   for (const el of document.querySelectorAll('.pane')) el.hidden = el.dataset.pane !== next;
@@ -1421,115 +1557,269 @@ async function setLabel(sessionId, label) {
   await persist();
 }
 
-function renderLoaded() {
-  if (!sessions.length) { loadedEl.innerHTML = ''; return; }
-  /* Say when a sit arrived from the app rather than from a dropped file. Data appearing
-     with no account of where it came from is the sort of thing that gets doubted later,
-     and doubting your own data is expensive. */
-  /* SAID OUT LOUD. A duplicate that is quietly dropped is indistinguishable from a drop that
-     did not work, and the reason matters: it is the same recording, not a similar one. */
-  const dupNote = duplicates.length
-    ? `<div class="card note bad">Refused ${duplicates.length} duplicate archive(s) — the same
-       recording under a different filename, which would inflate the observation count and could
-       put the same seconds on both sides of the train/test split:
-       ${esc(duplicates.map((d) => `${d.file} (same sit as ${d.sameAs})`).join('; '))}.</div>`
-    : '';
-  const handoffNote = handedOver.length
-    ? `<div class="card note">Received from the app: ${esc(handedOver.join(', '))}.</div>`
-    : '';
-  const rows = sessions.map((s, i) => {
-    if (s.error) {
-      return `<tr><td>${esc(s.file)}</td><td colspan="5" class="bad">${esc(s.error)}</td>
-        <td><button data-drop="${i}">Remove</button></td></tr>`;
-    }
-    const labelled = s.spans.filter((x) => x.dims).length;
-    const trans = s.notes.filter((n) => n.kind === 'transition').length;
-    /* THE MARK TALLY, BY KIND, IN THE ROW.
-       "the timelines aren't really useful for me. the only thing that's useful is knowing how many
-       marks i made. that could be included in the table maybe." It is the number that decides whether
-       a sit can contribute anything, and a total alone does not say: eleven marks all of one kind
-       cannot support a comparison BETWEEN kinds, which is what the marks are for. */
+/*
+ * PROGRESS, rendered on its own.
+ *
+ * Separate from render() because render() redraws every pane for every sit, and calling that once per
+ * sit inside the analysis loop would cost more than the analysis. This touches one element.
+ */
+function renderProgress() {
+  const el = document.getElementById('analyseProgress');
+  if (!el) return;
+  if (!analysing.active) { el.innerHTML = ''; return; }
+  const pct = analysing.total ? Math.round((analysing.done / analysing.total) * 100) : 0;
+  el.innerHTML = `<div class="card">
+    <div class="row" style="justify-content:space-between">
+      <div><strong>Analysing ${Math.min(analysing.done + 1, analysing.total)} of
+        ${analysing.total}</strong> <span class="dim">· ${esc(analysing.current)}</span></div>
+      <button id="cancelAnalyse">Stop</button>
+    </div>
+    <div style="height:4px;border-radius:3px;background:rgba(255,255,255,.09);margin-top:10px">
+      <i style="display:block;height:100%;border-radius:3px;width:${pct}%;background:var(--good)"></i>
+    </div>
+    <div class="note" style="margin-top:8px">Reading the raw EEG and measuring the alpha peak. A long
+      sit takes a second or two. Each result is kept, so this never runs twice for the same sit.</div>
+    </div>`;
+  const stop = document.getElementById('cancelAnalyse');
+  /* Cancel takes effect BETWEEN sits, not inside one. Abandoning a sit half-derived would leave a
+     session object with some fields computed and some not, which every view downstream would read as
+     real. Stopping cleanly costs at most one sit's wait. */
+  if (stop) {
+    stop.addEventListener('click', () => {
+      analysing.cancel = true;
+      stop.textContent = 'Stopping…';
+      stop.disabled = true;
+    });
+  }
+}
+
+/*
+ * EVERY RECORDING ON THIS DEVICE, IN ONE LIST, whether or not it has been analysed.
+ *
+ * The old list showed only sits the lab had already parsed. That made the list of what exists and the
+ * list of what has been looked at the same list — so the only way to see a sit was to have already
+ * paid to analyse it, and the only way to make the list complete was to analyse everything on page
+ * load. That is what froze the page. Splitting them is what lets it open instantly.
+ *
+ * WHAT A ROW SHOWS WITHOUT ANY ANALYSIS: the sit's own general note as its name, when it was, how
+ * long, and its mark tally by kind. All of that comes from Recorder.listSessions, which reads two
+ * small object stores and never touches a chunk of EEG. It is most of what the list was ever showing.
+ *
+ * WHAT NEEDS THE ANALYSIS: signal quality, labelled spans, the alpha peak, the timeline. Those say
+ * "not analysed yet" with a button, rather than being absent — a blank cell and a cell that cannot be
+ * filled yet are different claims.
+ */
+function sitEntries() {
+  const out = [];
+  // The device's own recordings, newest first (listSessions already sorts).
+  for (const sit of appSits.available) {
+    out.push({ key: `rec:${sit.id}`, sit, s: analysedFor(sit) });
+  }
+  /* Dropped archives that are not one of this device's recordings — a sit carried over from another
+     machine. Matched the same two ways as analysedFor, so a dropped copy of a local sit does not
+     appear twice. */
+  for (const s of sessions) {
+    const local = appSits.available.some((a) =>
+      (s.recorderId && s.recorderId === a.id) || s.file === a.archiveName);
+    if (!local) out.push({ key: `file:${s.sessionId}`, sit: null, s });
+  }
+  return out;
+}
+
+// The mark tally for a row, from whichever source is available: the analysed notes if the sit has
+// been analysed, otherwise the tally Recorder counted while listing. Both are counts of the same
+// marks, so a row's tally does not change when it is analysed.
+function tallyFor(entry) {
+  const { sit, s } = entry;
+  if (s && !s.error) {
     const tally = {};
     for (const n of (s.read && s.read.notes) || []) {
       const k = n.tapCategory || n.transition || n.markKind;
       if (!k || n.anchored === 'no' || n.anchored === false) continue;
       tally[k] = (tally[k] || 0) + 1;
     }
-    const kindsHere = Object.entries(tally).sort((a, b) => b[1] - a[1]);
-    const tallyText = kindsHere.length
-      ? kindsHere.map(([k, n]) => `${n}\u00d7 ${esc(kindLabelFor(k))}`).join(', ')
-        + (kindsHere.length === 1 && kindsHere[0][1] > 1
-          ? ' <span class="bad">— all one kind</span>' : '')
-      : '<span class="dim">none</span>';
-    /* A SIMULATED SIT IS CALLED OUT IN THE ROW, not folded into a warning count.
-       "3 warning(s)" behind a tooltip is exactly how a fabricated sit gets analysed anyway: the
-       number looks like a data-quality note, and nothing on screen says the rows are invented. Once
-       it is pooled with real sits no later step can separate it again, so the label has to be
-       readable at a glance, in the list where sits are chosen. */
-    const warn = s.read.simulated
-      ? '<span class="bad" title="Produced by the app\'s signal simulator with no headband'
-        + ' connected. Not a recording of anyone — remove it before drawing any'
-        + ' conclusion.">SIMULATED</span>'
-      : (s.read.warnings.length
-        ? `<span class="warn" title="${esc(s.read.warnings.join(' · '))}">${s.read.warnings.length} warning(s)</span>`
-        : '<span class="dim">complete</span>');
-    /* WHEN the sit was, not which file it was in. "the times still look funky to me" was partly this:
-       the row led with a filename, so a reader comparing sits was comparing strings. */
-    const when = Number.isFinite(s.read.metrics.length && Date.parse(s.read.metrics[0] && s.read.metrics[0].absoluteTime))
-      ? new Date(Date.parse(s.read.metrics[0].absoluteTime)) : null;
-    return `<tr class="sesMain">
-      <td><button class="expander" data-expand="${i}" title="Show this sit's timeline and alpha peak"
-          aria-expanded="false">${expanded.has(i) ? '\u25be' : '\u25b8'}</button></td>
-      <td>
-        <input class="sesLabel" data-label="${i}" value="${esc(labelOf(s))}"
+    return Object.entries(tally).sort((a, b) => b[1] - a[1]);
+  }
+  return (sit && sit.markTally) || [];
+}
+
+function tallyHtml(kindsHere) {
+  if (!kindsHere.length) return '<span class="dim">none</span>';
+  /* ALL ONE KIND IS CALLED OUT. "the only thing that's useful is knowing how many marks i made" —
+     and a total alone does not say whether a sit can contribute: eleven marks all of one kind cannot
+     support a comparison BETWEEN kinds, which is what the marks are for. */
+  return kindsHere.map(([k, n]) => `${n}× ${esc(kindLabelFor(k))}`).join(', ')
+    + (kindsHere.length === 1 && kindsHere[0][1] > 1
+      ? ' <span class="bad">— all one kind</span>' : '');
+}
+
+/* When the sit was. From the recording's own start time where there is one, so a reader comparing
+   sits is comparing moments rather than filenames. */
+function whenText(entry) {
+  const { sit, s } = entry;
+  const ms = sit ? sit.startedAt
+    : (s && s.read && s.read.metrics && s.read.metrics[0]
+      ? Date.parse(s.read.metrics[0].absoluteTime) : NaN);
+  if (!Number.isFinite(ms)) return '<span class="dim">—</span>';
+  const d = new Date(ms);
+  return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}`
+    + ` <span class="dim">${d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}</span>`;
+}
+
+function excludedHtml() {
+  const gone = appSits.available.filter((a) => excluded.has(a.id));
+  if (!gone.length) return '';
+  /* SET ASIDE, NOT DELETED, and visible. A sit that vanished entirely would be indistinguishable from
+     data loss, and the × is meant to be reversible — it does not touch the recording. */
+  return `<div class="card note" style="margin-top:12px">
+    <div class="sideHead" style="margin-bottom:8px">Set aside · ${gone.length}</div>
+    ${gone.map((a) => `<div class="row" style="margin-bottom:5px">
+      <span class="dim" style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+        white-space:nowrap">${esc(sitName(a))}</span>
+      <button data-include="${esc(a.id)}">Put back</button></div>`).join('')}
+    <div class="why" style="margin-top:8px">These are left out of every analysis on this page. The
+      recordings themselves are untouched.</div></div>`;
+}
+
+function sitsTableHtml() {
+  const entries = sitEntries().filter((e) => !(e.sit && excluded.has(e.sit.id)));
+  if (!entries.length) {
+    return `<div class="card note">No recordings on this device yet, and nothing dropped in.
+      Sit with the headband on and press Record, or drop a session archive above.</div>`;
+  }
+  const unanalysed = entries.filter((e) => !e.s && e.sit && !e.sit.tooShort);
+  /* THE ONE CONTROL THAT MATTERS, above the table. Nothing here is analysed on load, so the reader
+     needs a way to say "do the ones I care about" — and a count, so the wait is predictable rather
+     than a spinner of unknown length. */
+  const bulk = unanalysed.length && !analysing.active
+    ? `<div class="row" style="margin:10px 0 0">
+        <button class="primary" id="analyseAll">Analyse ${unanalysed.length} unread
+          sit${unanalysed.length === 1 ? '' : 's'}</button>
+        <span class="note">About ${unanalysed.length < 2 ? 'a second or two' :
+          `${Math.ceil(unanalysed.length * 1.5)} seconds`} in total. Each sit is analysed once and
+          remembered, so this does not run again for the same sit.</span></div>`
+    : '';
+  const rows = entries.map((entry) => {
+    const { sit, s } = entry;
+    const i = s ? sessions.indexOf(s) : -1;
+    if (s && s.error) {
+      return `<tr class="sesMain"><td></td><td>${esc(s.file)}</td>
+        <td colspan="4" class="bad">${esc(s.error)}</td>
+        <td><button data-drop="${i}">Remove</button></td></tr>`;
+    }
+    const name = s ? (labelOf(s) || sitName(sit) || s.file) : sitName(sit);
+    const durationSec = s && s.durationSec != null ? s.durationSec : (sit ? sit.durationSec : null);
+
+    /* THE ARROW only where there is something behind it. An expander on an unanalysed row would open
+       an empty box, which reads as broken rather than as "nothing here yet". */
+    const arrow = s
+      ? `<button class="expander" data-expand="${i}" title="Show this sit's timeline and alpha peak"
+          aria-expanded="${expanded.has(i) ? 'true' : 'false'}">${expanded.has(i) ? '▾' : '▸'}</button>`
+      : '';
+
+    /* The name is editable only once analysed, because the label is stored on the lab's session
+       record. Before that the sit shows the name it gave itself, which is the note. */
+    const nameCell = s
+      ? `<input class="sesLabel" data-label="${i}" value="${esc(labelOf(s) || sitName(sit))}"
           placeholder="name this sit — what was it?" maxlength="120"
-          style="width:100%;max-width:300px;font-size:12.5px">
-        <div class="dim" style="font-size:11px;margin-top:3px">${esc(s.file)}</div></td>
-      <td class="num">${clock(s.durationSec)}</td>
-      <td>${tallyText}</td>
-      <td class="num">${labelled || '<span class="dim">0</span>'}</td>
-      <td>${warn}</td>
-      <td><button data-drop="${i}" title="Leave this sit out of every analysis on this page">\u00d7</button></td></tr>`
+          style="width:100%;max-width:320px;font-size:12.5px">`
+      : `<div style="max-width:320px;font-size:12.5px">${esc(name)}</div>`;
+    const sub = sit && sit.generalNote && s && labelOf(s) && labelOf(s) !== sit.generalNote
+      ? `<div class="dim" style="font-size:11px;margin-top:3px">note: ${esc(sit.generalNote)}</div>`
+      : (!sit && s ? `<div class="dim" style="font-size:11px;margin-top:3px">${esc(s.file)}</div>` : '');
+
+    let signal;
+    if (s) {
+      /* A SIMULATED SIT IS CALLED OUT IN THE ROW, not folded into a warning count. "3 warning(s)"
+         behind a tooltip is exactly how a fabricated sit gets analysed anyway. Once pooled with real
+         sits no later step can separate it again, so the label has to be readable at a glance, in the
+         list where sits are chosen. */
+      signal = s.read.simulated
+        ? '<span class="bad" title="Produced by the app\'s signal simulator with no headband'
+          + ' connected. Not a recording of anyone — set it aside before drawing any'
+          + ' conclusion.">SIMULATED</span>'
+        : (s.read.warnings.length
+          ? `<span class="warn" title="${esc(s.read.warnings.join(' · '))}">${s.read.warnings.length} warning(s)</span>`
+          : '<span class="good">complete</span>');
+    } else if (sit && sit.simulated) {
+      signal = '<span class="bad">SIMULATED</span>';
+    } else if (sit && sit.tooShort) {
+      signal = '<span class="dim" title="Under 20 seconds — too short to carry any scored rows.">too short</span>';
+    } else if (analysing.active) {
+      signal = '<span class="dim">waiting…</span>';
+    } else {
+      signal = `<button data-analyse="${esc(sit.id)}" title="Read this sit's raw EEG and derive its
+        signal quality, alpha peak and timeline">Analyse</button>`;
+    }
+
+    const spans = s ? (s.spans.filter((x) => x.dims).length || '<span class="dim">0</span>')
+      : '<span class="dim">—</span>';
+
+    return `<tr class="sesMain">
+      <td>${arrow}</td>
+      <td>${nameCell}${sub}</td>
+      <td>${whenText(entry)}</td>
+      <td class="num">${clock(durationSec)}</td>
+      <td>${tallyHtml(tallyFor(entry))}</td>
+      <td class="num">${spans}</td>
+      <td>${signal}</td>
+      <td>${sit
+        ? `<button data-exclude="${esc(sit.id)}" title="Leave this sit out of every analysis on this page. Does not delete the recording.">×</button>`
+        : `<button data-drop="${i}" title="Leave this sit out of every analysis on this page">×</button>`}</td></tr>`
       /* THE TIMELINE AND THE ALPHA PEAK LIVE BEHIND THE ARROW.
          "alternatively, every entry in the Loaded section could have a little arrow that expands and
-         lets me see the visual timeline. that's where the individual alpha peak could live too." Both
-         were full-width sections of their own, above the analyses, for something looked at rarely. */
-      + (expanded.has(i) ? `<tr class="sesDetail"><td></td><td colspan="6">
+         lets me see the visual timeline. that's where the individual alpha peak could live too." */
+      + (s && expanded.has(i) ? `<tr class="sesDetail"><td></td><td colspan="7">
           <div id="detail-${i}"></div></td></tr>` : '');
   }).join('');
-  /* WHERE THESE CAME FROM, AND WHAT IS NOT HERE.
-     The lab now reads the app's own recordings on load, so there is no upload step. That makes it
-     essential to say how many were read and how many were left — a page that silently analyses the
-     twelve most recent sits while appearing to analyse a retreat is the worst kind of wrong. */
-  const sourceNote = appSits.error
-    ? `<div class="card note bad">Could not read this device's recordings: ${esc(appSits.error)}.
-       Drop archives above instead.</div>`
-    : (appSits.available.length
-      ? `<div class="card note">Read <strong>${appSits.loaded}</strong> of
-         <strong>${appSits.available.length}</strong> sits recorded on this device — no upload needed.
-         ${appSits.skipped ? `${appSits.skipped} left out (under 20 seconds, or beyond the`
-           + ` ${AUTOLOAD_MAX} most recent). ` : ''}Press × on any row to leave it out of every
-         analysis here; that does not delete the recording.</div>`
-      : '');
-  loadedEl.innerHTML = `<h2>Your sits</h2>${sourceNote}${dupNote}${handoffNote}
-    <div class="card scroll"><table>
-    <tr><th></th><th>Sit</th><th>Length</th><th>Marks</th><th>Labelled spans</th>
-        <th>Signal</th><th></th></tr>${rows}</table></div>`;
 
-  /* The arrow: the timeline and the alpha peak for one sit, drawn only when opened.
-     Both used to be full-width sections above the analyses, permanently, for something looked at
-     rarely — and one of them ("the timelines aren't really useful for me") never. */
+  const analysedCount = entries.filter((e) => e.s && !e.s.error).length;
+  const countNote = `<div class="note" style="margin-top:10px">
+    <strong>${entries.length}</strong> sit${entries.length === 1 ? '' : 's'} on this device
+    · <strong>${analysedCount}</strong> analysed. Nothing is read until you ask for it, which is why
+    this page opens straight away. Only analysed sits can be compared.</div>`;
+
+  return countNote + bulk + `<div class="card scroll"><table>
+    <tr><th></th><th>Sit</th><th>When</th><th>Length</th><th>Marks</th><th>Labelled spans</th>
+        <th>Signal</th><th></th></tr>${rows}</table></div>`;
+}
+
+function wireSitsTable() {
+  loadedEl.querySelectorAll('[data-analyse]').forEach((b) => {
+    b.addEventListener('click', () => analyseSits([b.dataset.analyse]));
+  });
+  const all = document.getElementById('analyseAll');
+  if (all) {
+    all.addEventListener('click', () => analyseSits(
+      sitEntries().filter((e) => !e.s && e.sit && !e.sit.tooShort && !excluded.has(e.sit.id))
+        .map((e) => e.sit.id)));
+  }
+  loadedEl.querySelectorAll('[data-exclude]').forEach((b) => {
+    b.addEventListener('click', () => {
+      excluded.add(b.dataset.exclude);
+      saveExcluded();
+      render();
+    });
+  });
+  loadedEl.querySelectorAll('[data-include]').forEach((b) => {
+    b.addEventListener('click', () => {
+      excluded.delete(b.dataset.include);
+      saveExcluded();
+      render();
+    });
+  });
+  /* The arrow: the timeline and the alpha peak for one sit, drawn only when opened. Both used to be
+     full-width sections above the analyses, permanently, for something looked at rarely — and one of
+     them ("the timelines aren't really useful for me") never. */
   loadedEl.querySelectorAll('[data-expand]').forEach((btn) => {
     btn.addEventListener('click', () => {
       const i = Number(btn.dataset.expand);
       if (expanded.has(i)) expanded.delete(i); else expanded.add(i);
       renderLoaded();
-      if (expanded.has(i)) renderSitDetail(i);
     });
   });
-  for (const i of expanded) renderSitDetail(i);
-  /* Saved on blur and on Enter, not per keystroke: one write per edit, and no re-render
-     mid-typing to move the caret. */
+  /* Saved on blur and on Enter, not per keystroke: one write per edit, and no re-render mid-typing to
+     move the caret. */
   loadedEl.querySelectorAll('[data-label]').forEach((input) => {
     const s = sessions[Number(input.dataset.label)];
     const save = async () => {
@@ -1542,15 +1832,45 @@ function renderLoaded() {
   });
   loadedEl.querySelectorAll('[data-drop]').forEach((b) => {
     b.addEventListener('click', async () => {
-      // Forget it in the store too. Removing it only from memory means it reappears on
-      // the next reload, which reads as the Remove button not working.
+      // Forget it in the store too. Removing it only from memory means it reappears on the next
+      // reload, which reads as the Remove button not working.
       const [gone] = sessions.splice(Number(b.dataset.drop), 1);
       if (store && gone) {
         try { await LabStore.deleteSession(store, gone.sessionId); } catch (e) { /* additive */ }
       }
+      expanded.clear();   // the indexes just shifted
       render();
     });
   });
+}
+
+function renderLoaded() {
+  /* SAID OUT LOUD. A duplicate that is quietly dropped is indistinguishable from a drop that did not
+     work, and the reason matters: it is the same recording, not a similar one. */
+  const dupNote = duplicates.length
+    ? `<div class="card note bad">Refused ${duplicates.length} duplicate archive(s) — the same
+       recording under a different filename, which would inflate the observation count and could
+       put the same seconds on both sides of the train/test split:
+       ${esc(duplicates.map((d) => `${d.file} (same sit as ${d.sameAs})`).join('; '))}.</div>`
+    : '';
+  const handoffNote = handedOver.length
+    ? `<div class="card note">Received from the app: ${esc(handedOver.join(', '))}.</div>`
+    : '';
+  const errNote = appSits.error
+    ? `<div class="card note bad">Could not read this device's recordings: ${esc(appSits.error)}.
+       Drop archives above instead.</div>`
+    : '';
+  /* A SIT THAT FAILED TO ANALYSE IS NAMED. Otherwise it is indistinguishable in the list from one
+     nobody selected, and the difference decides whether a comparison is missing data. */
+  const failNote = analysing.failed.length
+    ? `<div class="card note warn">Could not analyse ${analysing.failed.length} sit(s):
+       ${esc(analysing.failed.map((f) => `${f.name} (${f.why})`).join('; '))}.</div>`
+    : '';
+  loadedEl.innerHTML = `<h2>Your sits</h2>${errNote}${dupNote}${handoffNote}${failNote}`
+    + `<div id="analyseProgress"></div>` + sitsTableHtml() + excludedHtml();
+  wireSitsTable();
+  renderProgress();
+  for (const i of expanded) renderSitDetail(i);
 }
 
 /*
