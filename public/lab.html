@@ -218,20 +218,50 @@
   <div id="learn"></div>
 </section>
 
-<script src="dsp.js"></script>
-<script src="movement.js"></script>
-<script src="labels.js"></script>
-<script src="trials.js"></script>
-<script src="import.js"></script>
-<script src="analysis.js"></script>
-<script src="findings.js"></script>
-<script src="explore.js"></script>
-<script src="labstore.js"></script>
+<!--
+  A VISIBLE FAILURE, AND CACHE-BUSTING — both of which this page was missing entirely.
+
+  direct.html got these after two outages where one bad module took the whole app down silently. The lab
+  never did, and it produced the identical report: "the lab doesn't seem to work at all... the tabs don't
+  work and the add session button doesn't work." Every renderer runs from one render() call, so a single
+  module failing to load — a browser holding a cached copy from before explore.js existed — throws there
+  and takes the tabs and the file input with it, with nothing on screen to say why.
+-->
+<script>
+(function () {
+  window.addEventListener('error', function (e) {
+    try {
+      var el = document.getElementById('bootError');
+      if (!el) {
+        el = document.createElement('div');
+        el.id = 'bootError';
+        el.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:99999;background:#5a1420;'
+          + 'color:#ffd9df;font:13px/1.5 system-ui,sans-serif;padding:10px 14px;'
+          + 'border-bottom:1px solid #a33;white-space:pre-wrap';
+        (document.body || document.documentElement).appendChild(el);
+      }
+      el.textContent = 'The lab failed to start, so the tabs and the file picker will not work.\n'
+        + ((e && e.message) || 'unknown error')
+        + (e && e.filename ? '\n  at ' + e.filename + ':' + e.lineno : '')
+        + '\n\nThis is almost always a stale cached file. Reload with Shift held.';
+    } catch (err) { /* nothing left to try */ }
+  });
+}());
+</script>
+<script src="dsp.js?v=2026-08-04c"></script>
+<script src="movement.js?v=2026-08-04c"></script>
+<script src="labels.js?v=2026-08-04c"></script>
+<script src="trials.js?v=2026-08-04c"></script>
+<script src="import.js?v=2026-08-04c"></script>
+<script src="analysis.js?v=2026-08-04c"></script>
+<script src="findings.js?v=2026-08-04c"></script>
+<script src="explore.js?v=2026-08-04c"></script>
+<script src="labstore.js?v=2026-08-04c"></script>
 <!-- So the lab can read the app's own recordings instead of asking for an upload. Same origin, same
      database; see loadFromApp(). export.js rebuilds each one into archive bytes so a saved sit and a
      dropped file go through one parse. -->
-<script src="record.js"></script>
-<script src="export.js"></script>
+<script src="record.js?v=2026-08-04c"></script>
+<script src="export.js?v=2026-08-04c"></script>
 <script>
 /*
  * Sessions are held in memory AND persisted — see labstore.js.

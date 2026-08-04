@@ -551,7 +551,15 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       Panels.place(el, 40, innerHeight - 120);      // near the bottom, while it is short
       document.getElementById('readoutRows').innerHTML =
         Array.from({ length: 22 }, () => '<div class="rRow">x</div>').join('');
-      await new Promise((r) => setTimeout(r, 400));  // let the ResizeObserver fire
+      /* POLLED, NOT SLEPT. A fixed 400ms passed locally and failed once under load — a ResizeObserver
+         fires on the browser's own schedule, and a machine busy running three browser suites does not
+         keep to it. A flaky test is worse than no test, because it teaches you to re-run instead of to
+         look; the same reason the waitFor() helper at the top of this file exists. */
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        if (el.getBoundingClientRect().bottom <= innerHeight + 1) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
       const r = el.getBoundingClientRect();
       return { bottom: Math.round(r.bottom), vh: innerHeight, h: Math.round(r.height) };
     });

@@ -126,8 +126,12 @@
       grades: null,
     },
     {
-      key: 'just-sitting', kbd: 'J', label: 'Just sitting', arrow: 'ArrowDown',
-      hint: 'effortless, nothing being done, no object being held',
+      /* "i want to add Being as a note, or add it with shikantaza, so just update the text."
+         Added to the label rather than as a new category: shikantaza, just sitting and being are one
+         thing under three names, and a separate key for each would split one state's marks across
+         three buckets — which is precisely what makes a sit unanalysable. */
+      key: 'just-sitting', kbd: 'J', label: 'Just sitting / Being', arrow: 'ArrowDown',
+      hint: 'shikantaza — effortless, nothing being done, no object being held',
       grades: null,
     },
     {
@@ -196,6 +200,59 @@
     if (t.arrow) m[t.arrow] = t;
     return m;
   }, {});
+
+  const ARROWS = ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'];
+  const ARROW_STORE_KEY = 'zenbio.arrowKeys';
+
+  /*
+   * WHICH CATEGORY EACH ARROW MARKS, overridable and remembered.
+   *
+   * Asked for: "i also think it would be nice to be able to assign letters to the arrow keys for ease.
+   * like i can just put in a letter in a space and it ties that arrow key to the letter command."
+   *
+   * The four arrows are the only marks that can be made without looking, which makes them the ones
+   * worth spending on the categories a given practice actually uses — and those differ between
+   * practitioners and between retreats. The defaults above stay as defaults; this is an override.
+   *
+   * Stored by KEYBOARD LETTER rather than by category key, because the letter is what gets typed into
+   * the box and what appears on the pill. Resolved through TAP_BY_KBD at read time, so a stored letter
+   * for a category that no longer exists simply falls back instead of throwing.
+   */
+  function readArrowMap(storage) {
+    const map = {};
+    for (const a of ARROWS) if (TAP_BY_ARROW[a]) map[a] = TAP_BY_ARROW[a].kbd;
+    try {
+      const raw = (storage || localStorage).getItem(ARROW_STORE_KEY);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        for (const a of ARROWS) {
+          const letter = String(saved && saved[a] || '').toUpperCase();
+          // Only a letter that names a real category, so a stale or hand-edited value cannot bind an
+          // arrow to nothing and make it silently dead.
+          if (letter && TAP_BY_KBD[letter]) map[a] = letter;
+          else if (saved && Object.prototype.hasOwnProperty.call(saved, a) && !letter) delete map[a];
+        }
+      }
+    } catch (err) { /* private mode, or corrupt JSON: the defaults are a fine answer */ }
+    return map;
+  }
+
+  function writeArrowMap(map, storage) {
+    const out = {};
+    for (const a of ARROWS) {
+      const letter = String((map && map[a]) || '').toUpperCase();
+      out[a] = letter && TAP_BY_KBD[letter] ? letter : '';
+    }
+    try { (storage || localStorage).setItem(ARROW_STORE_KEY, JSON.stringify(out)); }
+    catch (err) { /* the binding still applies for this session */ }
+    return out;
+  }
+
+  // The category an arrow marks right now, or null if that arrow is deliberately unbound.
+  function tapForArrow(arrowKey, storage) {
+    const letter = readArrowMap(storage)[arrowKey];
+    return letter ? (TAP_BY_KBD[letter] || null) : null;
+  }
   // The glyph to show beside a category, so the panel can teach the mapping.
   const ARROW_GLYPH = {
     ArrowUp: '\u2191', ArrowDown: '\u2193', ArrowLeft: '\u2190', ArrowRight: '\u2192',
@@ -353,6 +410,7 @@
   return {
     RESPONSES, RESPONSE_BY_KEY, RESPONSE_BY_KBD,
     TAP_CATEGORIES, TAP_BY_KEY, TAP_BY_KBD, TAP_BY_ARROW, ARROW_GLYPH,
+    ARROWS, ARROW_STORE_KEY, readArrowMap, writeArrowMap, tapForArrow,
     DEFAULTS, schedule, dueProbe, windowFor, unitsFromProbes, metaAwarenessGap,
     seededRandom,
   };

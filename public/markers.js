@@ -39,6 +39,23 @@
     // sits' markers can never be confused if they end up side by side.
     clear() { this.markers.length = 0; return this; }
 
+    /*
+     * Drop a marker by the id of the stored note it produced.
+     *
+     * Needed because a mark exists in two places: this in-memory log, which the on-screen tally counts,
+     * and a row in storage, which the archive carries. Deleting one and not the other leaves two records
+     * of one sit disagreeing about how many marks it holds — and the tally is the number a reader trusts
+     * when deciding whether a sit is worth analysing.
+     *
+     * Returns whether anything was removed, so a caller can tell a real deletion from a no-op.
+     */
+    removeByNoteId(noteId) {
+      if (noteId == null) return false;
+      const before = this.markers.length;
+      this.markers = this.markers.filter((m) => m.noteId !== noteId);
+      return this.markers.length < before;
+    }
+
     // tSec = seconds since session start. Returns the created marker.
     // durationSec is optional and describes how long the thing being marked
     // lasted, which the meditator supplies — it is not inferred from data.

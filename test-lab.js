@@ -1143,6 +1143,27 @@ async function showTab(page, tab) {
     pg.on('pageerror', (e) => shellErrors.push(e.message));
     await pg.goto(PAGE);
 
+    /* EVERY MODULE CACHE-BUSTED, AND A VISIBLE FAILURE — neither of which this page had.
+     *
+     * direct.html gained both after two outages where one bad module took the whole app down silently.
+     * The lab never did, and it produced the identical report: "the lab doesn't seem to work at all...
+     * the tabs don't work and the add session button doesn't work." Every renderer runs from one
+     * render() call, so a single module failing to load — a browser holding a cached copy from before
+     * explore.js existed — throws there and takes the tabs and the file input with it. */
+    const labHtml = require('fs').readFileSync(
+      require('path').join(__dirname, 'public', 'lab.html'), 'utf8');
+    const labIncludes = labHtml.match(/<script src="[^"]+"><\/script>/g) || [];
+    const labUnversioned = labIncludes.filter((t) => !/\?v=/.test(t));
+    assert.deepStrictEqual(labUnversioned, [],
+      'every lab module must be cache-busted, or one stale file takes the whole page down: '
+      + labUnversioned.join(' '));
+    const labVersions = new Set((labHtml.match(/\?v=([^"']+)/g) || []).map((x) => x.slice(3)));
+    assert.strictEqual(labVersions.size, 1,
+      `the lab's assets must share one version, found ${JSON.stringify([...labVersions])}`);
+    const labHandler = labHtml.indexOf("addEventListener('error'");
+    assert.ok(labHandler > 0 && labHandler < labHtml.indexOf('<script src='),
+      'and the failure handler must be installed before the first module can throw');
+
     const tabs = await pg.$$eval('.tab', (els) => els.map((e) => e.dataset.tab));
     assert.deepStrictEqual(tabs, ['explore', 'sessions', 'compare', 'signals', 'learn'],
       'five tabs, in order');

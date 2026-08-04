@@ -135,4 +135,37 @@ const log = (n, fn) => Array.from({ length: n }, (_, i) => Object.assign({ t: i 
   console.log('✓ marker duration is optional, validated, and never inferred');
 }
 
+/* REMOVING A MARK MUST KEEP THE TWO RECORDS IN STEP.
+ *
+ * "would also like to be able to delete a mark if i just made it." Deleting the stored note was already
+ * possible, but a mark lives in two places — this log, which the on-screen tally counts, and a row in
+ * storage, which the archive carries. Deleting one and not the other leaves two records of one sit
+ * disagreeing about how many marks it holds, and the tally is the number a reader uses to decide whether
+ * a sit is worth analysing at all.
+ */
+{
+  const log = new Markers.MarkerLog();
+  const a = log.add(10, { kind: 'thought', noteId: 101 });
+  const b = log.add(20, { kind: 'settled', noteId: 102 });
+  const c = log.add(30, { kind: 'thought' });          // never stored: no noteId
+  assert.strictEqual(log.markers.length, 3);
+
+  assert.strictEqual(log.removeByNoteId(102), true, 'removing a stored mark must report success');
+  assert.strictEqual(log.markers.length, 2, 'and drop exactly one');
+  assert.ok(!log.markers.some((m) => m.id === b.id), 'the right one');
+  assert.ok(log.markers.some((m) => m.id === a.id), 'leaving the others');
+  assert.ok(log.markers.some((m) => m.id === c.id), 'including the unstored one');
+
+  // An id that is not there must be a no-op that says so, rather than silently removing nothing while
+  // the caller believes a deletion happened.
+  assert.strictEqual(log.removeByNoteId(999), false, 'an unknown id removes nothing and reports it');
+  assert.strictEqual(log.removeByNoteId(null), false, 'and null is not a wildcard');
+  assert.strictEqual(log.removeByNoteId(undefined), false, 'nor undefined');
+  assert.strictEqual(log.markers.length, 2, 'with nothing lost to either');
+  /* A mark with no noteId must never be matched by a null/undefined lookup — that is the shape of bug
+     that would delete every unsaved mark the first time a deletion missed. */
+  assert.ok(log.markers.some((m) => m.noteId == null), 'the unstored mark survives');
+  console.log('✓ a mark can be removed by its stored note id, and an unknown or null id removes nothing');
+}
+
 console.log('\nAll marker tests passed.');

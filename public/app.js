@@ -195,9 +195,11 @@ addEventListener('keydown', (e) => {
   /* ARROWS for the four most-used categories: up focusing, down just sitting,
    * left returned, right thinking. Aliases for the same taps, so nothing downstream
    * knows which finger produced the mark. preventDefault because arrows scroll. */
-  if (!e.repeat && Probes.TAP_BY_ARROW[e.key]) {
+  /* Through tapForArrow, not TAP_BY_ARROW: the arrows are re-assignable now, and reading the constant
+     here would leave the keyboard bound to the defaults while the pills showed the override. */
+  if (!e.repeat && Probes.tapForArrow && Probes.tapForArrow(e.key)) {
     e.preventDefault();
-    markTap(Probes.TAP_BY_ARROW[e.key]);
+    markTap(Probes.tapForArrow(e.key));
     return;
   }
   /* SPACE holds to speak. It is the obvious hold key, needs no aim with eyes shut, and
@@ -933,7 +935,7 @@ function renderMarkerEditor() {
     const tap = Probes.TAP_BY_KEY[m.kind];
     const what = tap
       ? `<span class="markWhat" title="${escapeHtml(tap.hint || '')}">`
-        + `${tap.arrow ? escapeHtml(Probes.ARROW_GLYPH[tap.arrow] || '') + ' ' : ''}`
+        + `${arrowGlyphFor(tap) ? escapeHtml(arrowGlyphFor(tap)) + ' ' : ''}`
         + `${escapeHtml(tap.label)}</span>`
       : `<select data-role="kind">${kinds}</select>`;
     return `<div class="markRow" data-id="${m.id}">`
@@ -3478,7 +3480,7 @@ function renderArmedBar() {
     + Probes.TAP_CATEGORIES.map((t) =>
     `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
     + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}${t.arrow
-      ? ` ${Probes.ARROW_GLYPH[t.arrow]}` : ''}</b>${escapeHtml(t.label)}`
+      ? ` ${arrowGlyphFor(t)}` : ''}</b>${escapeHtml(t.label)}`
     + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('');
   ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
   renderMarkCount();       // the hint carries the tally, and was just rebuilt with it
@@ -3850,6 +3852,68 @@ async function downloadSession(db, id) {
 const noteAnchoredKey = 'zenbio.noteAnchored';
 let noteAnchored = localStorage.getItem(noteAnchoredKey) !== 'false';
 
+/*
+ * Which arrow currently marks this category, as a glyph — or '' if none does.
+ *
+ * Derived from the live binding rather than from the category's own `arrow` field. Reading the field
+ * would print the DEFAULT arrow next to a category the user has since unbound, which is worse than
+ * printing nothing: a pill that teaches a key that does nothing.
+ */
+function arrowGlyphFor(tap) {
+  if (!tap || !Probes.readArrowMap) return tap && tap.arrow ? (Probes.ARROW_GLYPH[tap.arrow] || '') : '';
+  const map = Probes.readArrowMap();
+  for (const arrow of Probes.ARROWS) {
+    if (map[arrow] === tap.kbd) return Probes.ARROW_GLYPH[arrow] || '';
+  }
+  return '';
+}
+
+/*
+ * ASSIGN THE ARROWS, as asked: "i can just put in a letter in a space and it ties that arrow key to
+ * the letter command for the markers."
+ *
+ * The four arrows are the only marks that can be made without looking at anything, so which categories
+ * they carry is worth choosing rather than inheriting. One text box per arrow, holding the keyboard
+ * letter of the category it should mark; empty unbinds it.
+ */
+function renderArrowEditor(host) {
+  if (!host) return;
+  const map = Probes.readArrowMap();
+  const letters = Probes.TAP_CATEGORIES.map((t) => `${t.kbd} = ${t.label}`).join(' · ');
+  host.innerHTML = `<div class="sideHead" style="margin-bottom:6px">Arrow keys</div>`
+    + `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">`
+    + Probes.ARROWS.map((a) => `<label style="display:flex;gap:5px;align-items:center">`
+      + `<span style="font:15px ui-monospace,monospace">${Probes.ARROW_GLYPH[a]}</span>`
+      + `<input data-arrowkey="${a}" value="${escapeHtml(map[a] || '')}" maxlength="1"`
+      + ` style="width:34px;text-align:center;text-transform:uppercase;font:13px ui-monospace,monospace"`
+      + `></label>`).join('')
+    + `</div><div style="font-size:11.5px;opacity:.6;margin-top:8px;line-height:1.5">`
+    + `Type the letter of the mark each arrow should make; leave one blank to unbind it.<br>`
+    + `${escapeHtml(letters)}</div>`;
+  host.querySelectorAll('[data-arrowkey]').forEach((input) => {
+    // Kept off the global shortcuts, or typing a letter here would also fire the mark it names.
+    input.addEventListener('keydown', (e) => e.stopPropagation());
+    const apply = () => {
+      const next = {};
+      host.querySelectorAll('[data-arrowkey]').forEach((el) => {
+        next[el.dataset.arrowkey] = el.value.trim().toUpperCase();
+      });
+      const saved = Probes.writeArrowMap(next);
+      // Re-read rather than trusting what was typed: writeArrowMap drops any letter that does not name
+      // a real category, and the boxes must show what actually took effect.
+      host.querySelectorAll('[data-arrowkey]').forEach((el) => {
+        el.value = saved[el.dataset.arrowkey] || '';
+      });
+      renderArmedBar();
+      renderPatternBar();
+      setStatus('arrow keys updated');
+      statusLockUntil = Date.now() + 1600;
+    };
+    input.addEventListener('change', apply);
+    input.addEventListener('blur', apply);
+  });
+}
+
 function openNotes() {
   summaryTitleEl.textContent = 'Notes';
   summaryEl.classList.add('show');
@@ -3859,7 +3923,10 @@ function openNotes() {
     + `${noteAnchored ? ' checked' : ''}> stamp it at `
     + `<b id="noteStamp">${tSec == null ? '—' : Exporter.clock(tSec)}</b></label>`
     + `<span class="grow"></span><button id="noteSave">Save note</button></div>`
-    + `<div id="noteList"><p style="opacity:.6">reading\u2026</p></div>`;
+    + `<div id="noteList"><p style="opacity:.6">reading\u2026</p></div>`
+    /* THE ARROW EDITOR LIVES HERE, because this is the panel you already open to manage what you have
+       marked, and a separate settings screen for four text boxes is a screen nobody would find. */
+    + `<div class="card" id="arrowEditor" style="margin-top:16px"></div>`;
 
   const box = document.getElementById('noteBox');
   const anchorBox = document.getElementById('noteAnchor');
@@ -3881,6 +3948,7 @@ function openNotes() {
   document.getElementById('noteSave').addEventListener('click', saveNote);
   box.focus();
   renderNoteList();
+  renderArrowEditor(document.getElementById('arrowEditor'));
 }
 
 async function saveNote() {
@@ -3915,9 +3983,17 @@ async function renderNoteList() {
   // Newest first: the note you just wrote is the one you might want to remove.
   list.innerHTML = notes.slice().reverse().map((n) => {
     const when = n.anchored === false ? 'whole sit' : Exporter.clock(n.offsetSec);
+    /* NAME THE MARK. A tap's row used to show only its stored text, so a list of marks read as a list of
+       bare words with no indication of which category each was — and this list is where a mark gets
+       deleted, which is exactly when you need to be sure which one you are deleting. */
+    const kind = n.tapCategory || n.transition;
+    const cat = kind && ((Probes.TAP_BY_KEY && Probes.TAP_BY_KEY[kind])
+      || (Labels.TRANSITION_BY_KEY && Labels.TRANSITION_BY_KEY[kind]));
     const body = n.kind === 'voice'
       ? `<em style="opacity:.7">voice note, ${(n.seconds || 0).toFixed(0)}s</em>`
-      : escapeHtml(n.text || '(empty)');
+      : (cat
+        ? `<b>${escapeHtml(cat.label)}</b>${n.comment ? ' — ' + escapeHtml(n.comment) : ''}`
+        : escapeHtml(n.text || '(empty)'));
     return `<div class="noteItem" data-id="${n.id}"><span class="noteWhen">${escapeHtml(when)}</span>`
       + `<span class="noteText">${body}</span>`
       + `<button class="noteX" title="delete this note">\u00d7</button></div>`;
@@ -3928,6 +4004,12 @@ async function renderNoteList() {
       // No confirmation dialog: the list is right there, and re-typing a lost note
       // is a smaller cost than a modal in the middle of a sit.
       await Recorder.deleteNote(recDb, id);
+      /* AND OUT OF THE IN-MEMORY TALLY TOO. Asked for: "would also like to be able to delete a mark if
+         i just made it." Deleting the stored note was already possible from this list, but the mark
+         count on screen is kept separately in markerLog — so a deleted mark vanished from the archive
+         while the readout still counted it, which is two records of one sit disagreeing. */
+      markerLog.removeByNoteId(id);
+      renderMarkCount();
       renderNoteList();
     });
   });
