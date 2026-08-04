@@ -362,6 +362,12 @@
     radial-gradient(circle at 82% 62%, rgba(128,231,255,.15), transparent 22%),
     rgba(1,4,13,.62); border: 1px solid rgba(255,255,255,.06); border-radius: 12px; }
   #legend { display: flex; flex-wrap: wrap; gap: 7px 13px; margin-top: 11px; max-width: 100%; }
+  /* What the vertical axis means. flex-basis 100% so it takes its own line under the
+     swatches instead of wrapping into them, and quiet enough that it reads as a caption
+     rather than as another series. */
+  #chartScale { flex: 0 0 100%; margin-top: 9px; padding-top: 8px;
+    border-top: 1px solid rgba(255,255,255,.07); font-size: 10.5px; line-height: 1.5;
+    color: rgba(255,255,255,.45); }
   .legendItem { display: flex; align-items: center; gap: 5px; cursor: pointer;
     user-select: none; font-size: 11px; letter-spacing: .06em; transition: opacity .2s; }
   .legendItem.off { opacity: .3; }

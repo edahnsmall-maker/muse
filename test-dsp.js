@@ -724,4 +724,100 @@ function naiveDFT(real) {
     + ' and tries more than one candidate characteristic');
 }
 
+/*
+ * THE BASELINE HOLD. This is the test for the drift that was reported twice — once as
+ * "jumpy lines" and once as lines that drift — and the property it pins is the one that
+ * matters to a person watching their own trace: a signal that stops changing must produce
+ * a line that stops moving.
+ *
+ * The numbers are not arbitrary. The old chasing baseline, on this exact input, displayed
+ * 69.2 at two minutes, 61.7 at five and 55.9 at ten while the raw signal sat unchanged at
+ * 0.8 the whole time. Injecting the bug — removing the `if (!this.held)` guard — has to
+ * fail this, and it does: the assertion below is on the SPAN, and the chasing version's
+ * span over that stretch is 5.7 points.
+ */
+{
+  const TICK = 4;
+  const HOLD = 120 * TICK;
+  const opts = { holdAfter: HOLD, minSd: 0.05 };
+
+  // A step at one minute, then perfectly steady for nine more.
+  const n = new DSP.AdaptiveNormalizer(opts);
+  const shown = [];
+  for (let i = 0; i < 600 * TICK; i++) shown.push(n.update(i / TICK < 60 ? 0.3 : 0.8));
+
+  assert.ok(n.held, 'the baseline must be held after ten minutes of usable signal');
+
+  // From five minutes on, the raw signal has been constant for four minutes and the
+  // baseline has been fixed for three. Nothing may move.
+  const late = shown.slice(300 * TICK);
+  const span = Math.max(...late) - Math.min(...late);
+  assert.ok(span < 0.005,
+    `a held baseline must not drift on a constant signal (span was ${(span * 100).toFixed(1)} points`
+    + ` — the chasing baseline's was 5.7)`);
+
+  // And the level it holds has to be the RISEN one, not a decayed-to-middle one. A
+  // normaliser that froze at 0.5 would also pass the span test above.
+  assert.ok(shown[shown.length - 1] > 0.6,
+    `a sustained rise must stay displayed as risen (ended at ${(shown[shown.length - 1] * 100).toFixed(1)})`);
+
+  // The hold is spent in USABLE updates. Half-artifact input must take twice the wall
+  // clock to reach it, or a sit that opens with a badly seated headband would fix its
+  // scale on the windows that produced no reading at all.
+  const half = new DSP.AdaptiveNormalizer(opts);
+  let ticks = 0;
+  while (!half.held) { half.update(ticks % 2 ? null : 0.4); ticks++; }
+  assert.strictEqual(half.clean, HOLD, 'the hold is counted in usable updates');
+  // 2*HOLD - 1: the usable updates land on even ticks, so the 480th is tick 958 and the
+  // loop exits at 959. The claim being pinned is "roughly twice the wall clock", not an
+  // exact count.
+  assert.ok(ticks >= HOLD * 2 - 1,
+    `a null window must not spend the baseline (took ${ticks} ticks for ${HOLD} usable updates)`);
+
+  // minSd floors the divisor. Without it, a hold that lands on an unusually quiet stretch
+  // makes every later excursion saturate — a bar pegged at 100 reads as a confident
+  // detection rather than as "outside the range I calibrated on".
+  const quiet = new DSP.AdaptiveNormalizer(opts);
+  for (let i = 0; i < HOLD; i++) quiet.update(0.5 + (Math.random() - 0.5) * 1e-6);
+  const bumped = [];
+  for (let i = 0; i < 200; i++) bumped.push(quiet.update(0.52));
+  assert.ok(bumped[bumped.length - 1] < 0.95,
+    `a small excursion past a very quiet baseline must not peg the display`
+    + ` (reached ${(bumped[bumped.length - 1] * 100).toFixed(1)})`);
+
+  /*
+   * DEFAULT UNCHANGED, bit for bit. `holdAfter: null` is the promise that nothing which
+   * has not opted in behaves differently, and the promise is worth a test because both new
+   * parameters sit in the hot path of every score on the screen. Compared against the old
+   * implementation transcribed verbatim rather than against recorded constants, so this
+   * keeps checking the right thing if the defaults are ever retuned.
+   */
+  function asItWas(adapt = 0.001, slope = 0.9, smoothing = 0.05) {
+    let mu = null, varr = 0.25, value = 0.5;
+    return (raw) => {
+      let target = value;
+      if (raw != null && !Number.isNaN(raw)) {
+        if (mu === null) mu = raw;
+        mu += adapt * (raw - mu);
+        varr += adapt * ((raw - mu) * (raw - mu) - varr);
+        const z = (raw - mu) / Math.sqrt(varr + 1e-6);
+        target = 1 / (1 + Math.exp(-z * slope));
+      }
+      value += smoothing * (target - value);
+      return value;
+    };
+  }
+  const now = new DSP.AdaptiveNormalizer(), then = asItWas();
+  for (let i = 0; i < 4000; i++) {
+    // Nulls included: they take the other branch, which is where a regression would hide.
+    const raw = i % 17 === 0 ? null : Math.sin(i / 40) * 0.6 + 0.4;
+    assert.strictEqual(now.update(raw), then(raw),
+      `an un-opted-in normaliser must be identical to the old one (diverged at update ${i})`);
+  }
+  assert.strictEqual(now.held, false, 'a normaliser with no holdAfter never reports itself held');
+
+  console.log('✓ the baseline learns then holds: a constant signal draws a still line, a sustained rise'
+    + ' stays risen, nulls do not spend the hold, and an un-opted-in normaliser is unchanged');
+}
+
 console.log('\nAll DSP tests passed.');

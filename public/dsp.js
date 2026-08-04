@@ -757,24 +757,94 @@
   // running mean/variance of the wearer's own session — used for calm, and
   // equally for independent alpha-level/beta-level tracking so the visual
   // can respond to more than one blended number.
+  /*
+   * THE BASELINE LEARNS, THEN IT HOLDS. `holdAfter` is why, and it is the fix for a
+   * complaint that has now been made twice.
+   *
+   * Reported the first time as "i'm not convinced that we should be normalizing
+   * everything... if it wasn't normalized it would be a better indicator when i'm
+   * generally calm thruout a sit, right?", and the second time as lines that DRIFT. Both
+   * are the same defect and it is this: `mu` chases the signal it is measuring. At
+   * adapt=0.001 on a 4Hz tick that is a ~250-second time constant, so any level the
+   * signal actually holds is subtracted back out of the display. Measured, on a raw
+   * signal that steps from 0.3 to 0.8 at one minute and then never moves again:
+   *
+   *     displayed at 2min  69.2
+   *     displayed at 5min  61.7      <- the signal has not changed
+   *     displayed at 10min 55.9      <- still has not changed
+   *
+   * The line slides back to the middle on its own. Every value it passes through is a
+   * change the meditator did not make, which is the worst possible thing for a mirror to
+   * show, and it is also why a uniformly calm sit and a uniformly agitated one both land
+   * near 50 (see the calmAbs note in app.js — rank correlation MINUS 0.32 across seven
+   * real sits).
+   *
+   * So: adapt for the first `holdAfter` USABLE updates to learn this person's scale on
+   * this day, then stop moving. After that the map from raw to displayed is fixed for the
+   * rest of the sit, so the line moves if and only if the signal moved.
+   *
+   * Counted in USABLE updates, not ticks. A null raw — an artifact window, a floating
+   * electrode — teaches nothing and must not count, or a sit that starts with a badly
+   * seated headband would freeze its scale on the two minutes of rubbish that produced no
+   * readings at all.
+   *
+   * `minSd` goes with a hold, because a hold can land on an unrepresentatively quiet
+   * stretch. With no floor under the standard deviation, every later excursion divides by
+   * almost nothing and saturates at 0 or 100 — a bar pegged at the top reads as a
+   * confident detection rather than as "outside the range I calibrated on", which is the
+   * failure mode HANDOFF §6 already names for hard clamps. It defaults to 0 rather than to
+   * something sensible on purpose: a floor changes the output of a normaliser that has not
+   * opted into anything, and `holdAfter = null` has to mean the behaviour is bit-for-bit
+   * what it was.
+   */
   class AdaptiveNormalizer {
-    constructor({ adapt = 0.001, slope = 0.9, smoothing = 0.05 } = {}) {
+    constructor({ adapt = 0.001, slope = 0.9, smoothing = 0.05,
+      holdAfter = null, minSd = 0 } = {}) {
       this.adapt = adapt; this.slope = slope; this.smoothing = smoothing;
+      this.holdAfter = holdAfter; this.minSd = minSd;
       this.mu = null; this.varr = 0.25; this.value = 0.5;
+      // How many updates carried a real reading. The hold is spent in these, not in time.
+      this.clean = 0;
     }
+    // Whether the scale is now fixed. The UI says so, because a reader is owed the
+    // difference between "relative to the last few minutes" and "relative to the first
+    // two" — they support different conclusions.
+    get held() { return this.holdAfter != null && this.clean >= this.holdAfter; }
     update(raw) {
       let target = this.value;
       if (raw != null && !Number.isNaN(raw)) {
         if (this.mu === null) this.mu = raw;
-        this.mu += this.adapt * (raw - this.mu);
-        this.varr += this.adapt * ((raw - this.mu) * (raw - this.mu) - this.varr);
-        const z = (raw - this.mu) / Math.sqrt(this.varr + 1e-6);
+        // Learn only while the baseline is still open. Once held, mu and varr are the
+        // fixed reference and this is a plain affine map through a logistic.
+        if (!this.held) {
+          this.clean++;
+          this.mu += this.adapt * (raw - this.mu);
+          this.varr += this.adapt * ((raw - this.mu) * (raw - this.mu) - this.varr);
+        }
+        const sd = Math.max(this.minSd, Math.sqrt(this.varr + 1e-6));
+        const z = (raw - this.mu) / sd;
         target = 1 / (1 + Math.exp(-z * this.slope));
       }
       this.value += this.smoothing * (target - this.value);
       return this.value;
     }
   }
+
+  /*
+   * How long a baseline stays open before it holds, in USABLE updates.
+   *
+   * 480 is two minutes of clean windows at the app's 4Hz tick. The trade is short and
+   * legible in both directions: too brief and the scale is set on however you happened to
+   * be sitting in the first thirty seconds, too long and most of the sit is still being
+   * re-centred out from under you. Two minutes is also roughly when the 16-second band
+   * averager has enough history for the ratio it feeds in to mean anything.
+   *
+   * Named here rather than at each call site because five normalisers share it, and five
+   * copies of a number is how the chart and the visual end up disagreeing about calm.
+   */
+  const BASELINE_HOLD_UPDATES = 480;
+  // The floor under the held standard deviation. See the minSd note above.
+  const BASELINE_MIN_SD = 0.05;
 
   // ---- Spike detection against a slow baseline, not the previous tick ----
   // A real bug lived here once: comparing each reading to the immediately
@@ -819,12 +889,16 @@
   // read content, and it cannot distinguish "solving a problem" from "worrying"
   // from "composing a poem". Present it as activity, never as mind-reading.
   class ActivityTracker {
-    constructor({ varWindow = 40, smoothing = 0.06, spikeDecay = 0.94 } = {}) {
+    /* `holdAfter` is passed straight down to both inner normalisers. Thinking is on the
+       chart beside Calm, so if one baseline holds and the other keeps chasing, the two
+       lines answer different questions while looking like one picture. */
+    constructor({ varWindow = 40, smoothing = 0.06, spikeDecay = 0.94,
+      holdAfter = null, minSd = 0 } = {}) {
       this.varWindow = varWindow;      // ticks; 40 @ ~4/sec ≈ 10s
       this.smoothing = smoothing;
       this.spikeDecay = spikeDecay;
-      this.betaNorm = new AdaptiveNormalizer({ smoothing: 0.12 });
-      this.varNorm = new AdaptiveNormalizer({ smoothing: 0.12 });
+      this.betaNorm = new AdaptiveNormalizer({ smoothing: 0.12, holdAfter, minSd });
+      this.varNorm = new AdaptiveNormalizer({ smoothing: 0.12, holdAfter, minSd });
       this.ratios = [];
       this.spikeDensity = 0;
       this.value = 0.5;
@@ -969,5 +1043,6 @@
     ARTIFACT_PTP_UV, peakToPeak, isArtifact, FLAT_PTP_UV, isFlat, pearson, classifyArtifact,
     detectBeats, estimateBreathingPeriod,
     AdaptiveNormalizer, SpikeDetector, ActivityTracker,
+    BASELINE_HOLD_UPDATES, BASELINE_MIN_SD,
   };
 });

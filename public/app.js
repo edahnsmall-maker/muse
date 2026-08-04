@@ -536,10 +536,16 @@ function logSessionSample(result, channels) {
      * nothing to find because nothing was kept.
      *
      * WHY THESE THREE MATTER MORE THAN THE COMPOSITES, which is the part worth understanding: every
-     * EEG composite in this app is normalised WITHIN the sit. AdaptiveNormalizer re-centres on a
-     * ~250-second baseline, so "Calm 32" means "low compared with the last few minutes of this
-     * recording", not "low compared with your other sits". Pooling those numbers across sessions
-     * compares each sit to itself and calls the result a difference between sits.
+     * EEG composite in this app is normalised WITHIN the sit. AdaptiveNormalizer learns a baseline
+     * from this sit's first two minutes of usable signal and then holds it, so "Calm 32" means "low
+     * compared with how this sit started", not "low compared with your other sits". Pooling those
+     * numbers across sessions compares each sit to its own opening and calls the result a difference
+     * between sits.
+     *
+     * The hold is what makes the number stable enough to read at all — before it, the baseline chased
+     * the signal on a ~250-second time constant, so the score slid back to 50 on its own. It does not
+     * make the number comparable between sits, and nothing will: two sits with different openings have
+     * different zeroes.
      *
      * Breaths per minute, beats per minute and RMSSD in milliseconds have none of that problem. They
      * are physical quantities on fixed scales, identical in meaning on Tuesday and Thursday. Together
@@ -755,8 +761,10 @@ function showSummaryStats(stats) {
     const key = viewMode === 'composites' ? primaryMetric : 'calm';
     const label = (Metrics.get(key) || {}).label || key;
     const series = sessionLog.map((r) => (r && Number.isFinite(r[key]) ? r[key] : null));
+    /* The SAME transform the display used, hold included. A self-check that re-normalised
+       with a chasing baseline would be grading a trace the meditator never saw. */
     const through = (xs) => {
-      const norm = new DSP.AdaptiveNormalizer();
+      const norm = new DSP.AdaptiveNormalizer(HOLD);
       return xs.map((v) => norm.update(v)).filter((v) => v != null);
     };
     const sc = SelfCheck.check(series, through, { seed: 11, repeats: 9 });
@@ -1361,19 +1369,31 @@ function measuredAlphaPeak() {
       windows: sp.windows, skipped: sp.skipped, binHz: sp.binHz }, DSP.individualAlphaPeak(sp));
   }));
 }
-const tracker = new DSP.AdaptiveNormalizer();
+/*
+ * THE BASELINE HOLDS AFTER TWO MINUTES, and every normaliser on this screen holds
+ * together. See the long note on DSP.AdaptiveNormalizer for the measurement that forced
+ * it; the short version is that a chasing baseline draws changes the meditator did not
+ * make, and it was reported twice — once as "jumpy lines" and once as lines that drift.
+ *
+ * ONE SETTING, SHARED. Calm drives the visual and is also a line on the chart, and
+ * Thinking sits next to it. A normaliser that held beside one that chased would put two
+ * lines with different reference points in one picture, which is the same class of mistake
+ * as the three chart colours that collided.
+ */
+const HOLD = { holdAfter: DSP.BASELINE_HOLD_UPDATES, minSd: DSP.BASELINE_MIN_SD };
+const tracker = new DSP.AdaptiveNormalizer(HOLD);
 // "Thinking" is a separate signal from movement noise: activation (beta level),
 // how much the band balance churns, and how often it shifts abruptly. Computed
 // only from artifact-free windows, so a jaw clench is never read as a thought.
-const activityTracker = new DSP.ActivityTracker();
+const activityTracker = new DSP.ActivityTracker(HOLD);
 /* OFF BY DEFAULT, as asked. An unrequested interruption during a sit is something to opt
    into, not out of; the Cues pill turns them on when they are wanted. */
 const cueEngine = new Cues.CueEngine({ minIntervalSec: 300, enabled: false });
 // Per-band normalisers, so each composite is expressed relative to this
 // person's own session rather than an invented absolute scale.
 const bandNorms = {
-  delta: new DSP.AdaptiveNormalizer(), theta: new DSP.AdaptiveNormalizer(),
-  alpha: new DSP.AdaptiveNormalizer(), beta: new DSP.AdaptiveNormalizer(),
+  delta: new DSP.AdaptiveNormalizer(HOLD), theta: new DSP.AdaptiveNormalizer(HOLD),
+  alpha: new DSP.AdaptiveNormalizer(HOLD), beta: new DSP.AdaptiveNormalizer(HOLD),
 };
 let features = {};
 
@@ -1979,12 +1999,32 @@ function updatePanelVisibility() {
   renderModeBar();
 }
 
+/*
+ * WHAT THE VERTICAL AXIS MEANS, said on the chart rather than in a source comment.
+ *
+ * The mockup carries the line "Each line shows change within its own recent range", which was the
+ * honest description of a chasing baseline. Now that the baseline holds, the sentence has to change
+ * with it — and it has to say WHICH state it is in, because "still learning the scale" and "scale
+ * fixed" support different readings of the same line. During the first two minutes a rise can be the
+ * baseline moving; after it, a rise is the signal.
+ */
+function chartScaleNote() {
+  if (!tracker.held) {
+    const left = Math.max(0, DSP.BASELINE_HOLD_UPDATES - tracker.clean);
+    return `Finding the scale for this sit — about ${Math.ceil(left / 4)}s of clean signal to go. `
+      + `Until then a line can move because the scale is still settling.`;
+  }
+  return 'Each line is scaled to this sit’s first two minutes, and that scale is now fixed — '
+    + 'a line moves only if the signal moved. Not comparable with another sit.';
+}
+
 function renderLegend() {
   legendEl.innerHTML =
     visibleSeries().map((s) =>
       `<span class="legendItem${seriesEnabled[s.key] ? '' : ' off'}" data-key="${s.key}">` +
       `<span class="swatch" style="background:${s.color};color:${s.color}"></span>${s.label}</span>`
-    ).join('');
+    ).join('')
+    + `<div id="chartScale">${escapeHtml(chartScaleNote())}</div>`;
 
   legendEl.querySelectorAll('.legendItem').forEach((el) => {
     el.addEventListener('click', () => {
@@ -2024,9 +2064,15 @@ function showMetricInfo() {
   summaryBodyEl.innerHTML =
     `<div class="subtle" style="max-width:620px;margin-bottom:18px">`
     + `Nothing here is a validated instrument. "Calm" is alpha minus beta at the two `
-    + `forehead sensors, normalised to your own session — a common relaxation index, `
+    + `forehead sensors, scaled to this sit's first two minutes — a common relaxation index, `
     + `but the weights and thresholds were chosen by hand and have never been checked `
     + `against ground truth. Only the blink and jaw signatures are direct measurements. `
+    + `<b>Every score here is relative to how this sit started</b>, and that scale is fixed `
+    + `once two minutes of clean signal have gone by, so a number that moves afterwards `
+    + `moved because the signal did. It still cannot be compared with another sit: two sits `
+    + `that started differently have different zeroes. Alpha share, breaths per minute, `
+    + `heart rate and HRV are the only readings on this screen that mean the same thing `
+    + `on Tuesday and Thursday. `
     + `Establishing real validity would need labelled sessions to compare against, `
     + `which is a project rather than a code change.</div>`
     + rows
@@ -2036,6 +2082,11 @@ function showMetricInfo() {
 }
 
 function renderChart() {
+  /* Refreshed HERE, not in renderLegend. The legend is rebuilt only on a click, so a note
+     written there would still say "finding the scale" an hour into the sit. This runs once
+     a second with the samples. */
+  const noteEl = document.getElementById('chartScale');
+  if (noteEl) noteEl.textContent = chartScaleNote();
   const w = chartCanvas.width, h = chartCanvas.height;
   chartCtx.clearRect(0, 0, w, h);
   chartCtx.strokeStyle = 'rgba(255,255,255,.08)';
@@ -2123,7 +2174,11 @@ const steadiness = new Polar.SteadinessTracker();
 // RMSSD in ms varies enormously between people (roughly 10ms to 100ms+ at rest),
 // so an absolute number cannot drive a 0..1 visual. Normalised against the
 // wearer's own baseline, same discipline as every EEG-derived score.
-const hrvNorm = new DSP.AdaptiveNormalizer({ adapt: 0.004, slope: 1.6, smoothing: 0.08 });
+// Holds with the rest, but keeps its own faster adapt and steeper slope: RMSSD spans
+// roughly 10ms to 100ms+ between people, so its baseline has further to travel before the
+// scale is usable at all.
+const hrvNorm = new DSP.AdaptiveNormalizer(
+  Object.assign({ adapt: 0.004, slope: 1.6, smoothing: 0.08 }, HOLD));
 let strapDevice = null;
 let hrBpm = null;          // the strap's own HR field
 let hrvRmssd = null;       // ms, over the rolling window
