@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Muse Zen Spike — Direct Bluetooth</title>
-<link rel="stylesheet" href="app.css?v=2026-08-04c">
+<link rel="stylesheet" href="app.css?v=2026-08-04d">
 </head>
 <body>
 <canvas id="gl"></canvas>
@@ -71,6 +71,26 @@
   <div id="readoutSpan"></div>
   <div id="readoutRows"></div>
 </div>
+  <!-- NOTES AS A PANEL THAT STAYS, not a modal that covers the sit.
+       Asked for: "i want that to be something on the screen that maybe opens and stays there. like if i
+       hit note, there's a space to add a note at t time, or add a general note. then when i click on it
+       again, i see all that in the panel and can still add something new."
+       It was a full-screen overlay over #summary, which meant writing a note hid the visual and the
+       clock — so a note about what was happening had to be written after it stopped happening. -->
+  <div id="notePanel" class="panelClosed">
+    <div id="noteHead">Notes</div>
+    <div id="noteBody">
+      <textarea id="noteBox" placeholder="What's happening? (Ctrl+Enter to save)"></textarea>
+      <div class="noteBar">
+        <label class="noteAnchor"><input type="checkbox" id="noteAnchor"> stamp it at
+          <b id="noteStamp">—</b></label>
+        <span class="grow"></span>
+        <button id="noteSave">Save</button>
+      </div>
+      <div id="noteList"></div>
+      <div id="arrowEditor"></div>
+    </div>
+  </div>
   <div id="dataPanel" class="panelClosed">
     <div id="dataToggle">Live feed</div>
     <div id="dataBody">
@@ -174,7 +194,7 @@
    * shows an old date here while the version string still reads new — which is exactly the mismatch
    * that has been the root cause twice.
    */
-  var BUILD = '2026-08-04c';
+  var BUILD = '2026-08-04d';
   window.__BUILD = BUILD;
   try {
     var stamp = document.createElement('div');
@@ -211,28 +231,28 @@
   });
 }());
 </script>
-<script src="dsp.js?v=2026-08-04c"></script>
+<script src="dsp.js?v=2026-08-04d"></script>
 <!-- A fake headband, only when the URL asks for it (?sim=1). See simdevice.js: it exists so
      "the panels do not open" can be told apart from "the headband is not streaming". -->
-<script src="simdevice.js?v=2026-08-04c"></script>
-<script src="clockcheck.js?v=2026-08-04c"></script>
-<script src="selfcheck.js?v=2026-08-04c"></script>
-<script src="viz-core.js?v=2026-08-04c"></script>
-<script src="visual.js?v=2026-08-04c"></script>
-<script src="chart.js?v=2026-08-04c"></script>
-<script src="summary.js?v=2026-08-04c"></script>
-<script src="cues.js?v=2026-08-04c"></script>
-<script src="metrics.js?v=2026-08-04c"></script>
-<script src="markers.js?v=2026-08-04c"></script>
-<script src="polar.js?v=2026-08-04c"></script>
-<script src="record.js?v=2026-08-04c"></script>
-<script src="export.js?v=2026-08-04c"></script>
-<script src="labels.js?v=2026-08-04c"></script>
-<script src="trials.js?v=2026-08-04c"></script>
-<script src="probes.js?v=2026-08-04c"></script>
-<script src="panels.js?v=2026-08-04c"></script>
+<script src="simdevice.js?v=2026-08-04d"></script>
+<script src="clockcheck.js?v=2026-08-04d"></script>
+<script src="selfcheck.js?v=2026-08-04d"></script>
+<script src="viz-core.js?v=2026-08-04d"></script>
+<script src="visual.js?v=2026-08-04d"></script>
+<script src="chart.js?v=2026-08-04d"></script>
+<script src="summary.js?v=2026-08-04d"></script>
+<script src="cues.js?v=2026-08-04d"></script>
+<script src="metrics.js?v=2026-08-04d"></script>
+<script src="markers.js?v=2026-08-04d"></script>
+<script src="polar.js?v=2026-08-04d"></script>
+<script src="record.js?v=2026-08-04d"></script>
+<script src="export.js?v=2026-08-04d"></script>
+<script src="labels.js?v=2026-08-04d"></script>
+<script src="trials.js?v=2026-08-04d"></script>
+<script src="probes.js?v=2026-08-04d"></script>
+<script src="panels.js?v=2026-08-04d"></script>
 <!-- Only for handing a finished sit to the lab's inbox; the app never reads lab data. -->
-<script src="labstore.js?v=2026-08-04c"></script>
-<script src="app.js?v=2026-08-04c"></script>
+<script src="labstore.js?v=2026-08-04d"></script>
+<script src="app.js?v=2026-08-04d"></script>
 </body>
 </html>

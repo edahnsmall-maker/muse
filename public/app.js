@@ -3914,41 +3914,72 @@ function renderArrowEditor(host) {
   });
 }
 
-function openNotes() {
-  summaryTitleEl.textContent = 'Notes';
-  summaryEl.classList.add('show');
-  const tSec = recSession ? sessionTSec() : null;
-  summaryBodyEl.innerHTML = `<textarea id="noteBox" placeholder="What's happening? (Ctrl+Enter to save)"></textarea>`
-    + `<div class="noteBar"><label class="noteAnchor"><input type="checkbox" id="noteAnchor"`
-    + `${noteAnchored ? ' checked' : ''}> stamp it at `
-    + `<b id="noteStamp">${tSec == null ? '—' : Exporter.clock(tSec)}</b></label>`
-    + `<span class="grow"></span><button id="noteSave">Save note</button></div>`
-    + `<div id="noteList"><p style="opacity:.6">reading\u2026</p></div>`
-    /* THE ARROW EDITOR LIVES HERE, because this is the panel you already open to manage what you have
-       marked, and a separate settings screen for four text boxes is a screen nobody would find. */
-    + `<div class="card" id="arrowEditor" style="margin-top:16px"></div>`;
+/*
+ * NOTES: A PANEL, TOGGLED — not a modal that covers the sit.
+ *
+ * Asked for: "i want that to be something on the screen that maybe opens and stays there... then when i
+ * click on it again, i see all that in the panel and can still add something new."
+ *
+ * It used to build its markup into #summary, a full-screen overlay. That hid the visual and the clock, so
+ * a note about what was happening had to be written after it had stopped happening — and the panel had
+ * to be closed to see anything, which is the opposite of "stays there".
+ *
+ * The markup is static in direct.html now for the same reason the metrics header is: this panel holds a
+ * textarea, and rebuilding it on every render would throw away half-typed text and the caret with it.
+ */
+let notesOpen = false;
+const notePanelEl = document.getElementById('notePanel');
 
+function renderNotesPanel() {
+  if (!notePanelEl) return;
+  notePanelEl.classList.toggle('panelClosed', !notesOpen);
+  notePanelEl.classList.toggle('show', notesOpen);
+  const link = document.getElementById('notesLink');
+  if (link) link.classList.toggle('active', notesOpen);
+}
+
+function toggleNotes(force) {
+  notesOpen = force == null ? !notesOpen : !!force;
+  renderNotesPanel();
+  if (!notesOpen) return;
+  renderNoteList();
+  renderArrowEditor(document.getElementById('arrowEditor'));
+  const box = document.getElementById('noteBox');
+  if (box) box.focus();
+}
+
+function openNotes() { toggleNotes(true); }
+
+/* Wired once, to nodes that live for the life of the page. The stamp keeps counting while a note is being
+   typed, because it records when the note is SAVED rather than when the panel opened. */
+{
   const box = document.getElementById('noteBox');
   const anchorBox = document.getElementById('noteAnchor');
   const stampEl = document.getElementById('noteStamp');
-  // The stamp is the time the note is SAVED, so it has to keep counting while the
-  // note is being typed rather than freezing at the moment the panel opened.
-  const tick = setInterval(() => {
-    if (!stampEl.isConnected) { clearInterval(tick); return; }
-    stampEl.textContent = recSession ? Exporter.clock(sessionTSec()) : '\u2014';
-  }, 1000);
-  anchorBox.addEventListener('change', () => {
-    noteAnchored = anchorBox.checked;
-    localStorage.setItem(noteAnchoredKey, String(noteAnchored));
-  });
-  box.addEventListener('keydown', (e) => {
-    // Ctrl/Cmd+Enter saves; plain Enter must keep making paragraphs.
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveNote(); }
-  });
-  document.getElementById('noteSave').addEventListener('click', saveNote);
-  box.focus();
-  renderNoteList();
-  renderArrowEditor(document.getElementById('arrowEditor'));
+  if (anchorBox) {
+    anchorBox.checked = noteAnchored;
+    anchorBox.addEventListener('change', () => {
+      noteAnchored = anchorBox.checked;
+      try { localStorage.setItem(noteAnchoredKey, String(noteAnchored)); } catch (e) { /* private mode */ }
+    });
+  }
+  if (stampEl) {
+    setInterval(() => {
+      if (!notesOpen) return;
+      stampEl.textContent = recSession ? Exporter.clock(sessionTSec()) : '\u2014';
+    }, 1000);
+  }
+  if (box) {
+    // Ctrl/Cmd+Enter saves; plain Enter must keep making paragraphs. stopPropagation because every
+    // letter here would otherwise also fire the mark it names.
+    box.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveNote(); }
+      if (e.key === 'Escape') { e.preventDefault(); toggleNotes(false); }
+    });
+  }
+  const saveBtn = document.getElementById('noteSave');
+  if (saveBtn) saveBtn.addEventListener('click', saveNote);
 }
 
 async function saveNote() {
@@ -3966,7 +3997,7 @@ async function saveNote() {
   box.value = '';
   box.focus();
   renderNoteList();
-  setStatus('note saved');
+  setStatus(noteAnchored ? 'note saved at this moment' : 'general note saved for the whole sit');
   statusLockUntil = Date.now() + 1400;
 }
 
@@ -4015,7 +4046,7 @@ async function renderNoteList() {
   });
 }
 
-document.getElementById('notesLink').addEventListener('click', openNotes);
+document.getElementById('notesLink').addEventListener('click', () => toggleNotes());
 
 document.getElementById('sessionsLink').addEventListener('click', openSessions);
 
@@ -4462,6 +4493,7 @@ function ensureGrip(el) {
 const DRAGGABLE_PANELS = [
   ['readout', readoutEl],
   ['dataPanel', document.getElementById('dataPanel')],
+  ['notePanel', notePanelEl],
   ['modeBar', modeBarEl],
   ['armedBar', armedBarEl],
 ];
