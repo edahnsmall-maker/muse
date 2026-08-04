@@ -171,7 +171,19 @@
   /* The collapsed device control. Quiet, and it reports state so the sit can be
      started without expanding it: "Connect" vs "2 linked". */
   #devToggle { align-self: center; }
-  #devToggle.linked { color: #bfe9c9; border-color: rgba(150,230,180,.4); }
+  /* THE ONE CONTROL YOU MUST FIND ON A FRESH PAGE. Fourteen pills, all styled alike, and exactly one
+     of them is the thing standing between you and a working app. A ring rather than a fill: a filled
+     red pill reads as an error state or a stop button, and this is neither — it is the way in.
+     The glow is what carries it on a near-black background; the border alone is too quiet at this
+     size, which is the whole reason it went unnoticed. */
+  #devToggle.needed { color: #ffd4d9; border-color: rgba(255,110,130,.85);
+    box-shadow: 0 0 0 1px rgba(255,110,130,.45), 0 0 14px rgba(255,80,105,.30); }
+  #devToggle.needed:hover { border-color: rgba(255,150,165,.95);
+    box-shadow: 0 0 0 1px rgba(255,150,165,.6), 0 0 18px rgba(255,80,105,.42); }
+  /* `linked` wins: once the headband is on there is nothing to prompt for, and the two rules must not
+     both paint or the pill would be red AND green. Ordered after `needed` so specificity is equal and
+     source order decides — the same reason renderDevToggle() clears one flag as it sets the other. */
+  #devToggle.linked { color: #bfe9c9; border-color: rgba(150,230,180,.4); box-shadow: none; }
   .pillGroup { display: inline-flex; flex-direction: column; gap: 5px; align-items: flex-start; }
   .pillGroup .pills { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   /* Quiet, because a group label is orientation rather than a control. */

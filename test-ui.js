@@ -444,6 +444,128 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       + ' control to press, instead of showing an empty screen');
   }
 
+  /* 0a1d) A PANEL RESTORED FROM STORAGE MUST BE FULLY ON SCREEN, AND CONNECT MUST BE FINDABLE.
+   *
+   * Both reported together: "the panel loaded off screen for me i had to zoom out to grab it and see
+   * it" and "i wouldn't mind if the connect button was always outlined in red so it stood out a bit."
+   *
+   * The clamp only ever promised 48px stayed in view, which is enough to grab a panel with a mouse and
+   * useless for reading one — so a 274px readout restored from a wider window kept its legal sliver
+   * and hid the rest. Tested in the browser rather than only against clampPosition() because the unit
+   * test passed the whole time this was broken: the bug was in what the contract promised, not in
+   * whether the code met it.
+   */
+  {
+    const ctxPos = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const pagePos = await ctxPos.newPage();
+    await pagePos.addInitScript(() => {
+      Object.defineProperty(navigator, 'bluetooth', {
+        value: { requestDevice: () => new Promise(() => {}), getAvailability: async () => true },
+        configurable: true,
+      });
+      // A position saved on a wider monitor — the exact shape of the report.
+      localStorage.setItem('zenbio.panel.readout', JSON.stringify({ x: 2400, y: 90 }));
+      localStorage.setItem('zenbio.panel.dataPanel', JSON.stringify({ x: -900, y: 2000 }));
+    });
+    await pagePos.goto(PAGE);
+    await pagePos.waitForTimeout(600);
+
+    const boxes = await pagePos.evaluate(() => {
+      const out = {};
+      for (const id of ['readout', 'dataPanel', 'modeBar', 'armedBar']) {
+        const el = document.getElementById(id);
+        const r = el.getBoundingClientRect();
+        out[id] = { left: Math.round(r.left), top: Math.round(r.top),
+          right: Math.round(r.right), bottom: Math.round(r.bottom),
+          w: Math.round(r.width), h: Math.round(r.height) };
+      }
+      out.vw = innerWidth; out.vh = innerHeight;
+      return out;
+    });
+    for (const id of ['readout', 'dataPanel']) {
+      const b = boxes[id];
+      if (b.w === 0) continue;                 // a panel with no size cannot be off-screen
+      assert.ok(b.left >= 0 && b.right <= boxes.vw,
+        `${id} must be horizontally inside the viewport, got ${b.left}..${b.right} of ${boxes.vw}`);
+      assert.ok(b.top >= 0 && b.bottom <= boxes.vh,
+        `${id} must be vertically inside the viewport, got ${b.top}..${b.bottom} of ${boxes.vh}`);
+    }
+    // And it must be READABLE, not merely present: the failure was a visible sliver.
+    assert.ok(boxes.readout.w >= 200,
+      `the whole readout must be on screen, not ${boxes.readout.w}px of it`);
+
+    /* AND IT MUST SURVIVE THE PANEL GROWING. #readout is a three-line note before connecting and a
+       ten-row table after, with no resize event in between — so a position that was fine while it was
+       short can push its rows past the bottom edge with nothing left to re-check it. */
+    const grown = await pagePos.evaluate(async () => {
+      const el = document.getElementById('readout');
+      Panels.place(el, 40, innerHeight - 120);      // near the bottom, while it is short
+      document.getElementById('readoutRows').innerHTML =
+        Array.from({ length: 22 }, () => '<div class="rRow">x</div>').join('');
+      await new Promise((r) => setTimeout(r, 400));  // let the ResizeObserver fire
+      const r = el.getBoundingClientRect();
+      return { bottom: Math.round(r.bottom), vh: innerHeight, h: Math.round(r.height) };
+    });
+    assert.ok(grown.bottom <= grown.vh + 1,
+      `a panel that grows must be pulled back in, bottom ${grown.bottom} of ${grown.vh}`);
+
+    /* THE CONNECT RING. Asserted on computed style, because a class name proves only that the code
+       ran — and the first attempt at this DID run, in a browser with no navigator.bluetooth, where
+       renderDevices() returns before it reaches the pill. */
+    const ring = await pagePos.evaluate(async () => {
+      const el = document.getElementById('devToggle');
+      const before = getComputedStyle(el);
+      const disconnected = { border: before.borderColor, shadow: before.boxShadow };
+      // Now link a headband and re-render: the ring must go, or it is decoration rather than a prompt.
+      device = { gatt: { connected: true } };
+      renderDevices();
+      /* WAIT FOR THE TRANSITION TO FINISH BEFORE READING.
+         .pill animates border-color and box-shadow, and getComputedStyle during a transition returns
+         the CURRENT interpolated value — so reading immediately after the class change reports the
+         colour it is leaving, not the one it is going to. The first version of this assertion failed
+         against correct code for exactly that reason: the element already read `pill linked` while its
+         computed border was still the red it was fading out of. */
+      await new Promise((r) => setTimeout(r, 700));
+      const after = getComputedStyle(el);
+      return { disconnected, linked: { border: after.borderColor, shadow: after.boxShadow },
+        classes: el.className };
+    });
+    const redness = (rgb) => {
+      const m = /rgba?\((\d+),\s*(\d+),\s*(\d+)/.exec(rgb || '');
+      return m ? Number(m[1]) - Math.max(Number(m[2]), Number(m[3])) : 0;
+    };
+    assert.ok(redness(ring.disconnected.border) > 60,
+      `Connect must be ringed red while nothing is connected, got ${ring.disconnected.border}`);
+    assert.notStrictEqual(ring.disconnected.shadow, 'none',
+      'and glow, because a 1px border at this size is what went unnoticed in the first place');
+    assert.match(ring.classes, /linked/, 'and the pill must know it is linked');
+    assert.ok(redness(ring.linked.border) <= 0,
+      `and must stop being red once the headband is linked, got ${ring.linked.border} — a ring that`
+      + ' never goes out is the boy who cried wolf, and this app uses red for real failures');
+
+    await pagePos.close();
+    await ctxPos.close();
+
+    /* AND NO RING IN A BROWSER THAT CANNOT REACH BLUETOOTH. Urging someone to press a button that
+       cannot work sends them clicking instead of reading the explanation next to it. */
+    const ctxNoBt = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+    const pageNoBt = await ctxNoBt.newPage();
+    await pageNoBt.goto(PAGE);                    // headless Chromium genuinely has no Bluetooth
+    await pageNoBt.waitForTimeout(500);
+    const noBt = await pageNoBt.evaluate(() => ({
+      classes: document.getElementById('devToggle').className,
+      border: getComputedStyle(document.getElementById('devToggle')).borderColor,
+    }));
+    assert.ok(!/needed/.test(noBt.classes),
+      'no red prompt where Bluetooth is unavailable — the popover explains that case instead');
+    assert.ok(redness(noBt.border) <= 0, `and it must not paint red anyway, got ${noBt.border}`);
+    await pageNoBt.close();
+    await ctxNoBt.close();
+
+    console.log(`✓ a panel stored off-screen comes fully back (readout ${boxes.readout.w}px wide, fully`
+      + ' inside), stays in when it grows, and Connect is ringed red until the headband is linked');
+  }
+
   /* 0a2) THE DISPLAYED METRICS MUST COME FROM ONE PLACE.
    *
    * direct.html used to keep its own hand-written list of which composites to show, while

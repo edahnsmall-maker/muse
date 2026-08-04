@@ -9,7 +9,7 @@
 const assert = require('assert');
 const Panels = require('./public/panels.js');
 
-const VW = 1280, VH = 800, KEEP = Panels.KEEP_VISIBLE;
+const VW = 1280, VH = 800;
 
 // 1) An ordinary drag inside the viewport is left alone.
 {
@@ -17,25 +17,52 @@ const VW = 1280, VH = 800, KEEP = Panels.KEEP_VISIBLE;
   assert.deepStrictEqual(p, { x: 300, y: 200 }, 'a position already on screen must not move');
 }
 
-// 2) Dragged off each edge, enough stays behind to grab. This is the whole point: a
-//    panel you cannot reach is a panel you cannot put back.
+/* 2) Pushed past any edge, the WHOLE panel comes back — not a grabbable sliver of it.
+ *
+ *    This used to assert that only 48px remained on screen, and that weaker contract
+ *    produced the bug it was supposed to prevent: "the panel loaded off screen for me, i had to zoom
+ *    out to grab it and see it." 48px is enough to grab a panel and nowhere near enough to read one,
+ *    and a restored position is precisely the case where the user cannot see what to fix.
+ */
 {
   const right = Panels.clampPosition({ x: 5000, y: 100, w: 400, h: 300, vw: VW, vh: VH });
-  assert.strictEqual(right.x, VW - KEEP,
-    `dragged off the right, ${KEEP}px must remain on screen (got x=${right.x})`);
+  assert.strictEqual(right.x, VW - 400,
+    `pushed off the right, the panel's right edge must come back to the viewport edge (got x=${right.x})`);
   const below = Panels.clampPosition({ x: 100, y: 5000, w: 400, h: 300, vw: VW, vh: VH });
-  assert.strictEqual(below.y, VH - KEEP,
-    `dragged off the bottom, ${KEEP}px must remain (got y=${below.y})`);
+  assert.strictEqual(below.y, VH - 300,
+    `pushed off the bottom, its bottom edge must come back (got y=${below.y})`);
   const left = Panels.clampPosition({ x: -5000, y: 100, w: 400, h: 300, vw: VW, vh: VH });
   assert.strictEqual(left.x, 0, 'a panel narrower than the viewport cannot go left of 0');
   const above = Panels.clampPosition({ x: 100, y: -5000, w: 400, h: 300, vw: VW, vh: VH });
   assert.strictEqual(above.y, 0,
     'never above the top — the grip would be off-screen and the panel unmovable');
+
+  /* THE ACTUAL REPORTED CASE, asserted with the real numbers rather than round ones: the 274px
+     readout, restored from a position saved in a wider window. Under the old clamp it kept 48px and
+     hid 226 of them. */
+  const readout = Panels.clampPosition({ x: 1800, y: 88, w: 274, h: 300, vw: VW, vh: VH });
+  assert.strictEqual(readout.x, VW - 274,
+    `the readout must be fully visible after restore, not ${VW - readout.x}px of it`);
+  assert.ok(readout.x + 274 <= VW, 'its right edge must be inside the viewport');
+  // And the guarantee stated as the property, over a spread of sizes, so no single case can pass by
+  // luck while the rule is wrong.
+  for (const w of [120, 274, 400, 920, 1280]) {
+    for (const x of [-9999, -1, 0, 500, VW, 9999]) {
+      const p = Panels.clampPosition({ x, y: 0, w, h: 100, vw: VW, vh: VH });
+      if (w <= VW) {
+        assert.ok(p.x >= 0 && p.x + w <= VW,
+          `w=${w} x=${x} landed at ${p.x}, which is not fully on screen`);
+      } else {
+        assert.ok(p.x <= 0 && p.x + w >= VW,
+          `w=${w} x=${x} landed at ${p.x}, which does not span the viewport`);
+      }
+    }
+  }
 }
 
 // 3) A panel WIDER than the viewport must still be allowed to sit at x=0.
 //    The visual picker is min(920px, 90vw) and a phone in portrait is ~390px wide.
-//    Clamping its left edge to `vw - KEEP` would shove a full-bleed panel sideways
+//    Clamping its left edge to a fixed inset would shove a full-bleed panel sideways
 //    every time the page loaded, which is worse than not clamping at all.
 {
   const phone = { vw: 390, vh: 844 };

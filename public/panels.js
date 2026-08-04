@@ -37,27 +37,37 @@
   else root.Panels = factory();
 })(typeof window !== 'undefined' ? window : globalThis, function () {
 
-  // How much of a panel must remain on screen. Not zero: a panel dragged fully off is
-  // unreachable, and the only recovery would be clearing storage — so the clamp is a
-  // correctness requirement, not a nicety.
-  const KEEP_VISIBLE = 48;
-
   /*
-   * Clamp a position so the panel stays reachable.
+   * Clamp a position so the panel is ENTIRELY on screen.
    *
-   * Pure, and separated out because it is the part that can be got wrong invisibly:
-   * an off-by-one here does not look like a bug, it looks like a panel that vanished.
+   * WHY THIS CHANGED. It used to guarantee only that 48px of a panel stayed in view. That is
+   * enough to grab a panel with a mouse and nowhere near enough to READ one, and it produced exactly
+   * the failure it was written to prevent: "the panel loaded off screen for me, i had to zoom out to
+   * grab it and see it." A 274px-wide readout restored from a position saved in a wider window kept
+   * its legal 48px and hid the other 226.
    *
-   * A panel WIDER than the viewport (the visual picker is `min(920px, 90vw)`, and a
-   * phone in portrait is narrower than some panels) must still be allowed to sit at
-   * x=0. Clamping its left edge to `vw - KEEP_VISIBLE` would shove it off to the right.
-   * So the upper bound is never less than the lower one.
+   * The old bound is also wrong in principle for a RESTORED position. Leaving a panel half off the
+   * edge is a reasonable thing to do deliberately, while you are looking at it. It is never a
+   * reasonable thing to inherit on load in a window you have since resized, because the state you
+   * would need in order to fix it is the state you cannot see. So the rule is now the same in both
+   * cases — fully visible, always — because two rules would mean a drag that gets quietly undone on
+   * the next load, and an app that appears to fight you is worse than one that is merely strict.
+   *
+   * A panel WIDER than the viewport cannot be fully visible, and both bounds handle that in one
+   * expression rather than as a special case:
+   *
+   *   w <= vw:  min(0, vw-w) = 0,      max(0, vw-w) = vw-w   -> anywhere fully inside
+   *   w >  vw:  min(0, vw-w) = vw-w,   max(0, vw-w) = 0      -> must span the viewport
+   *
+   * Vertically the lower bound stays at 0 rather than going negative: the drag grip is at the TOP of
+   * a panel, so a tall panel pushed up loses the only handle that could bring it back.
    */
-  function clampPosition({ x, y, w, h, vw, vh, keep = KEEP_VISIBLE }) {
-    const minX = Math.min(0, vw - w);          // allow full-bleed panels to start at 0
-    const maxX = Math.max(minX, vw - keep);
-    const minY = 0;                            // never above the top: the drag handle
-    const maxY = Math.max(minY, vh - keep);    // would be off-screen and unclickable
+  function clampPosition({ x, y, w, h, vw, vh }) {
+    const fitsX = vw - w;
+    const minX = Math.min(0, fitsX);
+    const maxX = Math.max(0, fitsX);
+    const minY = 0;
+    const maxY = Math.max(0, vh - h);
     return {
       x: Math.round(Math.min(maxX, Math.max(minX, x))),
       y: Math.round(Math.min(maxY, Math.max(minY, y))),
@@ -183,6 +193,33 @@
       place(el, p.x, p.y);
     }
 
+    /*
+     * A PANEL THAT GROWS MUST NOT GROW OFF THE SCREEN.
+     *
+     * Clamping on restore and on resize covers a position that became invalid because the WINDOW
+     * changed. It misses the other half: these panels change their own size constantly. #readout is a
+     * three-line "no headband connected" note before you connect and a ten-row table after, and
+     * #armedBar and #modeBar rebuild their contents outright. A position that was fully visible while
+     * the panel was short puts its bottom rows past the edge once it is tall — with no resize event
+     * anywhere, so nothing re-checked it.
+     *
+     * Re-clamping cannot loop: it changes the panel's POSITION, and position does not affect the size
+     * a ResizeObserver reports. Guarded anyway for a browser without one, because a missing observer
+     * must cost this refinement and not the drag.
+     */
+    let observer = null;
+    if (typeof w.ResizeObserver === 'function') {
+      observer = new w.ResizeObserver(() => {
+        if (el.dataset.dragged !== '1' || drag) return;   // never fight a drag in progress
+        const r = el.getBoundingClientRect();
+        const at = currentPosition(el, w);
+        const p = clampPosition({ x: at.x, y: at.y, w: r.width, h: r.height,
+          vw: w.innerWidth, vh: w.innerHeight });
+        if (p.x !== Math.round(at.x) || p.y !== Math.round(at.y)) place(el, p.x, p.y);
+      });
+      observer.observe(el);
+    }
+
     grip.addEventListener('pointerdown', (e) => {
       // Only the primary button, and never from something that is itself interactive.
       if (e.button != null && e.button !== 0) return;
@@ -234,6 +271,8 @@
     return {
       reset() { unplace(el); if (key) clear(key, storage); },
       isDragged() { return el.dataset.dragged === '1'; },
+      // So a caller (or a test) can stop observing without leaking the observer.
+      destroy() { if (observer) { observer.disconnect(); observer = null; } },
     };
   }
 
@@ -255,6 +294,6 @@
     }
   }
 
-  return { KEEP_VISIBLE, STORE_PREFIX, clampPosition, makeDraggable, reclampAll,
+  return { STORE_PREFIX, clampPosition, makeDraggable, reclampAll,
     currentPosition, place, unplace, load, save, clear };
 });

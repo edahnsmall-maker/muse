@@ -285,6 +285,10 @@ function museConnected() {
   return !!(device && device.gatt && device.gatt.connected);
 }
 function renderDevices() {
+  /* The PILL is maintained first, above the early return below. It lives in the control bar and is
+     never removed, so it must keep rendering even in a browser where the device buttons were taken
+     out — otherwise its state freezes at whatever it was when the page loaded. */
+  renderDevToggle();
   // The no-Web-Bluetooth path removes both buttons entirely.
   if (!connectBtn.isConnected || !strapBtn.isConnected) return;
   const muse = museConnected();
@@ -309,7 +313,6 @@ function renderDevices() {
 
   // Only offered when there is actually something wrong to report.
   if (copyLogBtn.isConnected) copyLogBtn.hidden = !pmdLogWorthSending();
-  renderDevToggle();
 }
 
 // The log is worth sending when the accelerometer negotiation produced a failure
@@ -2421,6 +2424,19 @@ function renderDevToggle() {
   const n = (museConnected() ? 1 : 0) + (strapConnected() ? 1 : 0);
   devToggleEl.classList.toggle('linked', n > 0);
   devToggleEl.classList.toggle('active', devicesOpen);
+  /* OUTLINED IN RED UNTIL THE HEADBAND IS ON, as asked — "i wouldn't mind if the connect button was
+     always outlined in red so it stood out a bit."
+     Conditioned on the headband rather than literally always, and that is a deliberate reading of the
+     request: the reason to want it is that Connect is the one thing you must find on a fresh page,
+     among fourteen identically-styled pills. Once the headband IS linked, a red ring around a control
+     with nothing wrong with it is the boy who cried wolf — and this app now leans on red meaning
+     "something needs you" for the boot banner. The strap does not count: it is optional, so a sit with
+     only a headband is complete and must not look unfinished. */
+  /* Not in a browser that cannot reach Bluetooth at all. Urging someone to press a button that
+     cannot work is worse than saying nothing — the popover already explains that case, and a red ring
+     would send them clicking instead of reading. */
+  devToggleEl.classList.toggle('needed',
+    !!navigator.bluetooth && !museConnected() && !museConnecting);
   devToggleEl.textContent = (museConnecting || strapConnecting) ? 'Connecting\u2026' : 'Connect';
 }
 
