@@ -148,6 +148,13 @@
     color: rgba(255,255,255,.45); margin-bottom: 9px; }
   .keyRow { display: flex; gap: 9px; font-size: 12.5px; margin-bottom: 8px; line-height: 1.45; }
   .keyRow .k { flex: 0 0 auto; }
+  /* The row expander. A button rather than a link so it is reachable by keyboard, and monospaced so
+     the triangle does not shift the column width when it turns. */
+  .expander { background: none; border: none; cursor: pointer; color: rgba(255,255,255,.55);
+    font: 13px ui-monospace, monospace; padding: 2px 6px; border-radius: 6px; }
+  .expander:hover { background: rgba(255,255,255,.08); color: #cbe9ff; }
+  tr.sesDetail > td { padding-top: 0; }
+  .why { font-size: 12px; color: rgba(255,255,255,.5); line-height: 1.5; }
 </style>
 
 <!--
@@ -220,6 +227,11 @@
 <script src="findings.js"></script>
 <script src="explore.js"></script>
 <script src="labstore.js"></script>
+<!-- So the lab can read the app's own recordings instead of asking for an upload. Same origin, same
+     database; see loadFromApp(). export.js rebuilds each one into archive bytes so a saved sit and a
+     dropped file go through one parse. -->
+<script src="record.js"></script>
+<script src="export.js"></script>
 <script>
 /*
  * Sessions are held in memory AND persisted — see labstore.js.
@@ -261,6 +273,9 @@ dropEl.addEventListener('drop', (e) => {
 fileEl.addEventListener('change', () => load(Array.from(fileEl.files)));
 
 const handedOver = [];   // names of sits the app passed straight over, for the notice
+/* Which rows are opened. A Set of indexes rather than a flag on the session, because the session
+   objects are persisted and a UI toggle has no business surviving a reload. */
+const expanded = new Set();
 
 async function load(files) {
   for (const f of files) {
@@ -391,10 +406,27 @@ async function ingest(name, bytes) {
           return;
         }
       }
+      /*
+       * THE SIT'S NAME COMES FROM ITS OWN NOTE.
+       *
+       * Asked for: "for naming the sits, if there's a note you can use the note. that's where i've
+       * been naming the sit." Exactly right, and it was already in every archive — the general note
+       * ("very relaxed, post sleep, post meditation, day 3 retreat") is a better name than any filename
+       * and it is written at the one moment the sit is still fresh.
+       *
+       * The GENERAL note specifically: `anchored === false` means it describes the whole sit rather
+       * than a moment in it. A timed mark's text would name the sit after one thing that happened
+       * inside it, which is worse than the filename.
+       */
+      const general = (read.notes || []).find((n) =>
+        (n.anchored === 'no' || n.anchored === false) && n.text && String(n.text).trim());
+      const fromNote = general ? String(general.text).trim().replace(/\s+/g, ' ') : '';
       sessions.push({
         contentKey,
         sessionId: f.name, file: f.name, read, notes, spans, wholeSit, trialBlocks,
         durationSec: duration, alpha, spectra, movement, wholeStats,
+        // Only as a DEFAULT: a name typed into the list later must win, so setLabel() overwrites it.
+        label: fromNote.slice(0, 120) || '',
       });
     } catch (err) {
       // A bad archive must be reported by name. Silently skipping it would mean
@@ -439,6 +471,76 @@ async function openStore() {
   } catch (err) {
     storeError = (err && err.message) || 'unavailable';
     console.log('[lab] storage unavailable:', storeError);
+  }
+  // The app's own recordings, without an upload step. See loadFromApp().
+  await loadFromApp();
+}
+
+/* ==========================================================================
+ * THE SITS ARE ALREADY ON THIS MACHINE — READ THEM
+ * ==========================================================================
+ * Asked for: "since everything's saved in the site, instead of uploading everything could we just have
+ * the files there ready for me to select? or even just autoload them when i finish a recording and give
+ * me the option to exclude by clicking the x in the Loaded table?"
+ *
+ * Right, and the upload step was never necessary. The app and the lab are the same origin, so the
+ * recordings the app wrote are readable from here directly. Every sit ever recorded has been sitting a
+ * few hundred lines away while the instructions said to export a zip and drag it back in.
+ *
+ * THROUGH THE SAME PARSE AS A DROPPED FILE. Each session is rebuilt into archive bytes and handed to
+ * ingest(), rather than shortcutting into the session list. A second ingest path would be a second
+ * thing to keep correct, and the archive is the format every downstream view already understands.
+ *
+ * NEWEST FIRST, WITH A CEILING. A retreat's worth of raw EEG is hundreds of megabytes, and reading all
+ * of it on page load would look like the page hanging. The most recent AUTOLOAD_MAX are loaded and the
+ * rest are listed as available, because silently analysing a subset while appearing to analyse
+ * everything is the failure mode that matters here.
+ */
+const AUTOLOAD_MAX = 12;
+const appSits = { available: [], loaded: 0, skipped: 0, error: null };
+
+async function loadFromApp() {
+  if (typeof Recorder === 'undefined' || typeof Exporter === 'undefined') return;
+  let db = null;
+  try {
+    db = await Recorder.open();
+    const list = await Recorder.listSessions(db);
+    appSits.available = list.map((m) => ({
+      id: m.id, startedAt: m.startedAt, durationSec: m.durationSec || 0,
+      label: m.label || '', marks: m.markCount || 0, bytes: m.bytes || 0,
+      simulated: !!m.simulated, recovered: !!m.recovered,
+    }));
+    // A sit with no scored rows cannot contribute to anything, and loading it only to have every view
+    // report it as empty is noise in the one list the reader is meant to choose from.
+    const worth = list.filter((m) => (m.durationSec || 0) >= 20);
+    appSits.skipped = list.length - worth.length;
+    for (const meta of worth.slice(0, AUTOLOAD_MAX)) {
+      try {
+        const loaded = await Recorder.loadSession(db, meta.id);
+        if (!loaded || !loaded.rows || !loaded.rows.length) continue;
+        const { files } = Exporter.buildFiles({
+          meta: loaded.meta, eeg: loaded.eeg, acc: loaded.acc, rr: loaded.rr,
+          rows: loaded.rows, notes: loaded.notes,
+          headAcc: loaded.headAcc, headRaw: loaded.headRaw,
+        }, {});
+        const bytes = new Uint8Array(Exporter.zip(files, { date: new Date(meta.startedAt) }));
+        // ingest() refuses a duplicate by content hash, so a sit already dropped by hand is not
+        // loaded twice — the same guard that stops the same seconds landing on both sides of a split.
+        const before = sessions.length;
+        await ingest(Exporter.archiveName(loaded.meta), bytes);
+        if (sessions.length > before) appSits.loaded++;
+      } catch (err) {
+        console.log('[lab] could not read saved sit', meta.id, err && err.message);
+      }
+    }
+    if (appSits.available.length > worth.slice(0, AUTOLOAD_MAX).length) {
+      appSits.skipped += worth.length - Math.min(worth.length, AUTOLOAD_MAX);
+    }
+  } catch (err) {
+    appSits.error = (err && err.message) || 'could not read the app’s recordings';
+    console.log('[lab] loadFromApp:', appSits.error);
+  } finally {
+    if (db && db.close) db.close();
   }
 }
 
@@ -638,6 +740,20 @@ function renderExplore() {
   const win = q.key === 'after-mark'
     ? { preSec: 0, postSec: exploreState.windowSec }
     : { preSec: exploreState.windowSec, postSec: 0 };
+  /* THE COMPARISON: another kind of mark, or the rest of the sit.
+     Asked for, and it is the better question — "a better comparison would be to compare marks to other
+     marks, not randomness." Against the rest of the sit, almost anything reads as different, because the
+     unmarked remainder contains settling in, shifting posture, the first minute and the last. Against
+     another kind of mark, all of that is held constant. See sessionVote() in explore.js. */
+  const otherKinds = kinds.filter((k) => k.kind !== exploreState.experience);
+  if (q.key === 'between-marks' && (!exploreState.other
+      || exploreState.other === exploreState.experience
+      || !otherKinds.some((k) => k.kind === exploreState.other))) {
+    exploreState.other = otherKinds.length ? otherKinds[0].kind : null;
+  }
+  const againstTimes = q.key === 'between-marks' && exploreState.other
+    ? (byKind[exploreState.other] || {}) : null;
+  const otherLabel = exploreState.other ? kindLabelFor(exploreState.other) : '';
   const sits = usable.map((s) => ({ id: s.sessionId, label: displayName(s), rows: s.read.metrics }));
   const answers = [];
   for (const sig of Explore.SIGNALS) {
@@ -651,7 +767,8 @@ function renderExplore() {
     const typed = sits.map((x) => ({ id: x.id, label: x.label,
       rows: (x.rows || []).map((r) => ({ t: Number(r.t), [sig.key]: r[sig.key] === '' || r[sig.key] == null
         ? null : Number(r[sig.key]) })) }));
-    answers.push(Explore.askAcrossSessions(typed, { signalKey: sig.key, markTimes: marks, window: win }));
+    answers.push(Explore.askAcrossSessions(typed,
+      { signalKey: sig.key, markTimes: marks, againstTimes, window: win }));
   }
   const order = { repeats: 0, possible: 1, unclear: 2, insufficient: 3 };
   answers.sort((a, b) => order[a.strength.key] - order[b.strength.key]);
@@ -677,7 +794,8 @@ function renderExplore() {
     return `<div class="finding">
       <div class="glyph">${GLYPH[a.signalKey] || '·'}</div>
       <div class="body">
-        <div class="say">${esc(Explore.describe(a, { experience: expLabel }))}</div>
+        <div class="say">${esc(Explore.describe(a, {
+          experience: againstTimes ? `${expLabel} compared with ${otherLabel}` : expLabel }))}</div>
         <div class="why">${esc(sentenceJoin(a.strength.why, sig.caveat))}</div>
       </div>
       <span class="badge ${a.strength.key}">${esc(a.strength.label)}</span>
@@ -693,6 +811,11 @@ function renderExplore() {
       </div>
       <div class="knobs">
         <label>Experience <select id="expSel">${kindOptions}</select></label>
+        ${q.key === 'between-marks' && otherKinds.length ? `<label>Compared with
+          <select id="othSel">${otherKinds.map((k) => `<option value="${esc(k.kind)}"`
+            + `${k.kind === exploreState.other ? ' selected' : ''}>${esc(k.label)}`
+            + ` · ${k.total} marks</option>`).join('')}</select></label>`
+          : '<span class="dim">compared with the rest of each sit</span>'}
         <label>Window <select id="winSel">
           ${[10, 20, 30, 60].map((v) => `<option value="${v}"`
             + `${v === exploreState.windowSec ? ' selected' : ''}>${v} seconds</option>`).join('')}
@@ -748,6 +871,8 @@ function renderExplore() {
   const winSel = document.getElementById('winSel');
   if (qSel) qSel.addEventListener('change', () => { exploreState.question = qSel.value; renderExplore(); });
   if (expSel) expSel.addEventListener('change', () => { exploreState.experience = expSel.value; renderExplore(); });
+  const othSel = document.getElementById('othSel');
+  if (othSel) othSel.addEventListener('change', () => { exploreState.other = othSel.value; renderExplore(); });
   if (winSel) winSel.addEventListener('change', () => {
     exploreState.windowSec = Number(winSel.value); renderExplore();
   });
@@ -1289,6 +1414,23 @@ function renderLoaded() {
     }
     const labelled = s.spans.filter((x) => x.dims).length;
     const trans = s.notes.filter((n) => n.kind === 'transition').length;
+    /* THE MARK TALLY, BY KIND, IN THE ROW.
+       "the timelines aren't really useful for me. the only thing that's useful is knowing how many
+       marks i made. that could be included in the table maybe." It is the number that decides whether
+       a sit can contribute anything, and a total alone does not say: eleven marks all of one kind
+       cannot support a comparison BETWEEN kinds, which is what the marks are for. */
+    const tally = {};
+    for (const n of (s.read && s.read.notes) || []) {
+      const k = n.tapCategory || n.transition || n.markKind;
+      if (!k || n.anchored === 'no' || n.anchored === false) continue;
+      tally[k] = (tally[k] || 0) + 1;
+    }
+    const kindsHere = Object.entries(tally).sort((a, b) => b[1] - a[1]);
+    const tallyText = kindsHere.length
+      ? kindsHere.map(([k, n]) => `${n}\u00d7 ${esc(kindLabelFor(k))}`).join(', ')
+        + (kindsHere.length === 1 && kindsHere[0][1] > 1
+          ? ' <span class="bad">— all one kind</span>' : '')
+      : '<span class="dim">none</span>';
     /* A SIMULATED SIT IS CALLED OUT IN THE ROW, not folded into a warning count.
        "3 warning(s)" behind a tooltip is exactly how a fabricated sit gets analysed anyway: the
        number looks like a data-quality note, and nothing on screen says the rows are invented. Once
@@ -1301,21 +1443,61 @@ function renderLoaded() {
       : (s.read.warnings.length
         ? `<span class="warn" title="${esc(s.read.warnings.join(' · '))}">${s.read.warnings.length} warning(s)</span>`
         : '<span class="dim">complete</span>');
-    return `<tr>
-      <td>${esc(s.file)}<br>
+    /* WHEN the sit was, not which file it was in. "the times still look funky to me" was partly this:
+       the row led with a filename, so a reader comparing sits was comparing strings. */
+    const when = Number.isFinite(s.read.metrics.length && Date.parse(s.read.metrics[0] && s.read.metrics[0].absoluteTime))
+      ? new Date(Date.parse(s.read.metrics[0].absoluteTime)) : null;
+    return `<tr class="sesMain">
+      <td><button class="expander" data-expand="${i}" title="Show this sit's timeline and alpha peak"
+          aria-expanded="false">${expanded.has(i) ? '\u25be' : '\u25b8'}</button></td>
+      <td>
         <input class="sesLabel" data-label="${i}" value="${esc(labelOf(s))}"
           placeholder="name this sit — what was it?" maxlength="120"
-          style="width:100%;max-width:260px;margin-top:4px;font-size:11.5px"></td>
+          style="width:100%;max-width:300px;font-size:12.5px">
+        <div class="dim" style="font-size:11px;margin-top:3px">${esc(s.file)}</div></td>
       <td class="num">${clock(s.durationSec)}</td>
-      <td class="num">${s.read.metrics.length}</td>
+      <td>${tallyText}</td>
       <td class="num">${labelled || '<span class="dim">0</span>'}</td>
-      <td class="num">${trans || '<span class="dim">0</span>'}</td>
       <td>${warn}</td>
-      <td><button data-drop="${i}">Remove</button></td></tr>`;
+      <td><button data-drop="${i}" title="Leave this sit out of every analysis on this page">\u00d7</button></td></tr>`
+      /* THE TIMELINE AND THE ALPHA PEAK LIVE BEHIND THE ARROW.
+         "alternatively, every entry in the Loaded section could have a little arrow that expands and
+         lets me see the visual timeline. that's where the individual alpha peak could live too." Both
+         were full-width sections of their own, above the analyses, for something looked at rarely. */
+      + (expanded.has(i) ? `<tr class="sesDetail"><td></td><td colspan="6">
+          <div id="detail-${i}"></div></td></tr>` : '');
   }).join('');
-  loadedEl.innerHTML = `<h2>Loaded</h2>${dupNote}${handoffNote}<div class="card scroll"><table>
-    <tr><th>File</th><th>Length</th><th>Rows</th><th>Labelled spans</th>
-        <th>Transitions</th><th>Archive</th><th></th></tr>${rows}</table></div>`;
+  /* WHERE THESE CAME FROM, AND WHAT IS NOT HERE.
+     The lab now reads the app's own recordings on load, so there is no upload step. That makes it
+     essential to say how many were read and how many were left — a page that silently analyses the
+     twelve most recent sits while appearing to analyse a retreat is the worst kind of wrong. */
+  const sourceNote = appSits.error
+    ? `<div class="card note bad">Could not read this device's recordings: ${esc(appSits.error)}.
+       Drop archives above instead.</div>`
+    : (appSits.available.length
+      ? `<div class="card note">Read <strong>${appSits.loaded}</strong> of
+         <strong>${appSits.available.length}</strong> sits recorded on this device — no upload needed.
+         ${appSits.skipped ? `${appSits.skipped} left out (under 20 seconds, or beyond the`
+           + ` ${AUTOLOAD_MAX} most recent). ` : ''}Press × on any row to leave it out of every
+         analysis here; that does not delete the recording.</div>`
+      : '');
+  loadedEl.innerHTML = `<h2>Your sits</h2>${sourceNote}${dupNote}${handoffNote}
+    <div class="card scroll"><table>
+    <tr><th></th><th>Sit</th><th>Length</th><th>Marks</th><th>Labelled spans</th>
+        <th>Signal</th><th></th></tr>${rows}</table></div>`;
+
+  /* The arrow: the timeline and the alpha peak for one sit, drawn only when opened.
+     Both used to be full-width sections above the analyses, permanently, for something looked at
+     rarely — and one of them ("the timelines aren't really useful for me") never. */
+  loadedEl.querySelectorAll('[data-expand]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      const i = Number(btn.dataset.expand);
+      if (expanded.has(i)) expanded.delete(i); else expanded.add(i);
+      renderLoaded();
+      if (expanded.has(i)) renderSitDetail(i);
+    });
+  });
+  for (const i of expanded) renderSitDetail(i);
   /* Saved on blur and on Enter, not per keystroke: one write per edit, and no re-render
      mid-typing to move the caret. */
   loadedEl.querySelectorAll('[data-label]').forEach((input) => {
@@ -1355,28 +1537,64 @@ const SERIES_COLOURS = {
   equanimity: '#86efac', hrv: '#fb923c', breath: '#c4b5fd', noise: '#6b7280',
 };
 
-function renderTimelines() {
-  const usable = sessions.filter((s) => !s.error && s.read.metrics.length);
-  if (!usable.length) { document.getElementById('timelines')?.remove(); return; }
-  let host = document.getElementById('timelines');
-  if (!host) {
-    host = document.createElement('div');
-    host.id = 'timelines';
-    loadedEl.after(host);
+/*
+ * ONE SIT'S DETAIL, behind its arrow: the timeline, and its individual alpha peak.
+ *
+ * Both are per-sit facts that were being shown as page-wide sections. The alpha peak in particular
+ * belongs here rather than above the analyses — and it comes with the caveat it has earned: measured
+ * across eight real sits it was not found in ANY of them, because alpha is suppressed with the eyes
+ * open and that is how this practice is done.
+ */
+function renderSitDetail(i) {
+  const host = document.getElementById(`detail-${i}`);
+  const s = sessions[i];
+  if (!host || !s || s.error) return;
+  const a = s.alpha;
+  const peak = a && a.freqHz != null
+    ? `<strong>${a.freqHz.toFixed(2)} Hz</strong> at ${esc(a.bestName || '?')}`
+      + `${a.fallback ? ' <span class="bad">(fallback — the gates were not met, so this is a guess'
+        + ' rather than a measurement)</span>' : ''}`
+    : `<span class="dim">no peak found${a && a.reason ? ` — ${esc(a.reason)}` : ''}</span>`;
+  host.innerHTML = `<div class="card" style="margin:8px 0">
+      <div class="sideHead">Individual alpha peak</div>
+      <div>${peak}</div>
+      <div class="why" style="margin-top:6px">Alpha is strongly suppressed when the eyes are open, and
+      the forehead sensors see less of it than the back of the head would. Across eight real sits here
+      it was not measurable in any of them — the alpha region sat BELOW the background trend rather
+      than above it. For eyes-open practice this number may simply not exist, and that is a fact about
+      the sensor placement rather than about the sit.</div>
+    </div>
+    <div class="card" style="margin:8px 0"><div class="sideHead">Timeline</div>
+      <div id="tl-${i}"></div></div>`;
+  drawOneTimeline(i, document.getElementById(`tl-${i}`));
+}
+
+/*
+ * ONE timeline, inside an opened row.
+ *
+ * The page-wide Timelines section is gone: "the timelines aren't really useful for me. the only thing
+ * that's useful is knowing how many marks i made." The mark tally moved into the table, and the drawing
+ * moved behind the row's arrow — same canvas, same series, same gaps-are-gaps behaviour, reached only
+ * when asked for.
+ */
+function drawOneTimeline(i, host) {
+  const s = sessions[i];
+  if (!host) return;
+  if (!s || s.error || !s.read.metrics.length) {
+    host.innerHTML = '<span class="dim">no per-second rows in this sit</span>';
+    return;
   }
-  host.innerHTML = '<h2>Timelines</h2>'
-    + '<p class="sub">The numbers the app displayed at the time, not recomputed — a'
-    + ' label has to be compared against what was actually on screen.</p>'
-    + usable.map((s, i) => `<div class="card">
-        <div class="row" style="justify-content:space-between">
-          <strong style="font-size:13px">${esc(s.file)}</strong>
-          <span class="note">${clock(s.durationSec)}</span>
-        </div>
-        <canvas id="tl${i}" height="190"></canvas>
-        <div class="legend" id="lg${i}"></div>
-      </div>`).join('');
-  usable.forEach((s, i) => drawTimeline(s, document.getElementById(`tl${i}`),
-    document.getElementById(`lg${i}`)));
+  host.innerHTML = `<p class="sub" style="margin-top:0">The numbers the app displayed at the time, not
+    recomputed — a label has to be compared against what was actually on screen.</p>
+    <canvas id="tlc${i}" height="190"></canvas><div class="legend" id="tll${i}"></div>`;
+  drawTimeline(s, document.getElementById(`tlc${i}`), document.getElementById(`tll${i}`));
+}
+
+// Kept as a no-op host clear so nothing page-wide is drawn. The drawing itself lives in
+// drawOneTimeline, per sit, behind the arrow.
+function renderTimelines() {
+  const host = document.getElementById('timelines');
+  if (host) host.innerHTML = '';
 }
 
 function drawTimeline(s, canvas, legendEl) {

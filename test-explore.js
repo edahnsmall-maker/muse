@@ -226,4 +226,82 @@ function sitWithEffect(id, { marks, lift = 3, noise = 0.2, seconds = 300, key = 
   console.log('✓ badges are counts with words, never percentages, and each explains its own basis');
 }
 
+/* 9) MARK VERSUS MARK, WHICH IS THE COMPARISON THAT WAS ASKED FOR.
+ *
+ * "the clip library compares windows against signals but the signals are meaningless. the point is to
+ * figure out what the signal SHOULD be saying based off of the mark, assuming the mark is correct. a
+ * better comparison would be to compare marks to other marks, not randomness."
+ *
+ * Right, and for a reason worth stating: comparing marked windows against everything else asks "is
+ * anything different here at all", and the unmarked remainder of a sit contains settling in, shifting
+ * posture, the first minute and the last. Comparing Thinking against Just sitting holds all of that
+ * constant — same electrodes, same fit, same morning, same person — and asks the question the marks
+ * were made to answer.
+ *
+ * The fixture makes the distinction bite: BOTH kinds of mark sit above the rest of the sit, and they
+ * differ from each other by less than either differs from the background. A mark-versus-everything
+ * comparison would call both kinds "higher" and find no difference between them; only the
+ * mark-versus-mark comparison can see which is which.
+ */
+{
+  const A = [40, 90, 140, 190, 240];      // "Thinking"
+  const B = [65, 115, 165, 215, 265];     // "Just sitting"
+  function twoKindSit(id, seed) {
+    let sd = seed * 7919 + 11;
+    const rnd = () => { sd = (sd * 1103515245 + 12345) & 0x7fffffff; return sd / 0x7fffffff - 0.5; };
+    const rows = [];
+    for (let t = 0; t < 300; t++) {
+      const nearA = A.some((m) => t >= m - 20 && t <= m);
+      const nearB = B.some((m) => t >= m - 20 && t <= m);
+      // Background 20. Both kinds well above it; A above B by a smaller margin than either is above
+      // the background.
+      let v = 20;
+      if (nearA) v = 32;
+      if (nearB) v = 28;
+      rows.push({ t, calmAbs: v + rnd() * 0.8 });
+    }
+    return { id, label: id, rows };
+  }
+  const sessions = [1, 2, 3, 4].map((i) => twoKindSit(`k${i}`, i));
+  const aTimes = {}, bTimes = {};
+  for (const s of sessions) { aTimes[s.id] = A; bTimes[s.id] = B; }
+
+  // Against the rest of the sit: BOTH kinds read as higher, so this cannot tell them apart.
+  const vsRestA = Explore.askAcrossSessions(sessions, { signalKey: 'calmAbs', markTimes: aTimes,
+    window: { preSec: 20, postSec: 0 } });
+  const vsRestB = Explore.askAcrossSessions(sessions, { signalKey: 'calmAbs', markTimes: bTimes,
+    window: { preSec: 20, postSec: 0 } });
+  assert.strictEqual(vsRestA.direction, 1, 'Thinking reads higher than the rest of the sit');
+  assert.strictEqual(vsRestB.direction, 1, 'and so does Just sitting — same answer for both');
+
+  // Against each other: the difference the marks were made to find.
+  const vsEach = Explore.askAcrossSessions(sessions, { signalKey: 'calmAbs',
+    markTimes: aTimes, againstTimes: bTimes, window: { preSec: 20, postSec: 0 } });
+  assert.strictEqual(vsEach.direction, 1,
+    'Thinking must read higher than Just sitting specifically');
+  assert.strictEqual(vsEach.agree, 4, `in all four sits (got ${vsEach.agree})`);
+  assert.strictEqual(vsEach.strength.key, 'repeats', `and read as repeating (${vsEach.strength.label})`);
+  // And symmetric: asking it the other way round must reverse the sign, not produce a second finding.
+  const reversed = Explore.askAcrossSessions(sessions, { signalKey: 'calmAbs',
+    markTimes: bTimes, againstTimes: aTimes, window: { preSec: 20, postSec: 0 } });
+  assert.strictEqual(reversed.direction, -1, 'the comparison must be symmetric');
+
+  /* THE REST OF THE SIT IS EXCLUDED, not used as a baseline. If those seconds leaked in, the measured
+     difference would be pulled towards the mark-versus-everything answer. Checked directly: the
+     window means must be the two mark levels (32 and 28), not something between them and 20. */
+  const v = Explore.sessionVote(sessions[0].rows, A, 'calmAbs', { preSec: 20, postSec: 0, against: B });
+  assert.ok(Math.abs(v.inMean - 32) < 1.5, `the Thinking windows must average ~32, got ${v.inMean}`);
+  assert.ok(Math.abs(v.outMean - 28) < 1.5,
+    `and the Just sitting windows ~28, got ${v.outMean} — anything near 20 means the unmarked`
+    + ' remainder leaked into the baseline');
+
+  // Not enough of the OTHER kind is its own refusal, distinct from not enough of the first.
+  const thin = Explore.sessionVote(sessions[0].rows, A, 'calmAbs',
+    { preSec: 20, postSec: 0, against: [65] });
+  assert.strictEqual(thin.known, false);
+  assert.match(thin.reason, /other kind/, 'and must say which side is short');
+  console.log('✓ marks compare against other marks, not against the rest of the sit: both kinds read'
+    + ' "higher" versus the background, and only the mark-to-mark comparison separates them');
+}
+
 console.log('\nAll explore tests passed.');

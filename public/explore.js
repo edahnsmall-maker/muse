@@ -159,7 +159,7 @@
    * answered. Never returns a direction with no size behind it — a sign with no magnitude is what turns
    * measurement noise into a finding.
    */
-  function sessionVote(rows, marks, signalKey, { preSec = 20, postSec = 0 } = {}) {
+  function sessionVote(rows, marks, signalKey, { preSec = 20, postSec = 0, against = null } = {}) {
     const inWindow = [];
     const outside = [];
     const usable = (rows || []).filter((r) => r && r.t != null
@@ -170,11 +170,47 @@
         reason: `only ${(marks || []).length} marks in this sit; ${MIN_MARKS_PER_SESSION} are needed` };
     }
     const near = (t) => marks.some((m) => t >= m - preSec && t <= m + postSec);
-    for (const r of usable) (near(r.t) ? inWindow : outside).push(r[signalKey]);
+    /*
+     * `against` COMPARES ONE KIND OF MARK WITH ANOTHER, not with the rest of the sit.
+     *
+     * Asked for, and it is the better question: "the clip library compares windows against signals but
+     * the signals are meaningless. the point is to figure out what the signal SHOULD be saying based off
+     * of the mark, assuming the mark is correct. a better comparison would be to compare marks to other
+     * marks, not randomness."
+     *
+     * Right, and for a specific reason. Comparing marked windows against everything else asks "is
+     * anything different here at all", and almost anything answers yes — the unmarked remainder of a sit
+     * includes settling in, shifting posture, the first minute, the last minute. Comparing Thinking
+     * against Just sitting asks the question the marks were made to answer, and it holds constant
+     * everything a sit has in common with itself: same electrodes, same fit, same morning, same person.
+     *
+     * When `against` is given, the rest of the sit is EXCLUDED rather than used as the baseline. A
+     * second that is near neither kind of mark tells us nothing about the difference between them, and
+     * including it would quietly turn the comparison back into mark-versus-everything.
+     */
+    if (against && against.length >= MIN_MARKS_PER_SESSION) {
+      const nearOther = (t) => against.some((m) => t >= m - preSec && t <= m + postSec);
+      for (const r of usable) {
+        const a = near(r.t), b = nearOther(r.t);
+        // A second inside BOTH windows cannot distinguish them and is dropped. Assigning it to one
+        // side would be arbitrary, and to both would count it twice.
+        if (a && !b) inWindow.push(r[signalKey]);
+        else if (b && !a) outside.push(r[signalKey]);
+      }
+    } else if (against) {
+      return { known: false,
+        reason: `only ${against.length} marks of the other kind in this sit;`
+          + ` ${MIN_MARKS_PER_SESSION} are needed on both sides` };
+    } else {
+      for (const r of usable) (near(r.t) ? inWindow : outside).push(r[signalKey]);
+    }
     if (inWindow.length < 3 || outside.length < 3) {
       return { known: false,
-        reason: `the windows cover almost the whole sit (${inWindow.length} in, ${outside.length} out),`
-          + ' so there is nothing left to compare against' };
+        reason: against
+          ? `too little separated signal (${inWindow.length}s of one kind, ${outside.length}s of the`
+            + ' other) — the two kinds of mark overlap almost everywhere in this sit'
+          : `the windows cover almost the whole sit (${inWindow.length} in, ${outside.length} out),`
+            + ' so there is nothing left to compare against' };
     }
     const spread = sd(usable.map((r) => r[signalKey]));
     if (!(spread > 0)) {
@@ -201,11 +237,12 @@
    * `sessions` is an array of { id, label, rows, marksBySignalKind } — whatever the caller has parsed.
    * This module never reads a file.
    */
-  function askAcrossSessions(sessions, { signalKey, markTimes, window: win } = {}) {
+  function askAcrossSessions(sessions, { signalKey, markTimes, againstTimes, window: win } = {}) {
     const votes = [];
     for (const s of sessions || []) {
       const marks = (markTimes && markTimes[s.id]) || [];
-      const v = sessionVote(s.rows, marks, signalKey, win || {});
+      const against = againstTimes ? ((againstTimes[s.id]) || []) : null;
+      const v = sessionVote(s.rows, marks, signalKey, Object.assign({}, win || {}, { against }));
       votes.push(Object.assign({ sessionId: s.id, label: s.label || s.id }, v));
     }
     const answered = votes.filter((v) => v.known);

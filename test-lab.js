@@ -317,14 +317,20 @@ async function showTab(page, tab) {
        correct once it can measure itself. Which means a canvas assertion has to take the path a
        reader takes. Text assertions do not; they read fine from a hidden subtree. */
     await showTab(page, 'sessions');
+    /* THE TIMELINE LIVES BEHIND THE ROW'S ARROW NOW.
+       The page-wide Timelines section was removed on request — "the timelines aren't really useful for
+       me" — and the mark tally it was being read for moved into the table. The drawing is unchanged,
+       so this test still checks the same thing; it just takes the path a reader now takes. */
+    await page.click('[data-expand="0"]');
+    await page.waitForTimeout(700);
     const drawn = await page.evaluate(() => {
-      const c = document.querySelector('#timelines canvas');
+      const c = document.querySelector('tr.sesDetail canvas');
       if (!c) return null;
       const ctx = c.getContext('2d');
       const px = ctx.getImageData(0, 0, c.width, c.height).data;
       let lit = 0;
       for (let i = 3; i < px.length; i += 4) if (px[i] > 8) lit++;
-      return { lit, w: c.width, legend: document.querySelector('#timelines .legend').textContent };
+      return { lit, w: c.width, legend: document.querySelector('tr.sesDetail .legend').textContent };
     });
     assert.ok(drawn, 'a timeline canvas must exist');
     assert.ok(drawn.lit > 500, `the timeline must actually draw something (lit ${drawn.lit})`);
@@ -342,8 +348,10 @@ async function showTab(page, tab) {
      */
     const gap = await page.evaluate(() => {
       const sample = () => {
-        renderTimelines();
-        const c = document.querySelector('#timelines canvas');
+        // renderSitDetail, not renderTimelines: the drawing moved into the expanded row, so this is
+        // the call that actually redraws the canvas under test.
+        renderSitDetail(0);
+        const c = document.querySelector('tr.sesDetail canvas');
         const ctx = c.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
         const x = Math.round((500 / 1200) * c.clientWidth * dpr);
@@ -357,7 +365,7 @@ async function showTab(page, tab) {
       sessions[0].read.metrics.forEach((r, i) => { if (i > 400 && i < 600) r.calm = null; });
       const withGap = sample();
       sessions[0].read.metrics.forEach((r, i) => { r.calm = original[i]; });
-      renderTimelines();
+      renderSitDetail(0);
       return { withCalm, withGap };
     });
     assert.ok(gap.withGap < gap.withCalm,
@@ -1251,7 +1259,7 @@ async function showTab(page, tab) {
     }
 
     // And the tabs must actually switch, each to its own content.
-    for (const [tab, heading] of [['sessions', /Loaded/], ['compare', /Whole sessions|Patterns/],
+    for (const [tab, heading] of [['sessions', /Your sits/], ['compare', /Whole sessions|Patterns/],
       ['signals', /alpha|Clip/i], ['learn', /What these numbers are/]]) {
       await pg.click(`.tab[data-tab="${tab}"]`);
       await pg.waitForTimeout(1200);
