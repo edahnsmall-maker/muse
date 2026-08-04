@@ -167,5 +167,102 @@ const VW = 1280, VH = 800;
   console.log('✓ clamping rounds INWARD: no fractional panel size can put a panel outside the viewport');
 }
 
+/*
+ * DOCKING. A docked panel is defined by its EDGE, and that is the whole point of the state existing.
+ *
+ * A dragged panel keeps the absolute pixel position it was let go at, so it is wrong on the next screen
+ * size and wrong again after a rotation. Restoring a right-docked panel by its stored x would put it in
+ * the middle of a wider window and off the side of a narrower one — exactly the failure docking exists
+ * to avoid — so what gets persisted is the side.
+ */
+{
+  // A minimal element stand-in: enough of the DOM surface for place/dock to work under Node.
+  function fakePanel({ left = 400, top = 200, width = 300, height = 180 } = {}) {
+    const style = {};
+    const el = {
+      dataset: {}, style,
+      getBoundingClientRect() {
+        // Reflects an inline position once one has been written, as a real element would.
+        const l = style.left ? parseFloat(style.left) : left;
+        const t = style.top ? parseFloat(style.top) : top;
+        return { left: l, top: t, width, height, right: l + width, bottom: t + height };
+      },
+      get offsetHeight() { return height; },
+      offsetParent: null,
+    };
+    return el;
+  }
+  const win = { innerWidth: 1200, innerHeight: 800,
+    getComputedStyle: () => ({ position: 'fixed' }) };
+
+  // Nearest edge is decided by the panel's CENTRE, not its left corner: a wide panel whose left edge
+  // is just past the midline still belongs on the left.
+  assert.strictEqual(Panels.nearestEdge(fakePanel({ left: 100 }), win), 'left');
+  assert.strictEqual(Panels.nearestEdge(fakePanel({ left: 800 }), win), 'right');
+  /* The discriminating case: a wide panel whose LEFT edge is left of the midline but whose centre is
+     right of it. Going by the left corner would answer 'left'; going by the centre answers 'right',
+     and the centre is the honest reading of which side the panel is on. */
+  assert.strictEqual(Panels.nearestEdge(fakePanel({ left: 400, width: 500 }), win), 'right',
+    'edge is decided by the panel’s centre, not its left corner');
+
+  // Docking right puts the panel flush against the right edge, whatever its width.
+  for (const width of [200, 300, 640]) {
+    const el = fakePanel({ left: 50, width });
+    Panels.dock(el, 'right', { win });
+    const r = el.getBoundingClientRect();
+    assert.strictEqual(Math.round(r.right), win.innerWidth,
+      `a right-docked panel ${width}px wide must sit flush (right was ${r.right})`);
+    assert.strictEqual(el.dataset.docked, 'right', 'and must record which edge it is on');
+    assert.ok(Panels.isDocked(el), 'and report itself docked');
+  }
+  {
+    const el = fakePanel({ left: 900 });
+    Panels.dock(el, 'left', { win });
+    assert.strictEqual(Math.round(el.getBoundingClientRect().left), 0, 'left-docked sits at x 0');
+  }
+
+  /* THE VERTICAL POSITION IS KEPT, not reset to the top. Docking says which side the panel lives on;
+     yanking it upward as well would make one gesture do two things, and the panel the practitioner
+     docked mid-sit would jump out from under their eyes. */
+  {
+    const el = fakePanel({ left: 500, top: 260 });
+    Panels.dock(el, 'right', { win });
+    assert.strictEqual(Math.round(el.getBoundingClientRect().top), 260,
+      'docking must not move the panel vertically');
+  }
+  // Except where keeping it would put the panel outside — the clamp still applies.
+  {
+    const el = fakePanel({ left: 500, top: 700, height: 180 });
+    Panels.dock(el, 'right', { win });
+    const r = el.getBoundingClientRect();
+    assert.ok(r.bottom <= win.innerHeight,
+      `docking must still clamp into the viewport (bottom ${r.bottom} of ${win.innerHeight})`);
+  }
+  // A panel wider than the viewport cannot sit flush on the right without leaving the left; it spans.
+  {
+    const el = fakePanel({ left: 10, width: 1400 });
+    Panels.dock(el, 'right', { win });
+    assert.strictEqual(Math.round(el.getBoundingClientRect().left), 0,
+      'a panel wider than the viewport docks to 0 rather than to a negative x');
+  }
+  // Releasing clears both the placement and the docked flag, so the stylesheet takes over again.
+  {
+    const el = fakePanel();
+    Panels.dock(el, 'left', { win });
+    Panels.unplace(el);
+    assert.ok(!Panels.isDocked(el), 'unplace must clear the docked state');
+    assert.strictEqual(el.dataset.docked, undefined, 'and remove the attribute the CSS keys off');
+    assert.strictEqual(el.dataset.dragged, undefined, 'and stop claiming to be placed');
+  }
+  // An unrecognised edge is not honoured blindly — it falls back to the nearer side.
+  {
+    const el = fakePanel({ left: 900 });
+    assert.strictEqual(Panels.dock(el, 'sideways', { win }), 'right',
+      'a junk edge must fall back to the nearest, not position the panel nowhere');
+  }
+  console.log('✓ docking snaps to an edge by the panel’s centre, keeps its height and vertical place,'
+    + ' still clamps, and releases cleanly');
+}
+
 console.log('✓ panel positions stay reachable, round-trip, and refuse junk');
 console.log('\nAll panel tests passed.');

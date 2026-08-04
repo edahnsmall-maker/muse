@@ -1483,6 +1483,41 @@ const activeComposites = (Metrics.displayed
   .filter((k) => !CHART_ONLY_COMPOSITES.includes(k));
 
 /*
+ * MIND / BODY / SIGNAL — which group each reading belongs in.
+ *
+ * Asked for, and the reason is that the panel was one flat list of a dozen rows in no order, so
+ * reading it meant scanning all of it every time. The three groups are not decoration: they separate
+ * three genuinely different kinds of claim, and the third one is the important one.
+ *
+ *   MIND    interpreted scores. Every one of these is unvalidated, normalised within the sit, and
+ *           not comparable with another sit.
+ *   BODY    physical quantities on fixed scales — breaths per minute, beats per minute, milliseconds,
+ *           a bounded ratio. These mean the same thing on Tuesday and Thursday.
+ *   SIGNAL  how good the measurement is. Not a thing you are doing with your mind, and grouping it
+ *           with things that are is how a floating electrode gets read as a state of mind.
+ *
+ * ONE TABLE, keyed by metric key, so a metric added to metrics.js cannot quietly land nowhere. The
+ * assignment is asserted against Metrics.METRICS in test-metrics.js — this project has already paid
+ * twice for a vocabulary kept in two places and allowed to drift.
+ *
+ * Blinks and jaw are SIGNAL rather than BODY, which is where the mockup had them. They are artifact
+ * measures — the same reason their chart colours are deliberately desaturated: "this is interference"
+ * rather than "another thing you are doing with your mind". A blink rate is a fact about the
+ * electrodes before it is a fact about the meditator.
+ */
+const METRIC_GROUP = {
+  calm: 'mind', thinking: 'mind', focus: 'mind', drowsy: 'mind', equanimity: 'mind',
+  asymmetry: 'mind', openness: 'mind',
+  breath: 'body', hrv: 'body',
+  blink: 'signal', jaw: 'signal',
+};
+const GROUPS = [
+  { key: 'mind', label: 'Mind' },
+  { key: 'body', label: 'Body' },
+  { key: 'signal', label: 'Signal' },
+];
+
+/*
  * SIXTEEN SECONDS OF SIGNAL BEHIND EVERY DISPLAYED NUMBER.
  *
  * See DSP.BAND_AVERAGE_SEC for the measurement that set the span. The short version: on a stationary
@@ -4520,9 +4555,27 @@ setInterval(() => {
       + `<span class="rLabel">${label}</span>${bar}<span class="rVal">${val}</span></div>`;
   };
 
-  let topRows;
+  /*
+   * THREE GROUPS, filled as the rows are built. `into('signal', row(...))` rather than one flat array,
+   * so where a reading belongs is decided once, next to the reading, instead of by its position in a
+   * list that anything can be inserted into.
+   */
+  const grouped = { mind: [], body: [], signal: [] };
+  const into = (group, html) => { grouped[group].push(html); };
+  // A composite's group comes from the one table; anything unlisted goes to MIND and says so in the
+  // console rather than vanishing, because a metric that renders nowhere looks like a broken metric.
+  const groupOf = (key) => {
+    const g = METRIC_GROUP[key];
+    if (g) return g;
+    console.log(`[metrics] "${key}" has no MIND/BODY/SIGNAL group — showing it under Mind`);
+    return 'mind';
+  };
+
   if (viewMode === 'sensors') {
-    topRows = channels.map(({ name, label, pct, artifact, ptp, floating, flat }, i) => {
+    /* PER-CHANNEL CONTACT IS SIGNAL. Four electrodes' fit is a measurement-quality fact, and it used
+       to head the same undifferentiated list as Calm — which is exactly how a floating electrode gets
+       read as a state of mind. */
+    channels.forEach(({ name, label, pct, artifact, ptp, floating, flat }, i) => {
       const c = VizCore.CHANNEL_COLORS[i];
       // The µV figure only when something is wrong: it is a diagnostic, and a healthy
       // channel showing one would be four numbers to ignore for the whole sit.
@@ -4548,33 +4601,37 @@ setInterval(() => {
           : `${name} is floating, not noisy: the electrode is not touching skin. Wipe the`
             + ' forehead, push the band down towards the eyebrows, and clear any hair from'
             + ' under it.';
-      return row(name, pct, { text, color: `rgb(${c[0]},${c[1]},${c[2]})`, title: fix });
+      into('signal', row(name, pct, { text, color: `rgb(${c[0]},${c[1]},${c[2]})`, title: fix }));
     });
   } else {
-    topRows = activeComposites.map((k) => {
+    for (const k of activeComposites) {
       const m = Metrics.get(k);
       const v = Metrics.compute(k, features);
-      return row(m.label, v, {
+      into(groupOf(k), row(m.label, v, {
         tier: Metrics.tierOf(k),
         color: COMPOSITE_COLORS[k],
         primary: k === primaryMetric,
-      });
-    });
+      }));
+    }
   }
 
-  const tail = [];
-  tail.push(row('Visual', null, { text: visual.currentMode().label }));
+  /* NOT ONE OF THE THREE. The visual's name, the timer and the mark count are bookkeeping about the
+     session rather than readings about the meditator, so they sit unlabelled at the foot of the panel.
+     Putting them under a heading would make the heading a lie. */
+  const session = [];
+  session.push(row('Visual', null, { text: visual.currentMode().label }));
+
   if (viewMode !== 'composites') {
-    tail.push(row('Calm', result.calm, { tier: 'moderate', color: COMPOSITE_COLORS.calm }));
-    tail.push(row('Brainwaves', null, { text: brainLabel }));
+    into('mind', row('Calm', result.calm, { tier: 'moderate', color: COMPOSITE_COLORS.calm }));
+    into('mind', row('Brainwaves', null, { text: brainLabel }));
   }
   // One row for breath, always, whenever any breath source exists. The strap's
   // RSA estimate takes precedence over the Muse's PPG: ECG-grade beat timing at
   // the chest is far cleaner than an optical pulse read through a temple.
-  if (ppgAvailable || strapConnected()) tail.push(breathRow());
+  if (ppgAvailable || strapConnected()) into('body', breathRow());
   if (strapConnected()) {
-    tail.push(row('Heart', null, { text: hrBpm == null ? 'reading…' : `${hrBpm} bpm`, tier: 'solid' }));
-    tail.push(row('HRV (RMSSD)', null, {
+    into('body', row('Heart', null, { text: hrBpm == null ? 'reading…' : `${hrBpm} bpm`, tier: 'solid' }));
+    into('body', row('HRV (RMSSD)', null, {
       text: hrvRmssd == null ? 'reading…' : `${Math.round(hrvRmssd)} ms`, tier: 'solid',
     }));
     // The accelerometer decode's own verdict, shown while it is being trusted for
@@ -4583,16 +4640,19 @@ setInterval(() => {
     // looking output can fake that. Once this is confirmed on real hardware it
     // should become a quiet indicator rather than a number.
     if (accAvailable) {
-      tail.push(row('Chest', null, { text: accStatusText(),
+      /* SIGNAL, not BODY. This row is the accelerometer decode's verdict against gravity — whether
+         the sensor can be believed — rather than a reading about the chest. The breath rate it feeds
+         is in BODY, where it belongs. */
+      into('signal', row('Chest', null, { text: accStatusText(),
         title: accTried.length ? escapeHtml(accTried.join(' · ')) : null }));
     } else if (accError) {
       // Say what happened rather than showing nothing and leaving it a mystery.
-      tail.push(row('Chest', null, { text: accError }));
+      into('signal', row('Chest', null, { text: accError }));
     }
     // Say when the strap's numbers should not be trusted, rather than showing
     // them at the same confidence as clean ones.
     if (strapUnreliable()) {
-      tail.push(row('Strap', null, {
+      into('signal', row('Strap', null, {
         text: strapContact === false ? 'no skin contact' : `${Math.round(rrBuffer.rejectRate() * 100)}% beats rejected`,
       }));
     }
@@ -4601,11 +4661,15 @@ setInterval(() => {
      "Calm" is relative to the last few minutes of this sit; this is absolute and comparable between
      sits. Printed as a percentage with its meaning attached rather than as another bare 0-100 score. */
   if (result.calmAbs != null) {
-    tail.push(row('Alpha share', result.calmAbs, {
+    /* BODY, deliberately, even though it comes from the EEG. It is a bounded ratio with no free
+       parameter — 50 means equal alpha and beta power, in every sit, for every person — which puts it
+       with the other quantities that mean the same thing on Tuesday and Thursday, not with the
+       normalised scores in MIND. */
+    into('body', row('Alpha share', result.calmAbs, {
       text: `${(result.calmAbs * 100).toFixed(0)}% of alpha+beta`,
     }));
   }
-  tail.push(row('Noise', result.artifactRate, { text: noiseLabel, color: COMPOSITE_COLORS.jaw }));
+  into('signal', row('Noise', result.artifactRate, { text: noiseLabel, color: COMPOSITE_COLORS.jaw }));
   /* THE INDIVIDUAL ALPHA PEAK, LIVE. Asked for directly — "i also dont see alpha in the composites.
      was i supposed to?" It was being measured all along and shown only in the end-of-sit summary,
      which is the one place it cannot be checked against what you notice at the time.
@@ -4624,12 +4688,12 @@ setInterval(() => {
       // Which electrode, because the four disagree by a few tenths and the number is meaningless
       // without knowing where it came from. `fallback` means the gates were not met and this is the
       // best guess rather than a measurement, so it must not be presented as one.
-      tail.push(row('Alpha peak', null, {
+      into('body', row('Alpha peak', null, {
         text: `${peak.freqHz.toFixed(1)} Hz${peak.fallback ? '?' : ''} ${peak.bestName || ''}`.trim(),
       }));
     } else {
       const windows = peak && peak.windows != null ? peak.windows : 0;
-      tail.push(row('Alpha peak', null, {
+      into('body', row('Alpha peak', null, {
         text: windows < DSP.IAF_MIN_WINDOWS
           ? `measuring… ${windows}/${DSP.IAF_MIN_WINDOWS}` : 'no clear peak',
       }));
@@ -4638,9 +4702,9 @@ setInterval(() => {
   if (timerEndAt) {
     const remaining = Math.max(0, timerEndAt - Date.now());
     const mm = Math.floor(remaining / 60000), ss = Math.floor((remaining % 60000) / 1000);
-    tail.push(row('Timer', null, { text: timerDone ? 'complete' : `${mm}:${String(ss).padStart(2, '0')}` }));
+    session.push(row('Timer', null, { text: timerDone ? 'complete' : `${mm}:${String(ss).padStart(2, '0')}` }));
   }
-  if (markerLog.length) tail.push(row('Marks', null, { text: String(markerLog.length) }));
+  if (markerLog.length) session.push(row('Marks', null, { text: String(markerLog.length) }));
 
   /* SAY HOW MUCH SIGNAL IS BEHIND THE NUMBERS.
      16-second averaging is what stopped the scores being mostly estimator noise, and it is also a real
@@ -4657,9 +4721,15 @@ setInterval(() => {
       : `settling · ${secs}s of ${DSP.BAND_AVERAGE_SEC}s averaged`;
   }
 
-  // Rows only. Touching the pills' markup here is what broke them.
-  readoutRowsEl.innerHTML =
-    topRows.join('') + '<div style="height:12px"></div>' + tail.join('');
+  /* Rows only. Touching the pills' markup here is what broke them.
+     A GROUP WITH NOTHING IN IT IS NOT DRAWN. With no strap connected BODY would otherwise be a heading
+     over an empty space, which reads as a section that failed to load rather than as one that has
+     nothing to say — and the panel is meant to be quiet. */
+  readoutRowsEl.innerHTML = GROUPS
+    .filter((g) => grouped[g.key].length)
+    .map((g) => `<div class="rGroup">${g.label}</div>${grouped[g.key].join('')}`)
+    .join('')
+    + (session.length ? `<div class="rSession">${session.join('')}</div>` : '');
   renderViewSwitch();
 
   tickCount++;
@@ -4689,10 +4759,35 @@ function ensureGrip(el) {
   if (!g) {
     g = document.createElement('div');
     g.className = 'panelGrip';
-    g.title = 'Drag to move this panel · double-click to put it back';
+    g.title = 'Drag to move this panel · double-click to dock it to a side, again to put it back';
   }
   if (el.firstChild !== g) el.insertBefore(g, el.firstChild);
   return g;
+}
+
+/*
+ * SAY THAT THE PANEL CAN BE MOVED, and how.
+ *
+ * The mockup carries "Drag to move · Double-click to dock" along the foot of the floating panel, and it
+ * is the part of the treatment that actually matters: dragging and docking have been possible for a
+ * while and are discoverable only by trying to drag something that gives no sign of being draggable.
+ *
+ * At the FOOT rather than on the grip, because a tooltip on a strip nobody knows to hover is a hint
+ * nobody reads. Re-inserted after an innerHTML rebuild for the same reason as the grip, and it reads
+ * the live docked state so it always offers the move that is actually available.
+ */
+function ensureAffordance(el) {
+  let a = el.querySelector(':scope > .panelHint');
+  if (!a) {
+    a = document.createElement('div');
+    a.className = 'panelHint';
+    el.appendChild(a);
+  }
+  if (el.lastChild !== a) el.appendChild(a);
+  a.textContent = Panels.isDocked(el)
+    ? 'Docked · double-click the top to release it'
+    : 'Drag to move · double-click the top to dock';
+  return a;
 }
 
 const DRAGGABLE_PANELS = [
@@ -4705,7 +4800,16 @@ const DRAGGABLE_PANELS = [
 for (const [key, el] of DRAGGABLE_PANELS) {
   if (!el) continue;
   ensureGrip(el);
-  Panels.makeDraggable(el, { key, from: '.panelGrip' });
+  const handle = Panels.makeDraggable(el, { key, from: '.panelGrip' });
+  /* Only the two panels that are really read for minutes at a time carry the hint. On the mode bar and
+     the mark bar it would be a line of instructions under a row of buttons, which is noise — they are
+     still draggable, and their grip still says so on hover. */
+  if (key === 'readout' || key === 'dataPanel') {
+    ensureAffordance(el);
+    // Refreshed after the gesture, so the line describes the state the panel is now in.
+    el.addEventListener('dblclick', () => setTimeout(() => ensureAffordance(el), 0));
+  }
+  void handle;
 }
 // A position saved on a laptop is off-screen on a phone, and a panel that is
 // off-screen cannot be dragged back — so re-clamping on resize is the recovery path,

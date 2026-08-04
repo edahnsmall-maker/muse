@@ -106,6 +106,25 @@
   .panelGrip:hover { opacity: .7; }
   .dragging { cursor: grabbing; transition: none !important; }
   .dragging .panelGrip { cursor: grabbing; opacity: .7; }
+  /* "Drag to move · Double-click to dock", along the foot of the panel as in the mockup. The grip's
+     tooltip said this already, which is a hint you can only read by hovering a strip you do not know
+     is there. Quiet enough to ignore for a whole sit, and it fades up with the panel's own hover. */
+  .panelHint { margin-top: 11px; padding-top: 8px; font-size: 10px; line-height: 1.4;
+    text-align: center; letter-spacing: .02em; color: rgba(255,255,255,.30);
+    border-top: 1px solid rgba(255,255,255,.06); opacity: .8; transition: opacity .2s; }
+  #readout:hover .panelHint, #dataPanel:hover .panelHint { opacity: 1;
+    color: rgba(255,255,255,.42); }
+  /* DOCKED: flush to a side, so the corners on that side stop pretending to float. The panel keeps its
+     own width — docking is about which edge it belongs to, not about filling the screen, and a panel
+     that grew on docking would cover the visual it exists to sit beside. */
+  [data-docked] { border-radius: 14px; }
+  [data-docked="left"] { border-top-left-radius: 0; border-bottom-left-radius: 0;
+    border-left-color: transparent; }
+  [data-docked="right"] { border-top-right-radius: 0; border-bottom-right-radius: 0;
+    border-right-color: transparent; }
+  /* A docked panel is a fixture rather than something floating over the sit, so it earns a little more
+     contrast: it is being read deliberately, not glanced at. */
+  [data-docked] { background: rgba(9,12,24,.90); }
   .popoverNote { font-size: 12px; line-height: 1.45; max-width: 240px;
     color: rgba(255,255,255,.7); }
   #timerPicker { display: flex; gap: 8px; }
@@ -529,6 +548,23 @@
   .rVal { min-width: 26px; max-width: 128px; text-align: left; color: rgba(255,255,255,.92);
     font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .rRow.primary .rLabel { color: rgba(255,255,255,.95); opacity: 1; }
+
+  /* MIND / BODY / SIGNAL.
+     Three genuinely different kinds of claim — an interpreted score, a physical quantity, and the
+     quality of the measurement — where there used to be one flat list of a dozen rows in no order.
+     The third is the one that earns the space: grouping "this electrode is not touching your head"
+     with "Calm" is how a fit problem gets read as a state of mind.
+     Small, spaced, and in the same blue as the wordmark, so a heading is unmistakably not a reading.
+     The first one has no top margin, or the panel opens with a gap above its first word. */
+  .rGroup { font-size: 9.5px; letter-spacing: .14em; text-transform: uppercase;
+    color: rgba(125,211,252,.72); margin: 14px 0 5px; }
+  .rGroup:first-child { margin-top: 2px; }
+  /* Bookkeeping about the session rather than readings about the meditator — the visual's name, the
+     timer, the mark count. Separated by a rule instead of a heading, because a heading over them
+     would be claiming they are a fourth kind of measurement. */
+  .rSession { margin-top: 13px; padding-top: 9px;
+    border-top: 1px solid rgba(255,255,255,.08); }
+  .rSession .rLabel { opacity: .5; }
 
   /* Tier lights. Colour, not just a symbol, so the confidence of a score is
      legible without reading anything. */

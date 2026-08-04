@@ -189,7 +189,49 @@
     void el.offsetHeight;
     el.style.transition = prevTransition;
     delete el.dataset.dragged;
+    delete el.dataset.docked;
   }
+
+  /*
+   * DOCKED: snapped flush to a side, and stays there.
+   *
+   * Asked for as the mockup's "Drag to move · double-click to dock" treatment. Dragging, persistence
+   * and re-clamping were already here; what was missing is a state that MEANS something rather than a
+   * position that happens to be near an edge.
+   *
+   * Why it is worth having as its own state and not just a tidy drag: a dragged panel keeps the
+   * absolute pixel position it was let go at, so it is wrong on the next screen size and wrong again
+   * after a rotation. A docked panel is defined by the edge instead, so it is still correct on a phone,
+   * on a monitor, and after the window changes under it. That is also why the edge is what gets
+   * persisted rather than the x it currently resolves to.
+   *
+   * The vertical position is kept and clamped rather than forced to the top: docking is about which
+   * side the panel lives on, and yanking it upwards as well would make one gesture do two things.
+   *
+   * `data-docked` carries the edge so the stylesheet can flatten the corners on that side. Deliberately
+   * an attribute and not a set of inline styles — how a docked panel should LOOK belongs to the
+   * stylesheet, and panels.js has no business knowing about border radii.
+   */
+  const EDGES = ['left', 'right'];
+
+  function nearestEdge(el, win) {
+    const w = win || window;
+    const r = el.getBoundingClientRect();
+    return (r.left + r.width / 2) < w.innerWidth / 2 ? 'left' : 'right';
+  }
+
+  function dock(el, edge, { win = null } = {}) {
+    const w = win || window;
+    const side = EDGES.includes(edge) ? edge : nearestEdge(el, w);
+    const r = el.getBoundingClientRect();
+    const x = side === 'right' ? Math.max(0, w.innerWidth - r.width) : 0;
+    const y = clampRound(r.top, 0, Math.max(0, w.innerHeight - r.height));
+    place(el, x, y);
+    el.dataset.docked = side;
+    return side;
+  }
+
+  function isDocked(el) { return EDGES.includes(el.dataset.docked); }
 
   /*
    * Make one panel draggable.
@@ -213,10 +255,20 @@
     // the moment it is touched.
     const stored = key && load(key, storage);
     if (stored) {
-      const r = el.getBoundingClientRect();
-      const p = clampPosition({ x: stored.x, y: stored.y, w: r.width, h: r.height,
-        vw: w.innerWidth, vh: w.innerHeight });
-      place(el, p.x, p.y);
+      /* A DOCKED PANEL IS RESTORED BY ITS EDGE, not by the x it happened to resolve to last time.
+         Restoring the pixel would put a right-docked panel in the middle of a wider window and off the
+         side of a narrower one, which is exactly the failure docking exists to avoid. */
+      if (EDGES.includes(stored.docked)) {
+        const r = el.getBoundingClientRect();
+        const y = clampRound(stored.y, 0, Math.max(0, w.innerHeight - r.height));
+        place(el, stored.docked === 'right' ? Math.max(0, w.innerWidth - r.width) : 0, y);
+        el.dataset.docked = stored.docked;
+      } else {
+        const r = el.getBoundingClientRect();
+        const p = clampPosition({ x: stored.x, y: stored.y, w: r.width, h: r.height,
+          vw: w.innerWidth, vh: w.innerHeight });
+        place(el, p.x, p.y);
+      }
     }
 
     /*
@@ -288,15 +340,36 @@
 
     // Double-click the handle to put the panel back. The alternative — a reset button
     // per panel — is four more things on screen for something used once.
+    /*
+     * DOUBLE-CLICK DOCKS, AND A SECOND ONE SENDS IT HOME.
+     *
+     * It used to go straight home, and that escape must not be lost — "otherwise the only way out of a
+     * bad drag is clearing browser storage". So the gesture cycles rather than toggles: wherever a
+     * panel is, one double-click docks it to the nearer side and a second returns it to where the
+     * stylesheet puts it, clearing the stored position on the way. At most two of one gesture gets you
+     * out of any state, and no state is reachable only by knowing a second gesture.
+     */
     grip.addEventListener('dblclick', (e) => {
       if (from && !(e.target.closest && e.target.closest(from))) return;
-      unplace(el);
-      if (key) clear(key, storage);
+      if (isDocked(el)) {
+        unplace(el);
+        if (key) clear(key, storage);
+        return;
+      }
+      const side = dock(el, null, { win: w });
+      // The EDGE is persisted, not the x it resolved to: that is the whole point of docking.
+      if (key) save(key, { x: 0, y: Math.round(currentPosition(el, w).y), docked: side }, storage);
     });
 
     return {
       reset() { unplace(el); if (key) clear(key, storage); },
       isDragged() { return el.dataset.dragged === '1'; },
+      isDocked() { return isDocked(el); },
+      dock(edge) {
+        const side = dock(el, edge, { win: w });
+        if (key) save(key, { x: 0, y: Math.round(currentPosition(el, w).y), docked: side }, storage);
+        return side;
+      },
       // So a caller (or a test) can stop observing without leaking the observer.
       destroy() { if (observer) { observer.disconnect(); observer = null; } },
     };
@@ -320,6 +393,7 @@
     }
   }
 
-  return { STORE_PREFIX, clampPosition, makeDraggable, reclampAll,
-    currentPosition, place, unplace, load, save, clear };
+  return { STORE_PREFIX, clampPosition, clampRound, makeDraggable, reclampAll,
+    currentPosition, place, unplace, load, save, clear,
+    dock, isDocked, nearestEdge, EDGES };
 });

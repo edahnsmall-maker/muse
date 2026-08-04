@@ -1056,9 +1056,13 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
      * 10 say disconnected?" — the app knew (floating, not noisy) and kept the answer in a
      * source comment. The advice hangs off the row as a title, only when floating, and
      * only names the fix that applies to that position. */
+    /* Found BY LABEL, not by position. This used to slice the first four rows, which assumed the
+       sensor rows led the panel — true until the readout grew MIND / BODY / SIGNAL headings and the
+       electrodes moved under Signal where they belong. The claim being tested is that the advice hangs
+       off the floating channel's own row, and that has nothing to do with where the row sits. */
     const advice = await page.evaluate(async () => {
       await new Promise((r) => setTimeout(r, 400));    // one readout tick
-      return Array.from(document.querySelectorAll('#readoutRows .rRow')).slice(0, 4)
+      return Array.from(document.querySelectorAll('#readoutRows .rRow'))
         .map((e) => ({ label: e.querySelector('.rLabel').textContent,
           title: e.getAttribute('title') || '' }));
     });
@@ -1097,7 +1101,10 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       // merely the label.
       updateBandState(ch);
       await new Promise((r) => setTimeout(r, 400));               // one readout tick
-      const rows = Array.from(document.querySelectorAll('#readoutRows .rRow')).slice(0, 4)
+      /* ALL the rows, and found by label below. Slicing the first four assumed the sensor rows led the
+         panel, which stopped being true when the readout grew MIND / BODY / SIGNAL headings and the
+         electrodes moved under Signal. What is being checked is the row's own title, not its place. */
+      const rows = Array.from(document.querySelectorAll('#readoutRows .rRow'))
         .map((e) => ({ label: e.querySelector('.rLabel').textContent,
           title: e.getAttribute('title') || '' }));
       return {
@@ -1122,10 +1129,84 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(/Alpha|Beta/.test(silent.labels[2]),
       `a real 30µV channel must report its band (got "${silent.labels[2]}")`);
     const flatRow = silent.rows.find((r) => r.label === 'TP9');
+    assert.ok(flatRow, `TP9's row must be on screen to carry advice`
+      + ` (rows: ${silent.rows.map((r) => r.label).join(', ')})`);
     assert.match(flatRow.title, /flat line/,
       'and the row must say what a flat line means, which is a connection fault not a fit one');
     console.log(`✓ a silent channel reads "No signal", carries no level, and cannot reach the`
       + ` visual as a reading (${silent.labels.join(', ')})`);
+  }
+
+  /* MIND / BODY / SIGNAL: the groups must be on screen, and every displayed metric must be in one.
+   *
+   * The panel was one flat list of a dozen rows in no order, so reading it meant scanning all of it.
+   * The three groups separate three different kinds of claim, and the third is why it matters: a row
+   * saying an electrode is not touching your head sat in the same undifferentiated list as Calm.
+   *
+   * The assignment table is asserted against Metrics.METRICS rather than eyeballed, because this
+   * project has already paid twice for one vocabulary kept in two places and allowed to drift — a
+   * palette between a visual and its chart, and a mark vocabulary between probes.js and labels.js.
+   */
+  {
+    const groups = await page.evaluate(async () => {
+      /* DRIVE A REAL TICK FIRST. The readout only renders rows when computeCalm() returns something, so
+         a check run against whatever happened to be on screen last would pass or fail by accident. Four
+         live channels, then one tick, then read what was drawn. */
+      const W = 256;
+      for (let ch = 0; ch < 4; ch++) {
+        buffers[ch].length = 0;
+        for (let i = 0; i < W; i++) {
+          buffers[ch].push(18 * Math.sin((2 * Math.PI * (9 + ch) * i) / 256));
+        }
+      }
+      await new Promise((r) => setTimeout(r, 400));
+      const headings = Array.from(document.querySelectorAll('#readoutRows .rGroup'))
+        .map((e) => e.textContent.trim());
+      // Every metric the live screen displays must have a group, or it renders under a fallback and
+      // only a console line says so.
+      const ungrouped = (Metrics.displayed ? Metrics.displayed()
+        : Metrics.METRICS.filter((m) => m.display !== false))
+        .map((m) => m.key)
+        .filter((k) => !CHART_ONLY_COMPOSITES.includes(k))
+        .filter((k) => !METRIC_GROUP[k]);
+      // Which group each row landed in, so the classification is checked and not just its existence.
+      const byGroup = {};
+      let current = null;
+      for (const el of document.querySelectorAll('#readoutRows > *')) {
+        if (el.classList.contains('rGroup')) { current = el.textContent.trim(); byGroup[current] = []; }
+        else if (current && el.classList.contains('rRow')) {
+          const label = el.querySelector('.rLabel');
+          if (label) byGroup[current].push(label.textContent.trim());
+        }
+      }
+      const used = [];
+      for (const g of Object.values(METRIC_GROUP)) if (!used.includes(g)) used.push(g);
+      return { headings, ungrouped, byGroup, knownGroups: used };
+    });
+
+    assert.deepStrictEqual(groups.ungrouped, [],
+      `every displayed metric needs a MIND/BODY/SIGNAL group: ${groups.ungrouped.join(', ')}`);
+    assert.ok(groups.knownGroups.every((g) => ['mind', 'body', 'signal'].includes(g)),
+      `the group table may only use mind/body/signal, found ${groups.knownGroups.join(', ')}`);
+    assert.ok(groups.headings.length >= 1,
+      `the readout must carry group headings, found ${JSON.stringify(groups.headings)}`);
+    assert.ok(groups.headings.every((h) => ['Mind', 'Body', 'Signal'].includes(h)),
+      `only Mind/Body/Signal may head a group, found ${JSON.stringify(groups.headings)}`);
+    /* NO EMPTY GROUP. A heading over nothing reads as a section that failed to load rather than one
+       with nothing to say, and with no strap connected BODY genuinely has nothing to show. */
+    for (const [name, rows] of Object.entries(groups.byGroup)) {
+      assert.ok(rows.length > 0, `the ${name} group must not be drawn empty`);
+    }
+    /* SIGNAL QUALITY IS NOT A STATE OF MIND. Per-channel contact, noise, jaw and blinks belong under
+       Signal; if any of them lands under Mind, a fit problem is being presented as something the
+       meditator is doing with their attention. */
+    const mind = groups.byGroup.Mind || [];
+    for (const notMind of ['TP9', 'TP10', 'AF7', 'AF8', 'Noise', 'Jaw / muscle', 'Blinks']) {
+      assert.ok(!mind.includes(notMind),
+        `"${notMind}" is a measurement-quality reading and must not sit under Mind`);
+    }
+    console.log(`✓ the readout groups into ${JSON.stringify(groups.headings)}, every displayed metric`
+      + ' has a group, none is drawn empty, and signal quality is never filed under Mind');
   }
 
   // 7b) A DEAD ELECTRODE MUST DRAW NOTHING, not a flat line at mid-range.
@@ -3630,12 +3711,22 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const to = el.getBoundingClientRect();
       const saved = localStorage.getItem('zenbio.panel.dataPanel');
 
-      // Double-clicking the grip puts it back, and forgets the position — otherwise the
-      // only way out of a bad drag is clearing browser storage.
+      /* DOUBLE-CLICK DOCKS, AND A SECOND ONE PUTS IT BACK.
+         It used to go straight home. The escape from a bad drag must survive — otherwise the only way
+         out is clearing browser storage — so the gesture cycles rather than toggles: one double-click
+         docks to the nearer side, a second returns it to where the stylesheet puts it and forgets the
+         stored position. Two of one gesture gets you out of any state. */
+      grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 30));
+      const dockedRect = el.getBoundingClientRect();
+      const dockedEdge = el.dataset.docked || null;
+      const dockedStore = JSON.parse(localStorage.getItem('zenbio.panel.dataPanel') || 'null');
+
       grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
       await new Promise((r) => setTimeout(r, 30));
       const reset = el.getBoundingClientRect();
       const clearedStore = localStorage.getItem('zenbio.panel.dataPanel');
+      const stillDocked = el.dataset.docked || null;
 
       // A drag must NOT be triggered by clicking a control inside the panel.
       const toggle = document.getElementById('dataToggle');
@@ -3653,6 +3744,9 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         saved: saved ? JSON.parse(saved) : null,
         resetBack: Math.abs(reset.left - from.left) < 2 && Math.abs(reset.top - from.top) < 2,
         clearedStore,
+        dockedEdge, dockedStore, stillDocked,
+        dockedFlush: dockedEdge === 'right'
+          ? Math.abs(dockedRect.right - innerWidth) < 2 : Math.abs(dockedRect.left) < 2,
         innerDragMoved: Math.abs(afterInnerDrag.left - beforeClick.left) > 2,
       };
     });
@@ -3674,7 +3768,18 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(Math.abs(out.dy - (-80)) <= 1, `and up 80px (got ${out.dy})`);
     assert.ok(out.saved && Number.isFinite(out.saved.x),
       `the position must persist, got ${JSON.stringify(out.saved)}`);
-    assert.ok(out.resetBack, 'double-clicking the grip must put the panel back where it started');
+    /* FIRST double-click docks: flush to a side, the edge recorded, and the EDGE persisted rather than
+       the x it resolved to — restoring a right-docked panel by pixel would put it mid-screen on a wider
+       window and off the side of a narrower one, which is the failure docking exists to prevent. */
+    assert.ok(['left', 'right'].includes(out.dockedEdge),
+      `the first double-click must dock the panel to a side (got ${out.dockedEdge})`);
+    assert.ok(out.dockedFlush, `and it must sit flush against that side`);
+    assert.strictEqual(out.dockedStore && out.dockedStore.docked, out.dockedEdge,
+      `the docked EDGE must persist, got ${JSON.stringify(out.dockedStore)}`);
+    // SECOND double-click releases it, all the way home, and forgets the position.
+    assert.ok(out.resetBack,
+      'a second double-click must put the panel back where it started');
+    assert.strictEqual(out.stillDocked, null, 'and must clear the docked state');
     assert.strictEqual(out.clearedStore, null, 'and must forget the stored position');
     assert.ok(!out.innerDragMoved,
       'dragging from a control INSIDE the panel must not move the panel — that would'
