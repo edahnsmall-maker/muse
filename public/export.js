@@ -308,7 +308,9 @@
     L.push('| `notes.csv` | one row per note, with whatever the recogniser heard in `transcript` |');
     L.push('| `transcripts.csv` | that transcript over time: when the recogniser reported each revision |');
     L.push('| `eeg-ch0..3.f32` | raw EEG, little-endian Float32, 256Hz. Too many rows for Excel — read with numpy/node |');
-    L.push('| `acc.csv` | accelerometer, mG, 50Hz |');
+    L.push('| `acc.csv` | CHEST STRAP accelerometer, mG, 50Hz — breathing |');
+    L.push('| `head-acc.csv` | HEADBAND accelerometer, mG — head stillness and fidgeting |');
+    L.push('| `head-acc-raw.csv` | the same packets undecoded, in case the scale needs correcting |');
     L.push('| `rr.csv` | beat-to-beat intervals, ms |');
     if (notes.some((n) => n.kind === 'voice')) L.push('| `notes/*` | voice note audio |');
     L.push('');
@@ -380,7 +382,8 @@
   }
 
   function buildFiles(session, audioBytesById = {}) {
-    const { meta, eeg = [[], [], [], []], acc = [], rr = [], rows = [], notes = [] } = session;
+    const { meta, eeg = [[], [], [], []], acc = [], rr = [], rows = [], notes = [],
+      headAcc = [], headRaw = [] } = session;
     const files = [];
     const noteFiles = {};
 
@@ -466,6 +469,34 @@
       const lines = ['tSec,x,y,z'];
       for (let i = 0; i < acc.length; i++) lines.push(`${(i / hz).toFixed(3)},${acc[i].join(',')}`);
       files.push({ name: 'acc.csv', bytes: utf8(lines.join('\n') + '\n') });
+    }
+
+    /*
+     * HEAD MOTION, from the headband's own accelerometer — a separate file from acc.csv on purpose.
+     *
+     * They are different measurements of different things: the chest strap sees breathing, the headband
+     * sees head stillness and fidgeting. One file with a source column would invite them to be pooled,
+     * and pooling them is not recoverable.
+     *
+     * The raw bytes go alongside, because the Muse IMU scale factor is taken from an unpublished
+     * community mapping and has not been verified against hardware. A wrong scale in head-acc.csv is
+     * wrong forever; the same error with head-acc-raw.csv present is a one-line fix later. The samples
+     * are the irreplaceable part.
+     */
+    if (headAcc && headAcc.length) {
+      const hz = meta.headAccHz || 52;
+      const lines = ['tSec,x,y,z'];
+      headAcc.forEach((s, i) => {
+        lines.push(`${(i / hz).toFixed(3)},${s[0].toFixed(2)},${s[1].toFixed(2)},${s[2].toFixed(2)}`);
+      });
+      files.push({ name: 'head-acc.csv', bytes: utf8(lines.join('\n') + '\n') });
+    }
+    if (headRaw && headRaw.length) {
+      const lines = ['packet,bytesHex'];
+      headRaw.forEach((pkt, i) => {
+        lines.push(`${i},${Array.from(pkt).map((b) => b.toString(16).padStart(2, '0')).join('')}`);
+      });
+      files.push({ name: 'head-acc-raw.csv', bytes: utf8(lines.join('\n') + '\n') });
     }
     /* THE TRANSCRIPT OVER TIME, as its own file rather than a column.
      *
@@ -559,7 +590,21 @@
         '  numpy:  np.fromfile("eeg-ch1.f32", dtype="<f4")',
         '  node:   new Float32Array(fs.readFileSync("eeg-ch1.f32").buffer)',
         '',
-        `acc.csv is accelerometer in mG at ${meta.accHz || 50}Hz.`,
+        `acc.csv is the CHEST STRAP accelerometer in mG at ${meta.accHz || 50}Hz. It measures`,
+        'breathing: chest-wall movement.',
+        '',
+        'head-acc.csv, when present, is the HEADBAND\'s own accelerometer — head stillness and',
+        `fidgeting, a different measurement entirely. ${meta.headAccChar
+          ? `Read from characteristic ${meta.headAccChar} at about ${meta.headAccHz || 52}Hz,`
+            + ` decoded with ${(meta.headAccScaleMg || 0).toFixed(6)} mG per count.`
+          : 'Absent in this recording.'}`,
+        'THE SCALE IS UNVERIFIED: the Muse characteristic map is not published by the manufacturer,',
+        'so the mG values come from a community mapping that has not been checked against hardware.',
+        'head-acc-raw.csv holds the same packets undecoded (hex, 3 samples of 3 axes, 16-bit signed,',
+        'big-endian) so the numbers can be recomputed if the scale turns out to be wrong. Anything',
+        'about the SHAPE of movement — stillness, jerk, symmetry — survives a constant scale error;',
+        'absolute g-forces do not.',
+        '',
         'rr.csv is beat-to-beat intervals in milliseconds.',
         'metrics.csv is one row per second of whatever the app computed at the time.',
         '',

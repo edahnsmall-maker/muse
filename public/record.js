@@ -97,7 +97,11 @@
     let seq = 0;
     let ended = false;
     // Pending samples per stream, flushed together so one timer serves all of them.
-    const pending = { eeg: [[], [], [], []], acc: [], rr: [], row: [] };
+    /* headAcc is the HEADBAND's motion, kept separate from acc (the chest strap's). They measure
+       different things — head stillness versus breathing — and merging them would be irreversible.
+       headRaw is the undecoded bytes, kept because the Muse IMU scale factor is unverified and a
+       wrong decode stored alone could never be corrected. */
+    const pending = { eeg: [[], [], [], []], acc: [], rr: [], row: [], headAcc: [], headRaw: [] };
     let bytesWritten = 0;
     let lastFlushAt = meta.startedAt;
     let flushError = null;
@@ -125,7 +129,7 @@
         });
         pending.eeg[ch] = [];
       }
-      for (const kind of ['acc', 'rr', 'row']) {
+      for (const kind of ['acc', 'rr', 'row', 'headAcc', 'headRaw']) {
         if (!pending[kind].length) continue;
         chunks.push({
           sessionId: id, seq: seq++, kind,
@@ -181,6 +185,15 @@
       pushRr(values) {
         if (ended) return;
         for (const v of values) pending.rr.push(v);
+      },
+      /* The headband's own accelerometer, decoded, plus the bytes it came from.
+         Both, on purpose: see the note on `pending`. The raw copy is about 6 bytes per sample at
+         52Hz — roughly 19KB a minute, against the ~1MB a minute the EEG already costs, so
+         preserving it is free in any terms that matter. */
+      pushHeadAcc(samples, rawBytes) {
+        if (ended) return;
+        for (const s of samples) pending.headAcc.push([s.x, s.y, s.z]);
+        if (rawBytes && rawBytes.length) pending.headRaw.push(Array.from(rawBytes));
       },
       // The 1Hz derived row. Kept even though it is recomputable, because it is
       // tiny and it records what the app BELIEVED at the time — which is the thing
@@ -316,14 +329,17 @@
     chunks.sort((a, b) => a.seq - b.seq);
 
     const eeg = [[], [], [], []];
-    const acc = [], rr = [], rows = [];
+    const acc = [], rr = [], rows = [], headAcc = [], headRaw = [];
     for (const c of chunks) {
       if (c.kind === 'eeg') { const d = c.data; for (let i = 0; i < d.length; i++) eeg[c.channel].push(d[i]); }
       else if (c.kind === 'acc') acc.push(...c.data);
       else if (c.kind === 'rr') rr.push(...c.data);
       else if (c.kind === 'row') rows.push(...c.data);
+      else if (c.kind === 'headAcc') headAcc.push(...c.data);
+      else if (c.kind === 'headRaw') headRaw.push(...c.data);
     }
-    return { meta, eeg, acc, rr, rows, notes: notes.sort((a, b) => a.at - b.at) };
+    return { meta, eeg, acc, rr, rows, headAcc, headRaw,
+      notes: notes.sort((a, b) => a.at - b.at) };
   }
 
   /*

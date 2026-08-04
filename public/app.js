@@ -444,6 +444,12 @@ async function openRecordingSession(generation) {
   const session = await Recorder.startSession(recDb, {
     startedAt: sessionClock(),
     userAgent: navigator.userAgent,
+    /* Which IMU characteristic answered, and the scale used to decode it — written into the archive so
+       a future re-decode of the raw bytes knows what the stored numbers assumed, and so a sit with no
+       head motion can be told apart from a device that has none. */
+    headAccChar: headAccChar || undefined,
+    headAccScaleMg: headAccChar ? DSP.MUSE_IMU_SCALE_MG : undefined,
+    headAccHz: headAccChar ? DSP.MUSE_IMU_FREQUENCY : undefined,
     /* THE STAMP TRAVELS WITH THE DATA. A simulated sit that reached the analysis lab unmarked would
        be pooled with real ones and could not be separated afterwards — the rows look identical. So
        the flag is written at the moment the session is created, into the same record the exporter
@@ -508,6 +514,12 @@ function logSessionSample(result, channels) {
     // clock rather than by trusting two files to share an origin.
     epochMs: now,
     calm: result.calm,
+    /* THE ABSOLUTE SCORE, in the file. `calm` above is normalised within the sit and therefore cannot
+       be compared between sits — measured across seven real recordings it spanned 42.3 to 52.9 while
+       the underlying physiology spanned more than twofold. This column is alpha's share of alpha+beta
+       and means the same thing in every recording, which makes it the first EEG number here that a
+       whole-session comparison can honestly use. */
+    calmAbs: result.calmAbs,
     noise: result.artifactRate,
     levels: channels.map((c) => (c.pct == null ? null : c.pct)),
     spikes: bandState.filter((s) => s.spike > 0.9).length,
@@ -1719,13 +1731,49 @@ function computeCalm() {
   const ratio = useAveraged
     ? Math.log(averaged.alpha + 1e-6) - Math.log(averaged.beta + 1e-6)
     : Math.log(alphaSum / FRONTAL.length + 1e-6) - Math.log(betaSum / FRONTAL.length + 1e-6);
+
+  /*
+   * AN ABSOLUTE SCORE, ALONGSIDE THE NORMALISED ONE.
+   *
+   * Asked, and correctly: "i'm not convinced that we should be normalizing everything. maybe that's
+   * what accounts for all the jumpy lines. if it wasn't normalized it would be a better indicator when
+   * i'm generally calm thruout a sit, right?" Yes. Measured across seven real sits:
+   *
+   *   what the sit was                       displayed Calm    raw AF7/AF8 alpha/beta
+   *   "relaxed, mind settling naturally"          45.9               0.654
+   *   "very calm, not a lot of effort"            42.3               0.537
+   *   "working, not meditating"                   46.4               0.367
+   *   "thinking pulling me a lot"                 52.9               0.288
+   *
+   * The displayed score spanned 42.3 to 52.9 across ALL SEVEN sits while the raw ratio spanned 0.288
+   * to 0.654 — and their rank correlation was MINUS 0.32. The best sit showed 45.9 and the worst
+   * showed 52.9. The normaliser subtracts the sit's own running mean, so a uniformly calm sit and a
+   * uniformly agitated one both land near 50 by construction, and whatever ordering survives is noise.
+   *
+   * This is alpha's SHARE of alpha plus beta, as a percentage. It needs no calibration and has no free
+   * parameter: 50 means equal alpha and beta power, in every sit, for every person. It is the quantity
+   * that ordered those four sits perfectly, and it is bounded without anything being clipped.
+   *
+   * Its practical range is NARROW — 24% to 38% across these sits — and that is the honest fact rather
+   * than a defect to be stretched out. A display that uses a third of its range because the signal uses
+   * a third of its range is telling the truth; one that fills the range regardless is what produced
+   * the numbers above.
+   *
+   * Both are kept, for now, because the normalised one has a real use the absolute one does not: it is
+   * sensitive to change WITHIN a sit, which is what makes a live visual respond at all. The
+   * unambiguous mistake was presenting the relative number as if it were absolute.
+   */
+  const absAlpha = useAveraged ? averaged.alpha : alphaSum / FRONTAL.length;
+  const absBeta = useAveraged ? averaged.beta : betaSum / FRONTAL.length;
+  const calmAbs = (absAlpha + absBeta) > 0 ? absAlpha / (absAlpha + absBeta) : null;
   const activity = activityTracker.update({
     betaLog: Math.log(betaSum / FRONTAL.length + 1e-6),
     ratio,
     artifact: false,
     spiked: bandState.some((b) => b.spike > 0.9),
   });
-  return { calm: tracker.update(ratio), ratio, artifact, artifactRate, alphaSum, betaSum, activity };
+  return { calm: tracker.update(ratio), calmAbs, ratio, artifact, artifactRate,
+    alphaSum, betaSum, activity };
 }
 
 // Raw per-sensor readout — all 4 electrodes individually (TP9/TP10 behind
@@ -2058,7 +2106,30 @@ let breathRising = null;
  * the readout and must read ~1000 mG at rest. That is the actual test.
  */
 let accAvailable = false;
-let accSamples = [];        // recent {x,y,z} in mG
+/* WHICH characteristic answered, or null. Written into the archive, because a file with no head
+   motion in it must be distinguishable from a device that has none. */
+let headAccChar = null;
+let headAccSamples = [];   // recent {x,y,z} in mG from the HEADBAND (not the chest strap)
+let headAccCount = 0;
+
+/*
+ * Head motion in, straight through to storage.
+ *
+ * Nothing live is derived from it yet, on purpose. The measurement it is for — whether stillness and
+ * movement smoothness separate a settled sit from a busy one — is an analysis question with no
+ * validated answer, and inventing a live "stillness score" before testing one would be exactly the
+ * habit that produced the coefficients this project spent a day removing. Captured now so the question
+ * becomes answerable; displayed only once something is known.
+ */
+function pushHeadAcc(samples, rawBytes) {
+  if (!samples || !samples.length) return;
+  headAccCount += samples.length;
+  headAccSamples.push(...samples);
+  if (headAccSamples.length > 512) headAccSamples.splice(0, headAccSamples.length - 512);
+  if (recSession) recSession.pushHeadAcc(samples, rawBytes);
+}
+
+let accSamples = [];        // recent {x,y,z} in mG from the CHEST STRAP (breathing)
 let accMag = null;          // mean magnitude, the gravity check
 let accVerdict = null;      // { meanMilliG, ok } from Polar.looksLikeGravity
 let accSettings = null;
@@ -2540,6 +2611,34 @@ async function connect() {
     } catch (err) {
       ppgAvailable = false;
     }
+
+    /*
+     * THE HEADBAND'S MOTION SENSOR — optional, exactly like PPG above.
+     *
+     * Asked for: "we should capture the head accl from muse too if it's avail. it coul dbe important
+     * (fidgeting)". It is the direct measurement of the stillness hypothesis, and nothing in seven
+     * recorded sits contains it, because this subscription did not exist.
+     *
+     * Two candidate UUIDs because the Muse characteristic map is not published by the manufacturer and
+     * I cannot verify the community mapping against a real Muse S Gen 2 from here. Whichever answers is
+     * used; if neither does, the feature is simply absent and every other stream is untouched — the
+     * same contract PPG has, for the same reason.
+     */
+    headAccChar = null;
+    for (const uuid of DSP.MUSE_IMU_CANDIDATES) {
+      try {
+        const ch = await service.getCharacteristic(uuid);
+        await ch.startNotifications();
+        ch.addEventListener('characteristicvaluechanged', (ev) => {
+          const value = ev.target.value;
+          const raw = new Uint8Array(value.buffer, value.byteOffset + 2);
+          pushHeadAcc(DSP.decodeMuseImu(raw), raw);
+        });
+        headAccChar = uuid;
+        break;
+      } catch (err) { /* not this one; try the next, then give up quietly */ }
+    }
+    console.log('[imu] head accelerometer:', headAccChar || 'not available on this device');
 
     setStatus('starting stream…');
     // 'p50' enables PPG alongside EEG (vs. 'p21' for EEG-only) — required
@@ -4179,6 +4278,14 @@ setInterval(() => {
         text: strapContact === false ? 'no skin contact' : `${Math.round(rrBuffer.rejectRate() * 100)}% beats rejected`,
       }));
     }
+  }
+  /* SHOWN NEXT TO CALM, and labelled, because the two answer different questions and looked identical.
+     "Calm" is relative to the last few minutes of this sit; this is absolute and comparable between
+     sits. Printed as a percentage with its meaning attached rather than as another bare 0-100 score. */
+  if (result.calmAbs != null) {
+    tail.push(row('Alpha share', result.calmAbs, {
+      text: `${(result.calmAbs * 100).toFixed(0)}% of alpha+beta`,
+    }));
   }
   tail.push(row('Noise', result.artifactRate, { text: noiseLabel, color: COMPOSITE_COLORS.jaw }));
   /* THE INDIVIDUAL ALPHA PEAK, LIVE. Asked for directly — "i also dont see alpha in the composites.

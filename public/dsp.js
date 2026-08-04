@@ -33,6 +33,57 @@
     '273e0010-4c4d-454d-96be-f03bac821358', // infrared
     '273e0011-4c4d-454d-96be-f03bac821358', // red
   ];
+  /*
+   * THE HEADBAND'S OWN MOTION SENSORS.
+   *
+   * WHY THEY MATTER HERE. The hypothesis worth testing in this project is not really about brainwaves:
+   * "less fidgeting, eye gaze less erratic, movements are more deliberate, but also more smooth in
+   * tempo". Head stillness is a direct measurement of most of that, and it was never recorded at all —
+   * connect() subscribed to EEG and PPG and nothing else, so seven sits went by with no head motion in
+   * them. The chest strap's accelerometer measures breathing, which is a different question.
+   *
+   * TWO CANDIDATE UUIDs, TRIED IN ORDER, and this is deliberate rather than sloppy. The Muse's
+   * characteristic map is not published by the manufacturer; the widely-used community mapping puts
+   * accelerometer at 000a and gyroscope at 0009, and I cannot verify that against a real Muse S Gen 2
+   * from here. Both are attempted, whichever answers is subscribed, and the failure path is the same
+   * one PPG already uses — absent rather than fatal.
+   *
+   * AND THE RAW BYTES ARE KEPT ALONGSIDE THE DECODE. If the scale factor below is wrong, a stored
+   * decode is wrong forever and unrecoverable, while stored bytes can be re-decoded once the true
+   * scale is known. Data preservation outranks a tidy schema — the samples are the irreplaceable part.
+   */
+  const MUSE_IMU_CANDIDATES = [
+    '273e000a-4c4d-454d-96be-f03bac821358', // accelerometer, per the community mapping
+    '273e0009-4c4d-454d-96be-f03bac821358', // gyroscope on that mapping; tried second
+  ];
+  /* Muse's documented accelerometer scale: 16-bit signed, 1/16384 g per count, so 1000/16384 mG.
+     UNVERIFIED against hardware from here — see above. Anything derived from it is a shape, and a
+     shape is unaffected by a constant scale error: stillness, jerk and symmetry all survive a wrong
+     gain, which is why they are the measures worth trusting first. */
+  const MUSE_IMU_SCALE_MG = 1000 / 16384;
+  const MUSE_IMU_FREQUENCY = 52;          // Hz, per the same mapping
+  const MUSE_IMU_SAMPLES_PER_PACKET = 3;  // three 3-axis samples per notification
+
+  /*
+   * Three 3-axis samples, 16-bit signed big-endian, after the 2-byte packet index.
+   *
+   * Returns whatever whole samples are present rather than assuming three: a short packet is a real
+   * thing on some firmware, and reading past the end would fabricate axes out of undefined.
+   */
+  function decodeMuseImu(bytes, scale = MUSE_IMU_SCALE_MG) {
+    const out = [];
+    for (let i = 0; i + 5 < bytes.length; i += 6) {
+      const axis = [];
+      for (let a = 0; a < 3; a++) {
+        const raw = (bytes[i + a * 2] << 8) | bytes[i + a * 2 + 1];
+        // Two's complement: 16-bit values above 0x7fff are negative.
+        axis.push(((raw & 0x8000) ? raw - 0x10000 : raw) * scale);
+      }
+      out.push({ x: axis[0], y: axis[1], z: axis[2] });
+    }
+    return out;
+  }
+
   const PPG_CHANNEL_NAMES = ['ambient', 'infrared', 'red'];
   const PPG_FREQUENCY = 64; // Hz
   const PPG_SAMPLES_PER_PACKET = 6;
@@ -907,6 +958,8 @@
     MUSE_SERVICE, CONTROL_CHARACTERISTIC, EEG_CHARACTERISTICS, CHANNEL_NAMES,
     EEG_FREQUENCY, EEG_SAMPLES_PER_PACKET,
     PPG_CHARACTERISTICS, PPG_CHANNEL_NAMES, PPG_FREQUENCY, PPG_SAMPLES_PER_PACKET,
+    MUSE_IMU_CANDIDATES, MUSE_IMU_SCALE_MG, MUSE_IMU_FREQUENCY, MUSE_IMU_SAMPLES_PER_PACKET,
+    decodeMuseImu,
     encodeCommand, decode12Bit, decode24Bit, samplesToMicrovolts,
     hannWindow, fft, powerSpectrum, bandPower, BANDS, bandPowers,
     IAF_SEARCH_HZ, IAF_WINDOW_SEC, IAF_MIN_PROMINENCE, IAF_MIN_WIDTH_HZ, IAF_MIN_WINDOWS,

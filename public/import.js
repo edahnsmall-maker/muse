@@ -203,6 +203,10 @@
     }
 
     const accText = text('acc.csv');
+    /* Head motion, kept under its own name. It answers a different question from acc.csv — stillness
+       rather than breathing — and a lab that merged them could not separate them again. */
+    const headAccText = text('head-acc.csv');
+    const headRawText = text('head-acc-raw.csv');
     const rrText = text('rr.csv');
     const readme = text('README.txt') || '';
     // The sample rate is written into the README rather than the data, so read it
@@ -224,6 +228,10 @@
       metrics: metricsText ? parseCsv(metricsText) : [],
       notes: notesText ? parseCsv(notesText) : [],
       acc: accText ? parseCsv(accText) : [],
+      headAcc: headAccText ? parseCsv(headAccText) : [],
+      // Present or not, reported either way: a sit recorded before the headband's accelerometer was
+      // subscribed at all has none, and that is a fact about the recording rather than a gap to fill.
+      headAccRaw: headRawText ? parseCsv(headRawText) : [],
       rr: rrText ? parseCsv(rrText) : [],
       eeg,
       eegHz: eegHz || 256,

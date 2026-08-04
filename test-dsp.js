@@ -675,4 +675,53 @@ function naiveDFT(real) {
     + ' expires when stale, and refuses partial estimates');
 }
 
+/* THE HEADBAND'S OWN ACCELEROMETER — decode, and the honesty around an unverified scale.
+ *
+ * Asked for: "we should capture the head accl from muse too if it's avail. it coul dbe important
+ * (fidgeting)". Seven recorded sits contain no head motion at all, because the subscription did not
+ * exist. This is the decode that makes it usable, and the scale it uses comes from an unpublished
+ * community mapping that has NOT been checked against hardware — so the tests pin the two-complement
+ * arithmetic and the packet handling exactly, and pin nothing about absolute g-forces.
+ */
+{
+  // 0x4000 is 16384, which at 1/16384 g per count is exactly 1g = 1000mG. 0xC000 is its negative.
+  const one = new Uint8Array([0x40, 0x00, 0x00, 0x00, 0xC0, 0x00]);
+  const d = DSP.decodeMuseImu(one);
+  assert.strictEqual(d.length, 1, 'six bytes are one 3-axis sample');
+  assert.ok(Math.abs(d[0].x - 1000) < 1e-6, `+full scale must read +1000mG, got ${d[0].x}`);
+  assert.strictEqual(d[0].y, 0, 'zero must read zero');
+  assert.ok(Math.abs(d[0].z + 1000) < 1e-6,
+    `NEGATIVE full scale must read -1000mG, got ${d[0].z} — a missing two's-complement conversion`
+    + ' turns every downward axis into a huge positive number, which looks like a violent movement');
+
+  // Three samples per packet, and the sample ORDER preserved: a shape metric is meaningless if the
+  // samples arrive shuffled.
+  const three = new Uint8Array([0,1, 0,2, 0,3, 0,4, 0,5, 0,6, 0,7, 0,8, 0,9]);
+  const t = DSP.decodeMuseImu(three, 1);
+  assert.deepStrictEqual(t.map((s) => [s.x, s.y, s.z]), [[1,2,3],[4,5,6],[7,8,9]],
+    'samples and axes must come out in the order they went in');
+
+  /* A SHORT PACKET YIELDS ONLY WHOLE SAMPLES. Real firmware does send them, and reading past the end
+     would fabricate axes out of undefined — which arithmetic turns into NaN and a chart into a gap
+     that looks like the wearer vanished. */
+  assert.strictEqual(DSP.decodeMuseImu(new Uint8Array([0, 1, 0, 2])).length, 0,
+    'four bytes is not a sample and must produce nothing, not a partial one');
+  assert.strictEqual(DSP.decodeMuseImu(new Uint8Array([0,1,0,2,0,3, 0,4,0,5])).length, 1,
+    'one whole sample plus a fragment is one sample');
+  for (const s of DSP.decodeMuseImu(new Uint8Array([0,1,0,2,0,3, 0,4,0,5]))) {
+    assert.ok(Number.isFinite(s.x) && Number.isFinite(s.y) && Number.isFinite(s.z),
+      'and no axis may come out NaN');
+  }
+
+  // Two candidates are tried, in a stated order, because the mapping is not authoritative.
+  assert.ok(DSP.MUSE_IMU_CANDIDATES.length >= 2,
+    'more than one candidate characteristic must be attempted — the map is unpublished');
+  for (const u of DSP.MUSE_IMU_CANDIDATES) {
+    assert.match(u, /^273e00[0-9a-f]{2}-4c4d-454d-96be-f03bac821358$/,
+      `${u} is not a Muse characteristic UUID`);
+  }
+  console.log('✓ the head accelerometer decodes with correct sign and order, refuses partial samples,'
+    + ' and tries more than one candidate characteristic');
+}
+
 console.log('\nAll DSP tests passed.');
