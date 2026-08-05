@@ -1165,10 +1165,15 @@ async function showTab(page, tab) {
       'and the failure handler must be installed before the first module can throw');
 
     const tabs = await pg.$$eval('.tab', (els) => els.map((e) => e.dataset.tab));
-    /* Your sits leads. See the note on the landing pane below: with nothing analysed until it is
-       asked for, a page that opens on a question opens on "not enough data". */
-    assert.deepStrictEqual(tabs, ['sessions', 'explore', 'compare', 'signals', 'learn'],
-      'five tabs, in order, with Your sits first');
+    /* THE FIRST FOUR TABS ARE THE PRACTITIONER'S OWN STATED FLOW: what there is, how it is grouped,
+       what the groups differ on, and what goes out for pattern-finding. Explore, Signals and Learn
+       follow because each has something real behind it — the mark-locked search, the clip library and
+       the alpha peak, and the comparability warning.
+       Your sits leads: with nothing analysed until it is asked for, a page that opens on a question
+       opens on "not enough data". */
+    assert.deepStrictEqual(tabs,
+      ['sessions', 'studies', 'compare', 'export', 'explore', 'signals', 'learn'],
+      'seven tabs, with the practitioner’s four-step flow first');
     /* NO "My model" TAB. The mockup showed one, next to "Confidence 82%" and "Personalized model".
        Nothing here is fitted and there is no basis for 82, and a tab named for a thing that does not
        exist is worse than a missing tab. */
@@ -1290,8 +1295,13 @@ async function showTab(page, tab) {
     }
 
     // And the tabs must actually switch, each to its own content.
+    /* Compare now leads with the STUDY comparison — two or more named lists, on breath then EEG. The
+       older per-sit A/B table is still there, folded away: Studies replaced it as the way sits get
+       grouped, so it no longer leads, but the movement and stillness numbers inside it are a real
+       measurement nothing else here reports. */
     for (const [tab, heading] of [['explore', /what do you want to understand/i],
-      ['compare', /Whole sessions|Patterns/],
+      ['studies', /Studies/], ['compare', /Compare studies/],
+      ['export', /Export for AI/],
       ['signals', /alpha|Clip/i], ['learn', /What these numbers are/]]) {
       await pg.click(`.tab[data-tab="${tab}"]`);
       await pg.waitForTimeout(1200);
@@ -1320,7 +1330,7 @@ async function showTab(page, tab) {
       `the shell must render without errors:\n  ${shellErrors.join('\n  ')}`);
     await pg.close();
     await ctx.close();
-    console.log(`✓ five tabs, Your sits first, ${ex.experiences.length} answerable experiences offered`
+    console.log(`✓ seven tabs, Your sits first, ${ex.experiences.length} answerable experiences offered`
       + ' (none unanswerable), badges are counts not percentages, "not enough" never reads as "no'
       + ' effect", and Learn leads with what cannot be compared');
   }
@@ -1426,11 +1436,20 @@ async function showTab(page, tab) {
       'each unread sit must offer to be analysed');
 
     // USEFUL WITH NOTHING READ. The note names the sit, and the tally is there to choose by.
-    const firstRow = await pg.$eval('#loaded table tr.sesMain', (tr) => ({
-      name: tr.children[1].textContent.replace(/\s+/g, ' ').trim(),
-      length: tr.children[3].textContent.trim(),
-      marks: tr.children[4].textContent.replace(/\s+/g, ' ').trim(),
-    }));
+    /* COLUMNS FOUND BY THEIR HEADER, not by index. Written with hard indices first, and a checkbox cell
+       added to the front of every row silently shifted all of them — the test then reported the sit as
+       unnamed when it was named perfectly well one cell over. */
+    const firstRow = await pg.evaluate(() => {
+      const heads = Array.from(document.querySelectorAll('#loaded table th'))
+        .map((th) => th.textContent.trim().toLowerCase());
+      const tr = document.querySelector('#loaded table tr.sesMain');
+      const cell = (name) => {
+        const i = heads.indexOf(name);
+        return i < 0 || !tr.children[i] ? '' : tr.children[i].textContent.replace(/\s+/g, ' ').trim();
+      };
+      return { name: cell('sit'), length: cell('length'), marks: cell('marks'),
+        signal: cell('signal'), heads };
+    });
     assert.match(firstRow.name, /scattered at first/,
       `the sit must be named by its own general note (got "${firstRow.name}")`);
     assert.match(firstRow.length, /^\d+:\d\d$/, `and show its length (got "${firstRow.length}")`);
@@ -1449,8 +1468,13 @@ async function showTab(page, tab) {
     }, null, { timeout: 90000 });
     assert.strictEqual(await pg.$$eval('[data-analyse]', (b) => b.length), SITS - 1,
       'the analysed sit must drop out of the unread list');
-    const analysed = await pg.$eval('#loaded table tr.sesMain', (tr) =>
-      tr.children[6].textContent.replace(/\s+/g, ' ').trim());
+    const analysed = await pg.evaluate(() => {
+      const heads = Array.from(document.querySelectorAll('#loaded table th'))
+        .map((th) => th.textContent.trim().toLowerCase());
+      const tr = document.querySelector('#loaded table tr.sesMain');
+      const i = heads.indexOf('signal');
+      return i < 0 || !tr.children[i] ? '' : tr.children[i].textContent.replace(/\s+/g, ' ').trim();
+    });
     assert.ok(/complete|warning/i.test(analysed),
       `an analysed row must carry a signal verdict (got "${analysed}")`);
     console.log(`  analysed one ${MINUTES}-minute sit on demand in ${Date.now() - analyseAt}ms`);
@@ -1483,6 +1507,148 @@ async function showTab(page, tab) {
     console.log(`✓ the lab opens in ${firstPaint}ms with ${SITS} sits and`
       + ` ${(seeded.bytes / 1e6).toFixed(0)}MB of EEG on the device, names each by its own note, shows`
       + ` its mark tally with nothing analysed, analyses on demand, and never re-analyses`);
+  }
+
+  /* 17) STUDIES, COMPARE AND THE FEATURE TABLE.
+   *
+   * Asked for: "build named lists by dragging sits into them: scattered, at rest, focusing, lots of
+   * thinking", then "two or more lists, compared on breath shape / frequency / depth / regularity, then
+   * on EEG", then "a button that copies the feature table for pasting into Claude".
+   *
+   * WHY A NAMED LIST AND NOT A SORTED TABLE, which is what this replaces: putting four sits in a list
+   * called "scattered" is a claim about those sits made from memory of sitting them, before looking at
+   * the signal. A table with a column per feature lets the numbers propose the grouping instead, and a
+   * search over enough columns always finds something. The old whole-session table was "built for a
+   * researcher and that's a problem" for exactly that reason.
+   *
+   * The assertions that matter most here are the NEGATIVE ones — no p-value anywhere, and no normalised
+   * score in the exported table. Both are ways this page could produce a confident wrong answer.
+   */
+  {
+    const ctx = await browser.newContext();
+    const pg = await ctx.newPage();
+    const errs = [];
+    pg.on('pageerror', (e) => errs.push(e.message));
+    await pg.goto(PAGE);
+    await pg.waitForFunction(() => typeof store !== 'undefined', null, { timeout: 8000 });
+    await pg.evaluate(async () => {
+      sessions.length = 0;
+      studies.length = 0;
+      if (store) await LabStore.clearSessions(store);
+      localStorage.removeItem('zenbio.lab.studies');
+    });
+
+    // Four sits, so two studies of two can be compared.
+    const files = [0, 1, 2, 3].map((i) => makeMarkArchive({ id: `study${i}`, seedOffset: 400 + i }));
+    for (const f of files) {
+      await pg.setInputFiles('#file', { name: f.name, mimeType: 'application/zip', buffer: f.bytes });
+      await pg.waitForTimeout(300);
+    }
+    await pg.waitForFunction((n) => sessions.filter((s) => !s.error).length === n, files.length,
+      { timeout: 20000 });
+
+    // The suggested names are the practitioner's own words, one click each.
+    await pg.click('.tab[data-tab="studies"]');
+    await pg.waitForSelector('[data-suggest]');
+    const suggested = await pg.$$eval('[data-suggest]', (b) => b.map((x) => x.dataset.suggest));
+    for (const want of ['scattered', 'at rest', 'focusing', 'lots of thinking']) {
+      assert.ok(suggested.includes(want), `"${want}" must be offered as a one-click study name`);
+    }
+    await pg.click('[data-suggest="scattered"]');
+    await pg.waitForTimeout(250);
+    await pg.click('[data-suggest="at rest"]');
+    await pg.waitForTimeout(250);
+
+    /* MEMBERSHIP BY TICK-AND-ADD, which is the path that works without a drag. Drag-and-drop is wired
+       too, but a drag on a phone fights the page scroll and this list is long enough to need scrolling —
+       so the gesture cannot be the only way in. Both write through setStudyMember. */
+    await pg.click('.tab[data-tab="sessions"]');
+    await pg.waitForSelector('[data-pick]');
+    const keys = await pg.$$eval('[data-pick]', (b) => b.map((x) => x.dataset.pick));
+    assert.strictEqual(keys.length, files.length, 'every sit must be selectable');
+    await pg.click(`[data-pick="${keys[0]}"]`);
+    await pg.click(`[data-pick="${keys[1]}"]`);
+    await pg.click('[data-add-to]');
+    await pg.waitForTimeout(400);
+    await pg.click(`[data-pick="${keys[2]}"]`);
+    await pg.click(`[data-pick="${keys[3]}"]`);
+    const addButtons = await pg.$$('[data-add-to]');
+    await addButtons[1].click();
+    await pg.waitForTimeout(400);
+
+    const built = await pg.evaluate(() => studies.map((x) => ({ name: x.name, n: x.members.length })));
+    assert.deepStrictEqual(built, [{ name: 'scattered', n: 2 }, { name: 'at rest', n: 2 }],
+      `two studies of two sits each (got ${JSON.stringify(built)})`);
+
+    // ---- Compare -------------------------------------------------------------------
+    await pg.click('.tab[data-tab="compare"]');
+    await pg.waitForSelector('[data-cmp]');
+    const one = await pg.evaluate(() =>
+      document.getElementById('studyCompare').textContent.replace(/\s+/g, ' '));
+    assert.match(one, /at least two studies/i,
+      'one study alone must say so — a single list has nothing to be different from');
+
+    const boxes = await pg.$$('[data-cmp]');
+    await boxes[0].check();
+    await pg.waitForTimeout(200);
+    await boxes[1].check();
+    await pg.waitForTimeout(500);
+    const cmp = await pg.evaluate(() =>
+      document.getElementById('studyCompare').textContent.replace(/\s+/g, ' '));
+
+    /* NO P-VALUE, and it says why rather than leaving the absence to be noticed. With two sits against
+       two, a p-value is a number the sample cannot support, and printing one invites reading it as the
+       answer. explore.js reports session counts for the same reason. */
+    assert.match(cmp, /No p-values here/i, 'Compare must state why there are no p-values');
+    assert.ok(!/\bp\s*[=<>]\s*0?\.\d/.test(cmp),
+      'and must not print one anywhere — a p from this sample size is worse than none');
+    assert.match(cmp, /hunch/i,
+      'a difference must be called a hunch, and say what would turn it into a result');
+    assert.match(cmp, /predicted in advance/i, 'which is a trial, not more searching on the same data');
+    // The picker survives a change, rather than being rebuilt under the cursor.
+    assert.strictEqual((await pg.$$('[data-cmp]')).length, 2,
+      'the study picker must not be destroyed when a box is ticked');
+
+    // ---- Export for AI -------------------------------------------------------------
+    await pg.click('.tab[data-tab="export"]');
+    await pg.waitForSelector('#copyTable');
+    const md = await pg.evaluate(() => featureTableMarkdown());
+
+    assert.ok(md.indexOf('Read this before the table') < md.indexOf('| sit |'),
+      'the limits must come BEFORE the table — a bare table produces confident confabulation');
+    /* THE NORMALISED SCORES MUST NOT BE IN IT. Measured across seven real sits the displayed calm score
+       ranked them in slightly OPPOSITE order to the physiology, so a model asked to find patterns in
+       that column would find them and they would be backwards. Excluded rather than flagged, because a
+       caveat beside a number in a table is a caveat that gets skipped. */
+    const header = (md.match(/^\| sit \|.*$/m) || [''])[0].toLowerCase();
+    for (const banned of ['calm |', 'focus', 'thinking', 'drowsy', 'equanimity']) {
+      assert.ok(!header.includes(banned),
+        `"${banned}" is normalised within each sit and must not be a column: ${header}`);
+    }
+    assert.match(md, /MINUS 0\.32/,
+      'and it must give the measured reason those columns are absent, not just omit them');
+    assert.match(header, /rate/, 'the breath rate must be a column');
+    assert.match(header, /regularity/, 'and regularity');
+    assert.match(md, /Alpha has not been measurable/,
+      'and it must say alpha is not measurable here rather than letting a reader build on it');
+    const bodyRows = md.split('\n').filter((l) => /^\| /.test(l)).length - 2;
+    assert.strictEqual(bodyRows, files.length,
+      `one row per analysed sit (got ${bodyRows} for ${files.length} sits)`);
+
+    // ---- And studies survive a reload ----------------------------------------------
+    await pg.reload();
+    await pg.waitForFunction(() => typeof store !== 'undefined', null, { timeout: 8000 });
+    await pg.waitForTimeout(500);
+    const after = await pg.evaluate(() => studies.map((x) => ({ name: x.name, n: x.members.length })));
+    assert.deepStrictEqual(after, built,
+      `studies must survive a reload (got ${JSON.stringify(after)})`);
+
+    assert.deepStrictEqual(errs, [], `studies must work without errors:\n  ${errs.join('\n  ')}`);
+    await pg.close();
+    await ctx.close();
+    console.log('✓ studies group sits by hand and persist, two of them compare on breath and EEG with'
+      + ' no p-value anywhere, and the exported feature table leads with its limits and carries no'
+      + ' within-sit-normalised column');
   }
 
   assert.deepStrictEqual(errors, [], `no errors during interaction:\n  ${errors.join('\n  ')}`);

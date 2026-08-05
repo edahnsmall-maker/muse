@@ -154,6 +154,21 @@
     font: 13px ui-monospace, monospace; padding: 2px 6px; border-radius: 6px; }
   .expander:hover { background: rgba(255,255,255,.08); color: #cbe9ff; }
   tr.sesDetail > td { padding-top: 0; }
+  /* The two folded sections. Their summaries look like quiet controls rather than headings, because both
+     hold something secondary — an import path for sits from another machine, and the older per-sit
+     comparison that Studies replaced as the primary way to group. */
+  #dropWrap, #wholeWrap { margin-top: 18px; }
+  #dropWrap > summary, #wholeWrap > summary { font-size: 12.5px; padding: 7px 0; }
+  #dropWrap #drop { margin-top: 10px; padding: 22px 20px; }
+  /* The select box gets a whole cell to itself and a generous hit area — a checkbox in a table row is
+     one of the easiest things to miss with a thumb. */
+  .pickWrap { display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; cursor: pointer; }
+  tr.sesMain[draggable="true"] { cursor: grab; }
+  tr.sesMain[draggable="true"]:hover td { background: rgba(255,255,255,.025); }
+  /* A study card is a drop target, so it says so on hover during a drag (the border colour is set from
+     JS on dragover — this is the resting state it returns to). */
+  [data-study-drop] { transition: border-color .15s; }
   .why { font-size: 12px; color: rgba(255,255,255,.5); line-height: 1.5; }
 </style>
 
@@ -192,32 +207,87 @@
 -->
 <nav id="tabs" role="tablist">
   <button class="tab active" data-tab="sessions" role="tab">Your sits</button>
-  <button class="tab" data-tab="explore" role="tab">Explore</button>
+  <button class="tab" data-tab="studies" role="tab">Studies</button>
   <button class="tab" data-tab="compare" role="tab">Compare</button>
+  <button class="tab" data-tab="export" role="tab">Export for AI</button>
+  <button class="tab" data-tab="explore" role="tab">Explore</button>
   <button class="tab" data-tab="signals" role="tab">Signals</button>
   <button class="tab" data-tab="learn" role="tab">Learn</button>
 </nav>
-
-<div id="drop">
-  <strong>Drop session archives here</strong><br>
-  <span class="dim">or click to choose files · several at once is better than one</span>
-  <input type="file" id="file" multiple accept=".zip" hidden>
-</div>
 
 <section class="pane" data-pane="explore" hidden>
   <div id="explore"></div>
 </section>
 <section class="pane" data-pane="sessions">
   <div id="loaded"></div>
+  <!--
+    THE DROP ZONE MOVED HERE, AND IT IS DEMOTED.
+
+    It used to sit above the tabs, so it was the first and largest thing on every pane. That made sense
+    when a sit could only get in by being dragged in; it stopped making sense when the lab started
+    reading the app's own recordings, which is every sit ever recorded on this device. A 90px dashed
+    box asking for an upload, above a list of sits that are already there, teaches the wrong thing
+    about how the page works.
+
+    It still matters, so it is kept rather than removed: an archive from another machine, or from
+    before this device, has no other way in.
+  -->
+  <details id="dropWrap">
+    <summary>Bring in a sit from somewhere else</summary>
+    <div id="drop">
+      <strong>Drop session archives here</strong><br>
+      <span class="dim">or click to choose files · several at once is better than one</span>
+      <input type="file" id="file" multiple accept=".zip" hidden>
+    </div>
+    <div class="note" style="margin-top:8px">Only needed for a sit recorded on a different device. Sits
+      recorded here are already listed above.</div>
+  </details>
   <!-- Pre-created so renderTimelines/renderTrials find a host instead of inserting one after the
        loaded list — which would land them in whichever pane happened to hold it. -->
   <div id="timelines"></div>
   <div id="trials"></div>
 </section>
+<!--
+  STUDIES: arbitrary named lists of sits, built by hand.
+
+  Asked for: "build named lists by dragging sits into them: scattered, at rest, focusing, lots of
+  thinking." This replaces the whole-session table as the way sits get grouped, which was correctly
+  called "built for a researcher and that's a problem" — a table sorted by a column is not a hypothesis,
+  and a named list of sits you remember is.
+-->
+<section class="pane" data-pane="studies" hidden>
+  <div id="studies"></div>
+</section>
 <section class="pane" data-pane="compare" hidden>
-  <div id="whole"></div>
+  <div id="studyCompare"></div>
+  <!--
+    THE OLD PER-SIT A/B TABLE, FOLDED AWAY.
+
+    "This replaces the whole-session table, which was correctly called 'built for a researcher and
+    that's a problem'." Studies is now the way sits get grouped and compared, so this is no longer the
+    first thing on the tab.
+
+    Kept rather than deleted, behind a fold, because the complaint was about it LEADING — a two-column
+    table of every feature invites sorting by the biggest number and reading the top row as the answer.
+    The movement and stillness comparison inside it is a real measurement that nothing else here
+    reports, and deleting working analysis to satisfy a layout note would cost more than it saves.
+  -->
+  <details id="wholeWrap">
+    <summary>Compare two single sits, feature by feature (the older view)</summary>
+    <div id="whole"></div>
+  </details>
   <div id="out"></div>
   <div id="saved"></div>
+</section>
+<!--
+  EXPORT FOR AI: the feature table, for pasting somewhere else.
+
+  The agreed division of labour: CODE the feature extraction, SEND the table out for pattern-finding.
+  Never let a model decide what counts as a finding — which is why this is a table of numbers with their
+  limits stated, and why the prose handoff (which leads with what the data cannot support) stays separate.
+-->
+<section class="pane" data-pane="export" hidden>
+  <div id="exportPane"></div>
 </section>
 <section class="pane" data-pane="signals" hidden>
   <div id="alpha"></div>
@@ -1151,8 +1221,583 @@ function renderLearn() {
  * This page handled a retreat's worth of archives on one scroll before the tabs existed. If it ever
  * does become slow, the fix is a measurement first.
  */
+/* ==========================================================================
+ * STUDIES — arbitrary named lists of sits
+ * ==========================================================================
+ * Asked for: "build named lists by dragging sits into them: scattered, at rest, focusing, lots of
+ * thinking. Arbitrary lists, user-named, persisted."
+ *
+ * WHY THIS REPLACES THE WHOLE-SESSION TABLE, which was called "built for a researcher and that's a
+ * problem". A table with a column per feature invites sorting by the biggest number and reading the top
+ * row as the answer. A named list is a HYPOTHESIS stated before looking: putting four sits in a list
+ * called "scattered" is a claim about those sits, made from memory of sitting them, and it is a claim
+ * that can then be checked against the signal. That is the right way round. The table let the numbers
+ * propose the grouping, which is how a search over enough columns always finds something.
+ *
+ * MEMBERSHIP IS BY THE SAME KEY THE SITS LIST USES — 'rec:<recorderId>' for a recording on this device,
+ * 'file:<name>' for a dropped archive. Not by array index, which shifts, and not by the analysed
+ * session, because a sit can be in a study BEFORE it has been analysed. That last part matters: the
+ * whole point of the split is that choosing which sits to look at is cheap and looking at them is not.
+ *
+ * localStorage rather than LabStore. A study is a few dozen bytes of names and keys, it has no schema to
+ * migrate, and it must survive the lab's own store being cleared — "clear the lab" should not silently
+ * delete the groupings you built by hand.
+ */
+const STUDY_KEY = 'zenbio.lab.studies';
+let studies = [];
+try {
+  const raw = localStorage.getItem(STUDY_KEY);
+  if (raw) {
+    const parsed = JSON.parse(raw);
+    // Shape-checked on the way in: a hand-edited or half-written value must not take the page down.
+    if (Array.isArray(parsed)) {
+      studies = parsed.filter((x) => x && typeof x.name === 'string' && Array.isArray(x.members))
+        .map((x) => ({ id: String(x.id || x.name), name: x.name, members: x.members.map(String) }));
+    }
+  }
+} catch (err) { console.log('[lab] could not read studies:', err && err.message); }
+
+function saveStudies() {
+  try { localStorage.setItem(STUDY_KEY, JSON.stringify(studies)); }
+  catch (err) { console.log('[lab] could not save studies:', err && err.message); }
+}
+
+/* The names the practitioner actually used, offered as one click each. Not defaults — an empty study
+   list should stay empty until a claim is made — but typing four names before you can group anything is
+   friction in front of the one step that matters. */
+const SUGGESTED_STUDIES = ['scattered', 'at rest', 'focusing', 'lots of thinking'];
+
+function studyById(id) { return studies.find((x) => x.id === id) || null; }
+
+function addStudy(name) {
+  const clean = String(name || '').trim().slice(0, 60);
+  if (!clean) return null;
+  // Same name twice would make two lists nobody can tell apart in the Compare picker.
+  const existing = studies.find((x) => x.name.toLowerCase() === clean.toLowerCase());
+  if (existing) return existing;
+  /* The id is derived from the name plus the count rather than from a clock, because ids have to be
+     stable across a reload and Date.now() in a loop can collide. */
+  const study = { id: `${clean.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${studies.length}`,
+    name: clean, members: [] };
+  studies.push(study);
+  saveStudies();
+  return study;
+}
+
+function setStudyMember(studyId, key, member) {
+  const st = studyById(studyId);
+  if (!st) return;
+  const at = st.members.indexOf(key);
+  if (member && at < 0) st.members.push(key);
+  if (!member && at >= 0) st.members.splice(at, 1);
+  saveStudies();
+}
+
+/* The entries in a study, in the order the sits list shows them rather than the order they were added:
+   a study read top-to-bottom should run newest-first like everything else on the page. Members whose
+   recording is no longer on the device are reported rather than dropped — a study that quietly shrank
+   would change what a saved comparison meant. */
+function studyEntries(st) {
+  const all = sitEntries();
+  const found = all.filter((e) => st.members.includes(e.key));
+  const missing = st.members.filter((k) => !all.some((e) => e.key === k));
+  return { found, missing };
+}
+
+function studyCounts(st) {
+  const { found, missing } = studyEntries(st);
+  return {
+    total: st.members.length,
+    present: found.length,
+    missing: missing.length,
+    analysed: found.filter((e) => e.s && !e.s.error).length,
+    withBreath: found.filter((e) => e.s && e.s.breath && e.s.breath.known).length,
+  };
+}
+
+function renderStudies() {
+  const host = document.getElementById('studies');
+  if (!host) return;
+  const entries = sitEntries().filter((e) => !(e.sit && excluded.has(e.sit.id)));
+
+  const chips = SUGGESTED_STUDIES
+    .filter((n) => !studies.some((x) => x.name.toLowerCase() === n))
+    .map((n) => `<button data-suggest="${esc(n)}">+ ${esc(n)}</button>`).join(' ');
+
+  const list = studies.map((st) => {
+    const c = studyCounts(st);
+    const { found, missing } = studyEntries(st);
+    const rows = found.length
+      ? found.map((e) => `<div class="row" style="margin-bottom:4px">
+          <span style="flex:1 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;
+            white-space:nowrap">${esc(e.s ? (labelOf(e.s) || sitName(e.sit)) : sitName(e.sit))}</span>
+          ${e.s && !e.s.error ? '<span class="tag good">analysed</span>'
+            : '<span class="tag warn">not analysed</span>'}
+          <button data-remove-study="${esc(st.id)}" data-remove-key="${esc(e.key)}"
+            title="Take this sit out of the study">×</button></div>`).join('')
+      : '<div class="dim">Empty. Drag sits here from Your sits, or tick them there and use'
+        + ' “Add to study”.</div>';
+    /* A MISSING MEMBER IS NAMED, not dropped. A study whose recording has been deleted or set aside
+       silently shrinking would change what a comparison means without saying so. */
+    const gone = missing.length
+      ? `<div class="note warn" style="margin-top:8px">${missing.length} sit(s) in this study are no
+         longer available — deleted, or set aside on the sits list. They are not in any comparison.</div>`
+      : '';
+    return `<div class="card" data-study-drop="${esc(st.id)}">
+      <div class="row" style="justify-content:space-between">
+        <input data-rename="${esc(st.id)}" value="${esc(st.name)}" maxlength="60"
+          style="flex:1 1 200px;font-size:14px;font-weight:600;background:none;border:none;
+            color:inherit;padding:2px 0">
+        <span class="tag">${c.present} sit${c.present === 1 ? '' : 's'} ·
+          ${c.analysed} analysed${c.withBreath ? ` · ${c.withBreath} with breath` : ''}</span>
+        <button data-del-study="${esc(st.id)}" title="Delete this study. The sits are untouched.">Delete</button>
+      </div>
+      <div style="margin-top:10px">${rows}</div>${gone}
+      ${c.present > c.analysed
+        ? `<button class="primary" style="margin-top:10px" data-analyse-study="${esc(st.id)}">
+            Analyse the ${c.present - c.analysed} unread sit(s) in this study</button>`
+        : ''}
+    </div>`;
+  }).join('');
+
+  host.innerHTML = `<h2>Studies</h2>
+    <p class="sub">Named lists of sits, grouped by what you remember of sitting them. A list called
+      “scattered” is a claim about those sits made before looking at the signal, which is the right way
+      round — a table sorted by a column lets the numbers propose the grouping instead, and a search over
+      enough columns always finds something.</p>
+    <div class="card">
+      <div class="row">
+        <input id="newStudy" placeholder="name a study — what do these sits have in common?"
+          maxlength="60" style="flex:1 1 260px;font-size:13.5px;padding:8px 11px;border-radius:9px;
+          background:rgba(255,255,255,.05);color:inherit;border:1px solid rgba(255,255,255,.14)">
+        <button class="primary" id="addStudy">Create</button>
+      </div>
+      ${chips ? `<div class="row" style="margin-top:10px"><span class="dim">or:</span> ${chips}</div>` : ''}
+    </div>
+    ${list || '<div class="card note">No studies yet. Name one above, then put sits in it.</div>'}
+    ${entries.length ? '' : '<div class="card note">There are no sits to group yet.</div>'}`;
+
+  const create = () => {
+    const box = document.getElementById('newStudy');
+    if (!box) return;
+    if (addStudy(box.value)) { box.value = ''; render(); }
+  };
+  const addBtn = document.getElementById('addStudy');
+  if (addBtn) addBtn.addEventListener('click', create);
+  const newBox = document.getElementById('newStudy');
+  if (newBox) newBox.addEventListener('keydown', (e) => { if (e.key === 'Enter') create(); });
+  host.querySelectorAll('[data-suggest]').forEach((b) => {
+    b.addEventListener('click', () => { addStudy(b.dataset.suggest); render(); });
+  });
+  host.querySelectorAll('[data-del-study]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const i = studies.findIndex((x) => x.id === b.dataset.delStudy);
+      if (i >= 0) { studies.splice(i, 1); saveStudies(); render(); }
+    });
+  });
+  host.querySelectorAll('[data-remove-study]').forEach((b) => {
+    b.addEventListener('click', () => {
+      setStudyMember(b.dataset.removeStudy, b.dataset.removeKey, false);
+      render();
+    });
+  });
+  host.querySelectorAll('[data-rename]').forEach((input) => {
+    const apply = () => {
+      const st = studyById(input.dataset.rename);
+      const next = input.value.trim().slice(0, 60);
+      if (!st || !next || next === st.name) { input.value = st ? st.name : input.value; return; }
+      st.name = next;
+      saveStudies();
+      render();
+    };
+    input.addEventListener('blur', apply);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') input.blur(); });
+  });
+  host.querySelectorAll('[data-analyse-study]').forEach((b) => {
+    b.addEventListener('click', () => {
+      const st = studyById(b.dataset.analyseStudy);
+      if (!st) return;
+      analyseSits(studyEntries(st).found
+        .filter((e) => !e.s && e.sit).map((e) => e.sit.id));
+    });
+  });
+  /* DRAG A SIT ONTO A STUDY. The drop target is the whole study card, not a narrow strip — a 6px target
+     is a gesture that fails, and a failed drag reads as the feature not existing. Touch has the
+     checkbox-and-menu path on the sits list instead, because dragging on a phone fights the scroll. */
+  host.querySelectorAll('[data-study-drop]').forEach((card) => {
+    card.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      card.style.borderColor = 'rgba(127,216,160,.5)';
+    });
+    card.addEventListener('dragleave', () => { card.style.borderColor = ''; });
+    card.addEventListener('drop', (e) => {
+      e.preventDefault();
+      card.style.borderColor = '';
+      const key = e.dataTransfer.getData('text/plain');
+      if (key) { setStudyMember(card.dataset.studyDrop, key, true); render(); }
+    });
+  });
+}
+
+/* ==========================================================================
+ * COMPARE — two or more studies, on breath first, then EEG
+ * ==========================================================================
+ * Asked for: "two or more lists, compared on breath shape / frequency / depth / regularity, then on EEG.
+ * Hunches will be valuable even if they don't rise to the level of p<whatever."
+ *
+ * BREATH FIRST, AND THAT ORDER IS THE POINT. Alpha has not been measurable in any of eight real sits —
+ * prominence 0.77-0.84 against the 1.5 needed, with the alpha region sitting BELOW the 1/f background,
+ * which is what eyes-open alpha suppression looks like. So the EEG composites are the weakest thing here
+ * and the breath is the strongest: it is a measured physical quantity, cross-checked against an
+ * independent sensor, in units that mean the same thing on any day.
+ *
+ * NO P-VALUES, and that is deliberate rather than lazy. With four sits against five, a p-value is a
+ * number computed from a sample too small to support it, and printing one invites reading it as the
+ * answer. What is shown instead is every sit's own value, both medians, and the count — so the reader can
+ * see the overlap themselves. explore.js reports session counts for exactly this reason and its tests
+ * pin that; this follows it.
+ *
+ * WHAT IT REFUSES TO COMPARE. calm, focus, thinking, drowsy and the rest are normalised within each sit,
+ * so their zero differs per sit by construction: measured across seven real recordings the displayed calm
+ * score spanned 42-53 while the underlying physiology spanned more than twofold, and their rank
+ * correlation was MINUS 0.32. Comparing studies on those columns is worse than useless, so they are not
+ * offered here at all rather than offered with a caveat nobody reads.
+ */
+
+/* The features a study can honestly be compared on. `perSit` pulls one number from an analysed session,
+   and `comparable` says whether it means the same thing in two different sits — depth does not, because
+   it depends on how tightly the strap was fastened that day. */
+const COMPARE_FEATURES = [
+  { key: 'breathRate', group: 'Breath', label: 'Rate', unit: '/min', digits: 2, comparable: true,
+    why: 'Breaths per minute from chest movement, cross-checked against the heart-derived rate.',
+    perSit: (s) => (s.breath && s.breath.known ? s.breath.summary.ratePerMin : null) },
+  { key: 'breathRegularity', group: 'Breath', label: 'Regularity', unit: ' CV', digits: 3,
+    comparable: true,
+    why: 'Coefficient of variation of the breath period — dimensionless, so it compares between people'
+      + ' and between rates. Lower is steadier.',
+    perSit: (s) => (s.breath && s.breath.known ? s.breath.summary.periodCv : null) },
+  { key: 'breathRise', group: 'Breath', label: 'Rise fraction', unit: '', digits: 3, comparable: true,
+    why: 'Fraction of each cycle spent inhaling. 0.5 is symmetric; below it is a quick in and a long out.',
+    perSit: (s) => (s.breath && s.breath.known ? s.breath.summary.riseFrac : null) },
+  { key: 'breathDepth', group: 'Breath', label: 'Depth', unit: ' mG', digits: 1, comparable: false,
+    why: 'Chest movement in milli-g. NOT comparable between sits: it depends on how tightly the strap'
+      + ' was fastened, so a difference here may be a difference in dressing.',
+    perSit: (s) => (s.breath && s.breath.known ? s.breath.summary.amplitudeMg : null) },
+  { key: 'alphaShare', group: 'EEG', label: 'Alpha share', unit: '', digits: 4, comparable: true,
+    why: 'Alpha as a share of alpha+beta, averaged over the sit. The only EEG number here with no free'
+      + ' parameter: 0.5 means equal alpha and beta power, in every sit, for every person.',
+    perSit: (s) => median((s.read.metrics || []).map((r) => Number(r.calmAbs))) },
+  { key: 'hr', group: 'Body', label: 'Heart rate', unit: ' bpm', digits: 1, comparable: true,
+    why: 'Beats per minute — a physical quantity on a fixed scale.',
+    perSit: (s) => median((s.read.metrics || []).map((r) => Number(r.hrBpm))) },
+  { key: 'hrv', group: 'Body', label: 'HRV (RMSSD)', unit: ' ms', digits: 1, comparable: true,
+    why: 'Milliseconds. Varies enormously between people, so read it against your own other sits only.',
+    perSit: (s) => median((s.read.metrics || []).map((r) => Number(r.hrvMs))) },
+  { key: 'marks', group: 'Marks', label: 'Marks per 10 min', unit: '', digits: 1, comparable: true,
+    why: 'How often anything was marked, per ten minutes, so a long sit and a short one are comparable.',
+    perSit: (s) => {
+      const mins = (s.durationSec || 0) / 60;
+      if (mins < 1) return null;
+      const n = ((s.read && s.read.notes) || [])
+        .filter((x) => x.anchored !== 'no' && x.anchored !== false
+          && (x.tapCategory || x.transition || x.markKind)).length;
+      return (n / mins) * 10;
+    } },
+];
+
+function median(values) {
+  const v = (values || []).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+  if (!v.length) return null;
+  const mid = Math.floor(v.length / 2);
+  return v.length % 2 ? v[mid] : (v[mid - 1] + v[mid]) / 2;
+}
+
+// Which studies are selected for comparison. Not persisted: it is a question being asked right now, not
+// a grouping that was decided.
+let comparing = [];
+
+/*
+ * THE PICKER IS DRAWN ONCE; ONLY THE RESULT REDRAWS.
+ *
+ * Rebuilding the whole pane on every tick would recreate the checkbox that was just clicked, which is
+ * the trap this codebase already paid for on the Sensors/Composites pills: "a click whose mousedown and
+ * mouseup straddled a rebuild landed on two different nodes and fired no click event at all". The
+ * checkboxes stay put and #cmpResult is the only thing replaced.
+ */
+function renderStudyCompare() {
+  const host = document.getElementById('studyCompare');
+  if (!host) return;
+  if (!studies.length) {
+    host.innerHTML = `<h2>Compare studies</h2>
+      <div class="card note">No studies yet. Group some sits under <strong>Studies</strong> first —
+      comparing needs two lists to compare.</div>`;
+    return;
+  }
+  const picker = studies.map((st) => {
+    const c = studyCounts(st);
+    return `<label class="row" style="gap:7px;margin:0 14px 6px 0">
+      <input type="checkbox" data-cmp="${esc(st.id)}" ${comparing.includes(st.id) ? 'checked' : ''}>
+      <span>${esc(st.name)}</span>
+      <span class="tag">${c.analysed}/${c.present} analysed</span></label>`;
+  }).join('');
+
+  host.innerHTML = `<h2>Compare studies</h2>
+    <p class="sub">Breath first, and that order is deliberate: alpha has not been measurable in any of
+      eight real sits here, so the EEG composites are the weakest thing on this page and the breath —
+      measured, cross-checked against a second sensor, in units that mean the same on any day — is the
+      strongest.</p>
+    <div class="card"><div class="sideHead" style="margin-bottom:8px">Which studies</div>
+      <div class="row" style="align-items:flex-start">${picker}</div></div>
+    <div id="cmpResult"></div>`;
+
+  host.querySelectorAll('[data-cmp]').forEach((box) => {
+    box.addEventListener('change', () => {
+      const id = box.dataset.cmp;
+      if (box.checked && !comparing.includes(id)) comparing.push(id);
+      if (!box.checked) comparing = comparing.filter((x) => x !== id);
+      renderCompareResult();
+    });
+  });
+  renderCompareResult();
+}
+
+function renderCompareResult() {
+  const out = document.getElementById('cmpResult');
+  if (!out) return;
+  const chosen = comparing.map(studyById).filter(Boolean);
+  let body;
+  if (chosen.length < 2) {
+    body = `<div class="card note">Pick at least two studies. One list on its own has nothing to be
+      different from.</div>`;
+  } else {
+    const cols = chosen.map((st) => {
+      const { found } = studyEntries(st);
+      const sits = found.filter((e) => e.s && !e.s.error).map((e) => e.s);
+      return { st, sits, unread: found.length - sits.length };
+    });
+    const thin = cols.filter((c) => c.sits.length === 0);
+    /* SAY WHAT IS NOT IN THE COMPARISON, before any number. A study with unanalysed sits is being
+       compared on a subset, and a subset presented as the whole is the failure mode this page exists to
+       avoid. */
+    const unreadTotal = cols.reduce((n, c) => n + c.unread, 0);
+    const notice = unreadTotal
+      ? `<div class="card note warn">${unreadTotal} sit(s) in these studies have not been analysed and
+         are NOT in the comparison below. Analyse them from Your sits or from the study itself, or the
+         numbers here describe fewer sits than the studies contain.</div>`
+      : '';
+    if (thin.length) {
+      body = notice + `<div class="card note bad">
+        ${thin.map((c) => esc(c.st.name)).join(' and ')} ${thin.length === 1 ? 'has' : 'have'} no
+        analysed sits, so there is nothing to compare yet.</div>`;
+    } else {
+      const groups = [];
+      for (const g of ['Breath', 'EEG', 'Body', 'Marks']) {
+        const feats = COMPARE_FEATURES.filter((f) => f.group === g);
+        const rows = feats.map((f) => {
+          const cells = cols.map((c) => {
+            const vals = c.sits.map((s) => f.perSit(s)).filter((v) => Number.isFinite(v));
+            const m = median(vals);
+            return { n: vals.length, of: c.sits.length, m, vals };
+          });
+          // A feature no study can report at all is not shown as a row of dashes.
+          if (cells.every((c) => c.n === 0)) return '';
+          const nums = cells.map((c) => (c.m == null ? '<span class="dim">—</span>'
+            : `${c.m.toFixed(f.digits)}${esc(f.unit)}`
+              + ` <span class="dim">(${c.n}${c.n === c.of ? '' : ` of ${c.of}`})</span>`));
+          return `<tr><td>${esc(f.label)}${f.comparable ? ''
+            : ' <span class="warn" title="Not comparable between sits">*</span>'}</td>
+            ${nums.map((n) => `<td class="num">${n}</td>`).join('')}</tr>
+            <tr><td colspan="${cols.length + 1}" class="why" style="padding-bottom:10px">
+              ${esc(f.why)}${f.vals}
+              ${cells.map((c, i) => (c.vals.length
+                ? `<br>${esc(cols[i].st.name)}: ${c.vals.map((v) => v.toFixed(f.digits)).join(', ')}`
+                : '')).join('')}</td></tr>`;
+        }).filter(Boolean).join('');
+        if (rows) {
+          groups.push(`<h2>${g}</h2><div class="card scroll"><table>
+            <tr><th>${g === 'Breath' ? 'Breath' : g}</th>
+            ${cols.map((c) => `<th>${esc(c.st.name)}<br><span class="dim">${c.sits.length}
+              sit${c.sits.length === 1 ? '' : 's'}</span></th>`).join('')}</tr>
+            ${rows}</table></div>`);
+        }
+      }
+      /* EVERY SIT'S OWN VALUE IS PRINTED under each row, not just the medians, and that is the honest
+         presentation at this sample size. Two medians with no spread behind them look like a result; the
+         individual numbers show the overlap, which is usually the actual finding. */
+      const smallest = Math.min(...cols.map((c) => c.sits.length));
+      const caution = `<div class="card note">
+        <strong>No p-values here, on purpose.</strong> The smallest study in this comparison has
+        ${smallest} analysed sit${smallest === 1 ? '' : 's'}. A p-value computed from that is a number
+        the sample cannot support, and printing one invites reading it as the answer. Every sit's own
+        value is listed under each row so the overlap is visible — if the two sets of numbers interleave,
+        the medians differing means nothing.
+        <br><br>A difference here is a <strong>hunch</strong>. It becomes a result by being predicted in
+        advance and then observed in sits recorded afterwards, which means a trial rather than more
+        searching on the same data.
+        <br><br>Rows marked <span class="warn">*</span> are not comparable between sits at all and are
+        shown only because they are worth eyeballing within one.</div>`;
+      body = notice + (groups.join('') || '<div class="card note">Nothing measurable in common yet.</div>')
+        + caution;
+    }
+  }
+
+  out.innerHTML = body;
+}
+
+/* ==========================================================================
+ * EXPORT FOR AI — the feature table, and nothing that pretends to be a finding
+ * ==========================================================================
+ * "A button that copies the feature table for pasting into Claude. The division agreed: CODE the feature
+ * extraction, SEND the table out for pattern-finding. Never let a model decide what counts as a finding."
+ *
+ * So this is a table of numbers with their limits stated, and the limits go FIRST — handing over a bare
+ * table produces confident confabulation in any reader, which is the same reason the prose handoff leads
+ * with what the data cannot support. The two are kept separate: that one is an argument, this one is data.
+ *
+ * ONLY COMPARABLE COLUMNS. The normalised composites are excluded rather than included with a warning,
+ * because a table is exactly the format in which a caveat gets skipped: measured over seven real sits the
+ * displayed calm score ranked them in slightly OPPOSITE order to the physiology, so a model asked to find
+ * patterns in that column would find them and they would be backwards.
+ */
+function featureTableMarkdown() {
+  const rows = sitEntries()
+    .filter((e) => e.s && !e.s.error && !(e.sit && excluded.has(e.sit.id)))
+    .map((e) => {
+      const s = e.s;
+      const inStudies = studies.filter((st) => st.members.includes(e.key)).map((st) => st.name);
+      const cells = COMPARE_FEATURES.map((f) => {
+        const v = f.perSit(s);
+        return v == null || !Number.isFinite(v) ? '' : v.toFixed(f.digits);
+      });
+      return {
+        name: (labelOf(s) || sitName(e.sit) || s.file).replace(/\|/g, '/'),
+        minutes: s.durationSec == null ? '' : (s.durationSec / 60).toFixed(1),
+        studies: inStudies.join('; '),
+        simulated: s.read.simulated ? 'YES' : '',
+        cells,
+      };
+    });
+
+  const header = ['sit', 'minutes', 'studies', 'simulated',
+    ...COMPARE_FEATURES.map((f) => `${f.label}${f.unit.trim() ? ` (${f.unit.trim()})` : ''}`)];
+  const table = [
+    `| ${header.join(' | ')} |`,
+    `| ${header.map(() => '---').join(' | ')} |`,
+    ...rows.map((r) => `| ${[r.name, r.minutes, r.studies, r.simulated, ...r.cells].join(' | ')} |`),
+  ].join('\n');
+
+  const simulated = rows.filter((r) => r.simulated).length;
+  return [
+    '# Feature table from a meditation biofeedback lab',
+    '',
+    '## Read this before the table',
+    '',
+    'Every number below is a measurement or a median of measurements. None of them is a finding, and',
+    'the thing being asked for is candidate patterns, not conclusions.',
+    '',
+    `There are ${rows.length} sits here. That is a small number, and it is the binding constraint on`,
+    'everything that can be said. With this many sits, a difference between two groups is a HUNCH.',
+    'It becomes a result only by being predicted in advance and then observed in sits recorded',
+    'afterwards — not by more searching on this table.',
+    '',
+    'WHAT IS DELIBERATELY ABSENT. There are no calm / focus / thinking / drowsy columns. Those scores',
+    'are normalised within each sit, so their zero differs per sit by construction. Measured across',
+    'seven real recordings the displayed calm score spanned 42-53 while the underlying physiology',
+    'spanned more than twofold, and their rank correlation was MINUS 0.32 — the best sit read 45.9 and',
+    'the worst 52.9. Patterns found in those columns are real patterns in the normalisation, not in',
+    'the meditator. They are excluded rather than flagged, because a caveat next to a number in a',
+    'table is a caveat that gets skipped.',
+    '',
+    'WHAT THE COLUMNS ARE:',
+    '',
+    ...COMPARE_FEATURES.map((f) => `- **${f.label}** — ${f.why}`
+      + (f.comparable ? '' : ' NOT comparable between sits.')),
+    '',
+    'Alpha has not been measurable in any of eight sits here: prominence 0.77-0.84 against the 1.5',
+    'needed, with the alpha region sitting below the 1/f background. This practice is eyes-open and',
+    'that is what eyes-open alpha suppression looks like. Do not build on alpha; test against breath.',
+    '',
+    'The breath columns come from a chest accelerometer and are cross-checked against an independent',
+    'heart-derived rate from the same strap. Where they disagreed by more than a set margin the sit',
+    'reports no breath at all rather than a number — a blank in those columns is a refusal, not a',
+    'missing sensor.',
+    '',
+    simulated
+      ? `WARNING: ${simulated} row(s) are marked simulated. They were produced by a signal simulator`
+        + ' with no headband connected, are not recordings of anyone, and must not be pooled with the'
+        + ' rest.'
+      : 'No simulated sits are included.',
+    '',
+    '## The table',
+    '',
+    table,
+    '',
+  ].join('\n');
+}
+
+function renderExportPane() {
+  const host = document.getElementById('exportPane');
+  if (!host) return;
+  const analysed = sitEntries().filter((e) => e.s && !e.s.error
+    && !(e.sit && excluded.has(e.sit.id))).length;
+  host.innerHTML = `<h2>Export for AI</h2>
+    <p class="sub">The division of labour, kept on purpose: the feature extraction is code, and the
+      pattern-finding goes out. What comes back is a candidate to test on later sits — never a finding,
+      because a model handed a table will always produce one.</p>
+    ${analysed === 0
+      ? '<div class="card note">Nothing analysed yet. Analyse some sits from Your sits first.</div>'
+      : `<div class="card">
+          <div class="row">
+            <button class="primary" id="copyTable">Copy the feature table (${analysed} sits)</button>
+            <button id="downloadTable">Download it</button>
+          </div>
+          <div class="note" style="margin-top:10px">Markdown: the limits first, then the table. The
+            limits go first because a bare table produces confident confabulation in any reader — which
+            is the whole reason this button exists rather than an “interpret my data” button.</div>
+        </div>
+        <details style="margin-top:12px"><summary>See what will be copied</summary>
+          <pre class="card" style="white-space:pre-wrap;font:11.5px ui-monospace,monospace;
+            overflow-x:auto">${esc(featureTableMarkdown())}</pre></details>`}
+    <div class="card" style="margin-top:16px">
+      <div class="sideHead" style="margin-bottom:8px">Or the prose version</div>
+      <div class="note">“Copy findings for an AI” at the foot of Explore sends the same data as an
+        argument rather than a table — leading with what it cannot support. Use that one when the question
+        is “what should I make of this”, and the table when the question is “find me something to test”.
+      </div></div>`;
+
+  const copy = document.getElementById('copyTable');
+  if (copy) {
+    copy.addEventListener('click', async () => {
+      const md = featureTableMarkdown();
+      try {
+        await navigator.clipboard.writeText(md);
+        copy.textContent = `Copied (${(md.length / 1024).toFixed(1)}kB)`;
+      } catch (e) {
+        // A refused clipboard must not look like a successful copy.
+        console.log(md);
+        copy.textContent = 'Blocked — it is in the console';
+      }
+      setTimeout(() => renderExportPane(), 2600);
+    });
+  }
+  const dl = document.getElementById('downloadTable');
+  if (dl) {
+    dl.addEventListener('click', () => {
+      const url = URL.createObjectURL(new Blob([featureTableMarkdown()], { type: 'text/markdown' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'feature-table.md';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 20000);
+    });
+  }
+}
+
 function render() {
   renderLoaded();
+  renderStudies();
+  renderStudyCompare();
+  renderExportPane();
   renderExplore();
   renderLearn();
   renderWhole();
@@ -1727,6 +2372,10 @@ function excludedHtml() {
       recordings themselves are untouched.</div></div>`;
 }
 
+/* WHICH SITS ARE TICKED. Not persisted: it is a selection being made right now, and a selection that
+   survived a reload would silently add sits to a study days later. */
+const picked = new Set();
+
 function sitsTableHtml() {
   const entries = sitEntries().filter((e) => !(e.sit && excluded.has(e.sit.id)));
   if (!entries.length) {
@@ -1749,8 +2398,8 @@ function sitsTableHtml() {
     const { sit, s } = entry;
     const i = s ? sessions.indexOf(s) : -1;
     if (s && s.error) {
-      return `<tr class="sesMain"><td></td><td>${esc(s.file)}</td>
-        <td colspan="4" class="bad">${esc(s.error)}</td>
+      return `<tr class="sesMain"><td></td><td></td><td>${esc(s.file)}</td>
+        <td colspan="5" class="bad">${esc(s.error)}</td>
         <td><button data-drop="${i}">Remove</button></td></tr>`;
     }
     const name = s ? (labelOf(s) || sitName(sit) || s.file) : sitName(sit);
@@ -1801,7 +2450,12 @@ function sitsTableHtml() {
     const spans = s ? (s.spans.filter((x) => x.dims).length || '<span class="dim">0</span>')
       : '<span class="dim">—</span>';
 
-    return `<tr class="sesMain">
+    /* DRAGGABLE, so a sit can be dropped onto a study. draggable on the ROW rather than on a handle:
+       the gesture is "put this sit in that list", and the thing being moved is the sit. */
+    return `<tr class="sesMain" draggable="true" data-key="${esc(entry.key)}">
+      <td><label class="pickWrap" title="Select this sit, then use Add to study">
+        <input type="checkbox" data-pick="${esc(entry.key)}" ${picked.has(entry.key) ? 'checked' : ''}>
+        </label></td>
       <td>${arrow}</td>
       <td>${nameCell}${sub}</td>
       <td>${whenText(entry)}</td>
@@ -1815,7 +2469,7 @@ function sitsTableHtml() {
       /* THE TIMELINE AND THE ALPHA PEAK LIVE BEHIND THE ARROW.
          "alternatively, every entry in the Loaded section could have a little arrow that expands and
          lets me see the visual timeline. that's where the individual alpha peak could live too." */
-      + (s && expanded.has(i) ? `<tr class="sesDetail"><td></td><td colspan="7">
+      + (s && expanded.has(i) ? `<tr class="sesDetail"><td></td><td></td><td colspan="7">
           <div id="detail-${i}"></div></td></tr>` : '');
   }).join('');
 
@@ -1825,12 +2479,48 @@ function sitsTableHtml() {
     · <strong>${analysedCount}</strong> analysed. Nothing is read until you ask for it, which is why
     this page opens straight away. Only analysed sits can be compared.</div>`;
 
-  return countNote + bulk + `<div class="card scroll"><table>
-    <tr><th></th><th>Sit</th><th>When</th><th>Length</th><th>Marks</th><th>Labelled spans</th>
-        <th>Signal</th><th></th></tr>${rows}</table></div>`;
+  /* TICK-AND-ADD ALONGSIDE DRAG-AND-DROP, because drag is not available to everyone. On a phone a drag
+     gesture fights the page scroll, and this list is long enough to need scrolling — so the same job has
+     a path that is a tap. Both write through setStudyMember, so there is one way membership changes. */
+  const pickBar = picked.size
+    ? `<div class="row" style="margin:10px 0 0">
+        <strong>${picked.size} selected</strong>
+        ${studies.length
+          ? `<span class="dim">add to:</span> ` + studies.map((st) =>
+            `<button data-add-to="${esc(st.id)}">${esc(st.name)}</button>`).join(' ')
+          : '<span class="note">No studies yet — name one under Studies and they will appear here.</span>'}
+        <button data-clear-picks>Clear</button></div>`
+    : '';
+
+  return countNote + bulk + pickBar + `<div class="card scroll"><table>
+    <tr><th></th><th></th><th>Sit</th><th>When</th><th>Length</th><th>Marks</th>
+        <th>Labelled spans</th><th>Signal</th><th></th></tr>${rows}</table></div>`;
 }
 
 function wireSitsTable() {
+  loadedEl.querySelectorAll('[data-pick]').forEach((box) => {
+    box.addEventListener('change', () => {
+      if (box.checked) picked.add(box.dataset.pick); else picked.delete(box.dataset.pick);
+      renderLoaded();
+    });
+  });
+  loadedEl.querySelectorAll('[data-add-to]').forEach((b) => {
+    b.addEventListener('click', () => {
+      for (const key of picked) setStudyMember(b.dataset.addTo, key, true);
+      picked.clear();
+      render();
+    });
+  });
+  const clearPicks = loadedEl.querySelector('[data-clear-picks]');
+  if (clearPicks) clearPicks.addEventListener('click', () => { picked.clear(); renderLoaded(); });
+  /* The drag source. The key travels as text/plain, which is what the study cards read — no shared
+     mutable "currently dragging" variable, so a drag that never lands leaves nothing behind. */
+  loadedEl.querySelectorAll('tr.sesMain[data-key]').forEach((tr) => {
+    tr.addEventListener('dragstart', (e) => {
+      e.dataTransfer.setData('text/plain', tr.dataset.key);
+      e.dataTransfer.effectAllowed = 'copy';
+    });
+  });
   loadedEl.querySelectorAll('[data-analyse]').forEach((b) => {
     b.addEventListener('click', () => analyseSits([b.dataset.analyse]));
   });
