@@ -143,8 +143,12 @@ const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'zenexport-'));
     'the summary must report what the app claimed at the time, so it can be audited');
 
   const notesCsv = Buffer.from(files.find((f) => f.name === 'notes.csv').bytes).toString('utf8');
-  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,transition,trialKey,condition,blockIndex,response,latencySec,tapCategory,grade,focus,effort,pull,tone,quadrant,seconds,audioFile,text,comment,transcript$/m,
-    'notes.csv must expose the label columns, the after-the-fact comment, and the transcript');
+  /* `strong` sits beside tapCategory: 1 when the mark was double-tapped, meaning that state reported
+     strongly. A FLAG on the mark rather than a separate category, so a count by tapCategory is
+     unaffected — explore.js compares mark kinds by counting them, and splitting a state by intensity
+     would halve the count it rests on. */
+  assert.match(notesCsv, /^offsetSec,clock,epochMs,absoluteTime,anchored,kind,markKind,transition,trialKey,condition,blockIndex,response,latencySec,tapCategory,strong,grade,focus,effort,pull,tone,quadrant,seconds,audioFile,text,comment,transcript$/m,
+    'notes.csv must expose the label columns, the strength, the after-the-fact comment, and the transcript');
   assert.match(notesCsv, /2026-07-27T13:12:30\.000Z|2026-07-27T06:12:30/,
     'and an absolute timestamp, so notes can be aligned to an external recording');
   assert.ok(notesCsv.trim().split('\n').length === 3, 'one header plus one row per note');

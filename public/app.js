@@ -1805,7 +1805,7 @@ function renderMarkList() {
   }
   const label = (m) => {
     const tap = Probes.TAP_BY_KEY[m.kind];
-    if (tap) return tap.label;
+    if (tap) return strongly(tap, m.strong);
     const kind = Markers.KINDS.find((k) => k.key === m.kind);
     return (kind && kind.label) || m.kind || 'mark';
   };
@@ -1966,11 +1966,12 @@ function applyPlaceChrome() {
     visual.setLegend(trainingMode);
     /* And keep it clear of the mark rail, which occupies the left edge in Train. Measured from the
        element rather than hard-coded, so the two cannot disagree after a CSS change. */
-    if (visual.setLegendInset) {
-      const rail = trainingMode && armedBarEl && !armedBarEl.hidden
-        ? Math.round(armedBarEl.getBoundingClientRect().right) : 0;
-      visual.setLegendInset(rail ? rail + 14 : 0);
-    }
+    /* NO INSET ANY MORE, and this is a consequence of the layout change worth stating. The inset existed
+       because the canvas covered the whole viewport, so the legend it painted at its own top-left landed
+       on top of the mark rail. The canvas now BEGINS where the rail ends, so its top-left is already
+       clear — and keeping the inset counted the rail twice, pushing the key a rail's width into the
+       middle of the visual. */
+    if (visual.setLegendInset) visual.setLegendInset(0);
   }
   if (!trainingMode && meditateIsBare()) {
     // Remember once, on the way in — not on every render, or the remembered state becomes the
@@ -2323,6 +2324,11 @@ let visualsOpen = false;
 function updatePanelVisibility() {
   readoutEl.classList.toggle('panelClosed', !metricsOpen);
   dataPanelEl.classList.toggle('panelClosed', !feedOpen);
+  /* ON THE BODY TOO, so the layout can react. In Train the timeline is a band at the foot of the centre
+     cell rather than a panel floating over it, which means the visual above it has to give up exactly
+     that much height — and CSS can only know to do that from a class it can select on. */
+  document.body.classList.toggle('feedOpen', feedOpen);
+  document.body.classList.toggle('metricsOpen', metricsOpen);
   modeBarEl.classList.toggle('open', visualsOpen);
   btnMetricsEl.classList.toggle('active', metricsOpen);
   btnFeedEl.classList.toggle('active', feedOpen);
@@ -3623,7 +3629,14 @@ let pendingGrade = null;   // { noteId, category, until }
  *
  * The decision itself is in Probes.doubleTap, pure and tested. This holds only the state it needs.
  */
-let lastTap = null;        // { key, at, markId, noteId }
+let lastTap = null;        // { key, at, markId, noteId, strong }
+
+/* How a mark reads when it was double-tapped. "Thinking" becomes "Thinking, strongly" rather than
+   becoming a different word, because it is the same state reported harder. */
+function strongly(tap, strong) {
+  const label = (tap && tap.label) || 'mark';
+  return strong ? `${label}, strongly` : label;
+}
 /*
  * TAPS WHOSE NOTE MUST BE DELETED THE MOMENT IT LANDS.
  *
@@ -3641,15 +3654,23 @@ let lastTap = null;        // { key, at, markId, noteId }
  */
 const orphanedTaps = new Set();
 
-async function markTap(tap) {
+async function markTap(tap, { strong = false } = {}) {
   const tSec = sessionTSec();
   const now = Date.now();
 
   /* WHAT THIS PRESS MEANS, given the one before it. */
   const decided = Probes.doubleTap(tap.key, {
     lastKey: lastTap && lastTap.key, lastAt: lastTap && lastTap.at,
-    lastId: lastTap && lastTap.markId, at: now,
+    lastId: lastTap && lastTap.markId, lastStrong: !!(lastTap && lastTap.strong), at: now,
   });
+  /* A THIRD press on an already-strong mark says nothing new. Swallowed here rather than recorded,
+     because the alternatives are both wrong: a fresh mark would double-count one event, and toggling
+     the strength off would let a held key flicker it. */
+  if (decided.already) {
+    setStatus(`${tap.label} · already marked strong`);
+    statusLockUntil = Date.now() + 1600;
+    return;
+  }
   if (decided.upgraded) {
     const upgraded = Probes.TAP_BY_KEY[decided.category];
     /* UNDO THE FIRST PRESS, in both places it landed. The on-screen mark and the stored note are
@@ -3670,11 +3691,15 @@ async function markTap(tap) {
       }
     }
     lastTap = null;
-    // Recurse once, with the upgraded category, so there is one implementation of writing a mark.
-    if (upgraded) return markTap(upgraded);
+    /* Re-enter with the SAME category, flagged strong — not a different category. See the note on
+       Probes.doubleTap: a separate category per intensity would split one state's marks across two
+       buckets, and explore.js compares kinds by counting them. One implementation of writing a mark. */
+    if (upgraded) return markTap(upgraded, { strong: true });
   }
 
   const mark = markerLog.add(tSec, { kind: tap.key, note: null });
+  // On the in-memory mark too, so the rail's list and the on-screen tally can show it without a lookup.
+  mark.strong = strong;
   /*
    * RECORDED FOR THE DOUBLE-TAP WINDOW *HERE*, BEFORE ANY await.
    *
@@ -3694,7 +3719,7 @@ async function markTap(tap) {
    * marks correctly, it just has no note to remove yet, which is the right outcome because there is not
    * one.
    */
-  lastTap = { key: tap.key, at: now, markId: mark.id, noteId: null };
+  lastTap = { key: tap.key, at: now, markId: mark.id, noteId: null, strong };
   renderMarkCount();
   markFlashEl.classList.add('on');
   setTimeout(() => markFlashEl.classList.remove('on'), 60);
@@ -3705,7 +3730,10 @@ async function markTap(tap) {
     // export, the markdown and the analysis all key off `transition`, and duplicating
     // the value here is cheaper than two vocabularies that can disagree.
     noteId = await recSession.addNote({ kind: 'transition', transition: tap.key,
-      tapCategory: tap.key, text: tap.label, anchored: true });
+      tapCategory: tap.key, text: tap.label, anchored: true,
+      /* THE STRENGTH IS A FIELD, not a different category. A strong Thinking is still a Thinking when
+         anything counts kinds, and the strength is there for anything that wants to filter on it. */
+      strong: strong ? 1 : undefined });
     // So context typed at the summary reaches notes.csv and not just the report.
     if (noteId != null) markerLog.setNoteId(mark.id, noteId);
   }
@@ -3725,7 +3753,7 @@ async function markTap(tap) {
   }
   if (tap.grades && noteId != null) {
     pendingGrade = { noteId, category: tap.key, until: Date.now() + 4000 };
-    setStatus(`${tap.label} \u00b7 ${tap.grades.map((g) => `${g.value}=${g.label}`).join(' ')}`);
+    setStatus(`${strongly(tap, strong)} \u00b7 ${tap.grades.map((g) => `${g.value}=${g.label}`).join(' ')}`);
   } else if (!recSession) {
     /* SAY SO when the mark is not being kept.
        markerLog.add above always succeeds, so the flash fires, the count goes up and
@@ -3733,9 +3761,10 @@ async function markTap(tap) {
        A whole sit was tapped through under the impression it was saved. The mark is
        still worth having in the session's own display, but the confirmation must not
        be indistinguishable from the confirmation of a saved one. */
-    setStatus(`${tap.label} \u00b7 ${Exporter.clock(tSec)} \u2014 not recording, this won\u2019t be saved`);
+    setStatus(`${strongly(tap, strong)} \u00b7 ${Exporter.clock(tSec)}`
+      + ` \u2014 not recording, this won\u2019t be saved`);
   } else {
-    setStatus(`${tap.label} \u00b7 ${Exporter.clock(tSec)}`);
+    setStatus(`${strongly(tap, strong)} \u00b7 ${Exporter.clock(tSec)}`);
   }
   statusLockUntil = Date.now() + 3200;
 }
@@ -4031,15 +4060,14 @@ function renderArmedBar() {
      it and Thinking for one event, which splits one state's marks across two buckets. It is announced
      under Thinking instead, where the gesture is. */
   armedBarEl.innerHTML = '<div class="armedHint">press <b>M</b> to mark</div>'
-    + Probes.PRIMARY_TAP_CATEGORIES.map((t) => {
-      const dbl = Probes.DOUBLE_TAP_OF[t.key];
-      return `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
-      + ` title="${escapeHtml(t.hint)}"><b>${t.kbd}${t.arrow
-        ? ` ${arrowGlyphFor(t)}` : ''}</b>${escapeHtml(t.label)}`
-      + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}`
-      // The gesture, said where the key is. A double-tap nobody knows about is a feature nobody has.
-      + `${dbl ? ` <i style="opacity:.5">×2 = ${escapeHtml(dbl.label.toLowerCase())}</i>` : ''}</span>`;
-    }).join('')
+    + Probes.PRIMARY_TAP_CATEGORIES.map((t) =>
+      `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
+      + ` title="${escapeHtml(t.hint)} — press twice quickly for a strong one"`
+      + `><b>${t.kbd}${t.arrow ? ` ${arrowGlyphFor(t)}` : ''}</b>${escapeHtml(t.label)}`
+      + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('')
+    /* SAID ONCE, not on every row. The double-tap works on all ten now, so a "×2 = …" on each would be
+       ten copies of one sentence in the panel that most needs to be short on a phone. */
+    + '<div class="armedNote">Press any of these <b>twice quickly</b> for a strong one.</div>'
     + '<div id="markList"></div>'
     + renderArrowEditorHtml();
   ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
@@ -4448,20 +4476,30 @@ function arrowGlyphFor(tap) {
  */
 function renderArrowEditorHtml() {
   const map = Probes.readArrowMap();
-  /* Only categories with a letter. Deep thinking has none — it is the double-tap of Thinking — and
-     listing "null = Deep thinking" in the key legend would be worse than omitting it. */
-  const letters = Probes.PRIMARY_TAP_CATEGORIES.map((t) => `${t.kbd} = ${t.label}`).join(' · ');
+  /*
+   * NO KEY LEGEND. It listed "C = Concentrating · A = Naturally concentrated · ..." — every letter and
+   * its meaning — directly beneath the list that already shows exactly that, one letter per row, a
+   * centimetre above. Reported as "we don't need the legend: it's right above", which is right: on a
+   * phone it was four lines of duplication in the panel that most needs to be short.
+   *
+   * THE ARROW GLYPHS ARE LEGIBLE NOW. They were rgba(255,255,255,.85) inside a container the browser
+   * was free to render at whatever weight a monospace fallback gives, at 15px, and on the phone they
+   * effectively vanished — reported as "the arrows don't show". They are the whole point of the row:
+   * without them the four boxes are unlabelled. Given their own class, at full opacity, sized up, and
+   * with the box beneath rather than beside so a narrow rail lays them out in a row of four rather than
+   * wrapping into two.
+   */
   return `<div class="arrowEditor">`
     + `<div class="sideHead" style="margin-bottom:6px">Arrow keys</div>`
-    + `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:center">`
-    + Probes.ARROWS.map((a) => `<label style="display:flex;gap:5px;align-items:center">`
-      + `<span style="font:15px ui-monospace,monospace">${Probes.ARROW_GLYPH[a]}</span>`
+    + `<div class="arrowRow">`
+    + Probes.ARROWS.map((a) => `<label class="arrowSlot">`
+      + `<span class="arrowGlyph">${Probes.ARROW_GLYPH[a]}</span>`
       + `<input data-arrowkey="${a}" value="${escapeHtml(map[a] || '')}" maxlength="1"`
-      + ` style="width:34px;text-align:center;text-transform:uppercase;font:13px ui-monospace,monospace"`
+      + ` aria-label="mark made by the ${a.replace('Arrow', '').toLowerCase()} arrow"`
       + `></label>`).join('')
     + `</div><div class="arrowHelp">`
-    + `Type the letter of the mark each arrow should make; leave one blank to unbind it.`
-    + `<div class="arrowLegend">${escapeHtml(letters)}</div></div></div>`;
+    + `Type a letter from the list above; blank unbinds that arrow.`
+    + `</div></div>`;
 }
 
 function wireArrowEditor(host) {

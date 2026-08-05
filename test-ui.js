@@ -3043,13 +3043,21 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const plainTapped = markerLog.length - beforePlain;
       const plainKind = markerLog.list()[markerLog.length - 1].kind;
 
-      /* AND THE GESTURE ITSELF: a second T straight after the one above must REPLACE it rather than
-         add to it. Two marks 400ms apart recorded as two separate returns to thinking is a count the
-         analysis cannot afford to get wrong — explore.js compares marks by counting them. */
+      /* AND THE GESTURE ITSELF: a second T straight after the one above must REPLACE it rather than add
+         to it, and mark it STRONG rather than changing what it is. "double tapping in general to signify
+         extra strong of any state" — so the category stays `lost` and carries a strength, which is also
+         what keeps the count intact: explore.js compares mark kinds by counting them, and a separate
+         category per intensity would split one state's marks across two thin buckets. */
       const beforeDouble = markerLog.length;
       await press({ key: 't' });
       const doubleDelta = markerLog.length - beforeDouble;
-      const doubleKind = markerLog.list()[markerLog.length - 1].kind;
+      const last = markerLog.list()[markerLog.length - 1];
+      const doubleKind = last.kind;
+      const doubleStrong = !!last.strong;
+      // A THIRD press says nothing new: no extra mark, and the strength does not toggle back off.
+      await press({ key: 't' });
+      const tripleDelta = markerLog.length - beforeDouble;
+      const tripleStrong = !!markerLog.list()[markerLog.length - 1].strong;
 
       const id = recSession && recSession.id;
       const stored = id ? await Recorder.listNotes(recDb, id) : [];
@@ -3069,7 +3077,8 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         && markerLog.list()[markerLog.length - 1].kind === 'drowsy';
 
       return { prevented, arrowKinds, trainBefore, afterShift, drowsyRecorded,
-        plainTapped, plainKind, doubleDelta, doubleKind, cuesOn: cueEngine.enabled,
+        plainTapped, plainKind, doubleDelta, doubleKind, doubleStrong,
+        tripleDelta, tripleStrong, cuesOn: cueEngine.enabled,
         cuePill: document.getElementById('cueToggle').textContent,
         storedKinds: stored.filter((n) => n.transition).map((n) => n.transition) };
     });
@@ -3086,12 +3095,17 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.strictEqual(out.afterShift, true, 'Shift+T must toggle Training');
     assert.strictEqual(out.plainTapped, 1,
       'plain T must record a tap, not toggle Training — it is the most-pressed category');
-    /* DOUBLE-TAP T = DEEP THINKING, and it must REPLACE the first mark. A net zero change in the
-       marker count is the whole point: one event, one mark. */
+    /* DOUBLE-TAP = STRONGLY, and it must REPLACE the first mark. A net zero change in the marker count
+       is the whole point: one event, one mark. */
     assert.strictEqual(out.doubleDelta, 0,
       `a second T must replace the first mark, not add one (count moved by ${out.doubleDelta})`);
-    assert.strictEqual(out.doubleKind, 'deep-thinking',
-      `and the surviving mark must be deep thinking (got ${out.doubleKind})`);
+    assert.strictEqual(out.doubleKind, 'lost',
+      `and the surviving mark must still be Thinking — the state is the same, reported harder`
+      + ` (got ${out.doubleKind})`);
+    assert.strictEqual(out.doubleStrong, true, 'and must be marked strong');
+    // A third press must not manufacture a mark or undo the strength.
+    assert.strictEqual(out.tripleDelta, 0, `a third T must not add a mark (moved by ${out.tripleDelta})`);
+    assert.strictEqual(out.tripleStrong, true, 'and must leave it strong rather than toggling it off');
     assert.strictEqual(out.plainKind, 'lost', 'and that tap is Thinking');
     // Drowsy is markable. Dullness is not restlessness and not absorption, and on the EEG
     // side it is the state most easily mistaken for calm — theta and alpha both rise as you

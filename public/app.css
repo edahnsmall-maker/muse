@@ -319,9 +319,16 @@
   /* The double-tap gesture, said under the key it belongs to. */
   #armedBar .a i { font-style: italic; font-size: 10px; }
   #armedBar .a b { font-family: ui-monospace, monospace; opacity: .8; margin-right: 6px; }
+  /* nowrap on the pill, or "PROBES OFF" breaks across two lines in the docked rail and the hint becomes
+     three lines of shouting at the top of the panel. */
   .armedHint { font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
     color: rgba(255,255,255,.38); padding: 0 2px 3px; }
+  .armedHint .rFix { white-space: nowrap; }
   .armedHint b { font-family: ui-monospace, monospace; color: rgba(255,255,255,.6); }
+  /* The double-tap, said once for all ten rather than repeated on each. */
+  .armedNote { font-size: 10.5px; line-height: 1.45; color: rgba(255,255,255,.45);
+    padding: 7px 2px 0; }
+  .armedNote b { color: rgba(255,255,255,.72); }
   #armedBar .a.hot { color: #dfe6ff; border-color: rgba(125,211,252,.38);
     background: rgba(125,211,252,.12); }
   #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
@@ -620,6 +627,84 @@
 
      THE CONTROL BAR STAYS, faded almost out and legible again on hover or keyboard focus. Hiding it
      would leave a screen with no way back, which is a worse failure than an austere one. */
+  /* ---- TRAIN IS ONE INTEGRATED LAYOUT ------------------------------------------------------------
+     "I don't just want sticky panels. I want it to look integrated. So the panels don't hide info
+     anymore. All info has a better home."
+
+     Pinning the panels to the edges was not enough, because the visual still covered the whole viewport
+     underneath them — so every panel was hiding part of it, and the timeline was a small box floating
+     over the middle. Nothing was actually given a place; things were stacked.
+
+     Train is now a set of regions that do not overlap at all:
+
+         +---------------------------------------------------------------+
+         | app bar: wordmark, places, name this sit                      |
+         +----------------+--------------------------------+-------------+
+         | markers        |  the visual                    |  metrics    |
+         | categories,    |                                |  mind       |
+         | this sit's     +--------------------------------+  body       |
+         | marks, arrows  |  the timeline, with the marks  |  signal     |
+         +----------------+--------------------------------+-------------+
+         | controls: view · practice · session                           |
+         +---------------------------------------------------------------+
+
+     The canvas is inset to the centre cell rather than covering the screen — see the note on resize() in
+     visual.js — and the timeline is a band at the foot of that cell. Closing the timeline gives its
+     height back to the visual instead of revealing what was hidden behind it, because nothing was.
+
+     The widths are named here so the canvas inset and the panel widths cannot disagree; a mismatch would
+     put the visual a few pixels under a panel, which is the exact thing this replaces. */
+  body.training { --railW: 272px; --metricsW: 274px; --feedH: 196px;
+    --edge: calc(var(--controlsH, 104px) + 5vmin + 14px); }
+  /* BORDER-BOX ON THE THREE DOCKED REGIONS, because app.css has no global box-sizing reset (only
+     lab.html does). Without it `width: 272px` plus 12px padding and a 1px border renders 298px, so each
+     panel was 26px wider than the number the canvas inset was computed from — and the visual ran under
+     both columns and under the timeline by exactly that much. The whole point of naming the widths is
+     that the canvas and the panels agree, and content-box quietly broke the agreement. */
+  body.training #armedBar:not([data-dragged]),
+  body.training #readout:not([data-dragged]),
+  body.training #dataPanel:not([data-dragged]) { box-sizing: border-box; }
+
+  /* THE VISUAL, in the centre cell.
+     SIZED EXPLICITLY, not with `width: auto` and four insets. A <canvas> is a REPLACED element, so
+     `width: auto` resolves to its intrinsic size — the bitmap that resize() just set — and the box
+     becomes over-constrained, at which point `right` is ignored outright. It read as the inset silently
+     not applying: left and bottom landed, right and bottom did not, and the visual ran under the metrics
+     column exactly as before. Computing the width and height from the same variables the panels use is
+     what keeps the three in agreement. */
+  body.training #gl {
+    top: 44px; left: var(--railW); bottom: var(--edge);
+    width: calc(100vw - var(--railW) - var(--metricsW));
+    height: calc(100vh - 44px - var(--edge)); }
+  /* With the timeline open, the visual gives up exactly the band's height — and nothing is revealed
+     underneath it, because nothing was under it. */
+  body.training.feedOpen #gl { height: calc(100vh - 44px - var(--edge) - var(--feedH) - 10px); }
+  /* With a panel closed, the visual takes that column back rather than leaving a gap. */
+  body.training:not(.metricsOpen) #gl { width: calc(100vw - var(--railW)); }
+  body.training.feedOpen:not(.metricsOpen) #gl { width: calc(100vw - var(--railW)); }
+
+  /* THE TIMELINE, a band across the centre cell. Not floating, not over anything. */
+  body.training #dataPanel:not([data-dragged]) {
+    position: fixed; left: var(--railW); right: var(--metricsW);
+    bottom: var(--edge); top: auto; width: auto; height: var(--feedH);
+    transform: none; border-radius: 14px; }
+  body.training:not(.metricsOpen) #dataPanel:not([data-dragged]) { right: 0; }
+  body.training #dataPanel:not([data-dragged]).panelClosed { transform: translateY(10px); }
+  /* THE BAND LAYS ITSELF OUT, rather than the chart being given a computed height. The panel holds a
+     title, the chart, the series key and the line saying what the vertical axis means — and subtracting a
+     guessed 42px for the rest left the caption hanging below the band's own edge, cut in half. Flex all
+     the way down: the fixed parts take what they need and the canvas takes the remainder, so nothing
+     overflows however long the caption gets. */
+  body.training #dataPanel:not([data-dragged]) { display: flex; flex-direction: column; }
+  body.training #dataPanel:not([data-dragged]) #dataBody { flex: 1 1 auto; min-height: 0;
+    display: flex; flex-direction: column; gap: 6px; }
+  body.training #dataPanel:not([data-dragged]) #chartCanvas { width: 100%; height: auto;
+    flex: 1 1 auto; min-height: 40px; }
+  body.training #dataPanel:not([data-dragged]) #legend { flex: 0 0 auto; margin-top: 0;
+    max-height: 52px; overflow-y: auto; }
+  /* No drag hint on a docked band, and no grip: it is furniture here rather than something to arrange. */
+  body.training #dataPanel:not([data-dragged]) .panelHint { display: none; }
+
   /* ---- TRAIN IS A LAYOUT, NOT A PILE OF FLOATING PANELS -----------------------------------------
      Asked for: "I liked the permanently docked panels idea in the train mode rather than floating."
      Right, and floating was the wrong default for the screen that is an instrument: the metrics panel
@@ -634,24 +719,15 @@
 
      Meditate is unaffected: it hides both panels outright. */
   body.training #readout:not([data-dragged]) {
-    top: 44px; right: 0; bottom: calc(var(--controlsH, 104px) + 5vmin + 14px);
+    top: 44px; right: 0; bottom: var(--edge); width: var(--metricsW);
     max-height: none; height: auto;
     border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-color: transparent;
     background: rgba(9,12,24,.90); }
   body.training #armedBar:not([data-dragged]) {
-    top: 44px; left: 0; bottom: calc(var(--controlsH, 104px) + 5vmin + 14px); transform: none;
+    top: 44px; left: 0; bottom: var(--edge); width: var(--railW); transform: none;
     max-height: none; height: auto;
     border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-color: transparent;
     background: rgba(9,12,24,.90); }
-  /* THE LIVE FEED STAYS FLOATING, as in the mockup — but not on top of the rail it now shares an edge
-     with. Its default corner was bottom-left, which was empty before the rail was docked there and is
-     not now. Centred over the middle instead, clear of both columns, and a drag still overrides. */
-  body.training #dataPanel:not([data-dragged]) {
-    left: 50%; right: auto; transform: translateX(-50%);
-    bottom: calc(var(--controlsH, 104px) + 5vmin + 14px); }
-  body.training #dataPanel:not([data-dragged]).panelClosed {
-    transform: translateX(-50%) translateY(10px); }
-
   /* Narrow screens keep the floating behaviour: two docked columns on a phone leave nothing in the
      middle for the visual, which is the thing they are there to sit beside. */
   @media (max-width: 900px) {
@@ -731,8 +807,18 @@
     background: rgba(255,255,255,.10); }
   .arrowEditor { flex: 0 0 auto; min-width: 0; margin-top: 10px; padding-top: 10px;
     border-top: 1px solid rgba(255,255,255,.09); }
-  .arrowEditor input { background: rgba(255,255,255,.07); color: rgba(255,255,255,.9);
-    border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 3px 0; }
+  /* Four slots across, glyph over box. Beside each other they wrapped into two rows in a 272px rail,
+     which made the pairing between an arrow and its letter ambiguous. */
+  .arrowRow { display: flex; gap: 10px; }
+  .arrowSlot { display: flex; flex-direction: column; align-items: center; gap: 4px; flex: 1 1 0;
+    cursor: pointer; }
+  /* THE GLYPH, ACTUALLY VISIBLE. At 15px in a faint monospace fallback these disappeared on a phone —
+     "the arrows don't show" — and they are the only thing identifying which box is which. */
+  .arrowGlyph { font: 17px/1 ui-sans-serif, system-ui, sans-serif; color: #cbe9ff; opacity: .95; }
+  .arrowEditor input { width: 100%; box-sizing: border-box; text-align: center;
+    text-transform: uppercase; font: 13px ui-monospace, monospace;
+    background: rgba(255,255,255,.07); color: rgba(255,255,255,.92);
+    border: 1px solid rgba(255,255,255,.16); border-radius: 6px; padding: 5px 0; }
   .arrowEditor input:focus { outline: none; border-color: rgba(125,211,252,.5);
     background: rgba(255,255,255,.12); }
   /* Legible over the visual. This was an inline opacity of .6, which is fine on a solid panel and not
@@ -740,14 +826,6 @@
      having if it cannot be read while sitting in front of it. */
   .arrowHelp { font-size: 11px; line-height: 1.5; margin-top: 9px;
     color: rgba(255,255,255,.62); }
-  /* The key table folded away: eleven "letter = name" pairs is a paragraph, and it is needed once while
-     choosing a binding, not every time the rail is on screen. */
-  .arrowLegend { margin-top: 6px; max-height: 3.1em; overflow: hidden; position: relative;
-    color: rgba(255,255,255,.45); transition: max-height .25s ease, color .25s ease;
-    mask-image: linear-gradient(#000 55%, transparent); -webkit-mask-image: linear-gradient(#000 55%, transparent); }
-  .arrowEditor:hover .arrowLegend, .arrowEditor:focus-within .arrowLegend {
-    max-height: 14em; color: rgba(255,255,255,.66);
-    mask-image: none; -webkit-mask-image: none; }
   #appBar .brand { font-size: 14px; font-weight: 600; letter-spacing: .02em;
     color: rgba(255,255,255,.82); }
   #appBar .brand .mark { color: #7dd3fc; margin-right: 4px; }

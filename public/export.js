@@ -423,6 +423,10 @@
         response: n.response || (n.missed ? 'missed' : ''),
         latencySec: n.latencySec == null ? '' : n.latencySec.toFixed(2),
         tapCategory: n.tapCategory || '',
+        /* HOW STRONGLY, from a double tap. 1 or blank, on the same row as the mark rather than as a
+           separate category — a strong Thinking is still a Thinking, and splitting the category would
+           halve the count that explore.js compares kinds by. */
+        strong: n.strong ? 1 : '',
         grade: n.grade == null ? '' : n.grade,
         condition: n.condition || '',
         blockIndex: n.blockIndex == null ? '' : n.blockIndex,
@@ -448,7 +452,7 @@
         transcript: n.transcript || '',
       })), ['offsetSec', 'clock', 'epochMs', 'absoluteTime', 'anchored', 'kind',
         'markKind', 'transition', 'trialKey', 'condition', 'blockIndex',
-        'response', 'latencySec', 'tapCategory', 'grade',
+        'response', 'latencySec', 'tapCategory', 'strong', 'grade',
         'focus', 'effort', 'pull', 'tone', 'quadrant',
         'seconds', 'audioFile', 'text', 'comment', 'transcript'])),
     });
@@ -646,6 +650,10 @@
         '  beatsRejected fraction of heartbeats discarded in the rolling window. A high',
         '                value means hrBpm and hrvMs were blanked for a reason, which is',
         '                a different fact from no strap being worn.',
+        '  strong        in notes.csv: 1 when the mark was double-tapped, meaning that',
+        '                state reported strongly. Blank otherwise. It is a FLAG on the',
+        '                mark, not a different category, so counts by tapCategory are',
+        '                unaffected and the strength is there to filter on separately.',
         '  chanState     ok | noisy | floating | flat, per channel, in the same order as',
         '                `levels`. A blank level says a channel read nothing; this says',
         '                why, and the three causes have three different fixes.',

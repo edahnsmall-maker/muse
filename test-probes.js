@@ -57,15 +57,10 @@ const A = require('./public/analysis.js');
    * without effort. A single focus score cannot separate these, which is the whole
    * reason effort is a distinct axis — and having both as one-key marks means the
    * moment of crossing between them is recordable. */
-  /* Every gesture-reached category must have NO letter and must name a parent that exists. A
-     double-tap whose parent was renamed would be unreachable while still appearing in every
-     vocabulary list — the sort of dangling reference that reads as a category nobody ever presses. */
-  for (const t of P.TAP_CATEGORIES.filter((x) => x.viaDoubleTap)) {
-    assert.strictEqual(t.kbd, null, `${t.key} is reached by a gesture and must have no letter`);
-    assert.ok(P.TAP_BY_KEY[t.viaDoubleTap],
-      `${t.key} double-taps ${t.viaDoubleTap}, which is not a category`);
-    assert.ok(!P.TAP_BY_KEY[t.viaDoubleTap].viaDoubleTap,
-      `${t.key} must double-tap a real key, not another gesture`);
+  /* No category may be unreachable by a keystroke. There was briefly one — a separate deep-thinking
+     category reached only by a gesture — and the strength is a flag on the mark now instead. */
+  for (const t of P.TAP_CATEGORIES) {
+    assert.ok(t.kbd, `${t.key} must have a letter — every category is pressable`);
   }
 
   assert.ok(P.TAP_BY_KEY.concentrating && P.TAP_BY_KEY.absorbed,
@@ -289,75 +284,65 @@ const A = require('./public/analysis.js');
 }
 
 /*
- * DOUBLE-TAP THINKING = DEEP THINKING.
+ * A DOUBLE TAP MEANS "STRONGLY", ON ANY STATE.
  *
- * The property that matters is that the second press REPLACES the first. Two marks 400ms apart
- * recorded as two separate returns to thinking is a count this dataset cannot afford to get wrong:
- * the marks-versus-marks comparison in explore.js is built entirely on counts, so one event reported
- * as two inflates exactly the number the comparison rests on.
+ * Asked for: "I would like double tapping in general to signify extra strong of any state just like
+ * thinking." So it is an INTENSITY rather than a different state, and that reframing is the better one
+ * for a reason beyond generality: a separate category per intensity splits one state's marks across two
+ * buckets, and explore.js compares mark kinds BY COUNTING them. Ten Thinkings of which four were strong
+ * would have been counted as six and four — two thin sets instead of one usable one.
+ *
+ * The second press must still REPLACE the first, for the same reason as before: one event, one mark.
  */
 {
-  const T = P.TAP_BY_KBD.T;
-  assert.ok(T && T.key === 'lost', 'T must still be Thinking');
-  const deep = P.TAP_BY_KEY['deep-thinking'];
-  assert.ok(deep, 'there must be a deep-thinking category');
-  assert.strictEqual(deep.viaDoubleTap, 'lost', 'reached by double-tapping Thinking');
-
-  // A single tap is a single tap.
-  const once = P.doubleTap('lost', { lastKey: null, lastAt: null, at: 10000 });
-  assert.strictEqual(once.category, 'lost', 'one press is Thinking');
-  assert.strictEqual(once.upgraded, false);
+  // A single tap is a single tap, and not strong.
+  const once = P.doubleTap('lost', { at: 10000 });
+  assert.strictEqual(once.category, 'lost');
+  assert.strictEqual(once.strong, false, 'one press is not a strong mark');
   assert.strictEqual(once.replaces, null, 'and replaces nothing');
 
-  // Two inside the window become ONE deep-thinking mark, and say which mark to remove.
-  const twice = P.doubleTap('lost', { lastKey: 'lost', lastAt: 10000, lastId: 42, at: 10400 });
-  assert.strictEqual(twice.category, 'deep-thinking', 'two quick presses are deep thinking');
-  assert.strictEqual(twice.upgraded, true);
-  assert.strictEqual(twice.replaces, 42, 'and the first mark must be named for removal');
+  // EVERY category, not just Thinking. This is the whole point of the change.
+  for (const t of P.TAP_CATEGORIES) {
+    const twice = P.doubleTap(t.key, { lastKey: t.key, lastAt: 10000, lastId: 42, at: 10400 });
+    assert.strictEqual(twice.category, t.key,
+      `${t.key} double-tapped must stay ${t.key} — the state is the same, reported harder`);
+    assert.strictEqual(twice.strong, true, `${t.key} must be markable as strong`);
+    assert.strictEqual(twice.replaces, 42, `${t.key}'s first mark must be named for removal`);
+  }
 
-  // Outside the window they are two separate notices, which is the honest reading.
+  // Outside the window they are two separate reports, which is the honest reading.
   const slow = P.doubleTap('lost', {
     lastKey: 'lost', lastAt: 10000, lastId: 42, at: 10000 + P.DOUBLE_TAP_MS + 1 });
-  assert.strictEqual(slow.category, 'lost', 'a slow second press is a second Thinking mark');
+  assert.strictEqual(slow.strong, false, 'a slow second press is a second ordinary mark');
   assert.strictEqual(slow.replaces, null, 'and must not delete the first');
 
-  // Exactly at the boundary counts as a double-tap, so the window is inclusive and stated.
+  // Inclusive at the edge, so the window is a stated number rather than an approximate one.
   assert.strictEqual(P.doubleTap('lost', {
-    lastKey: 'lost', lastAt: 0, lastId: 1, at: P.DOUBLE_TAP_MS }).upgraded, true,
+    lastKey: 'lost', lastAt: 0, lastId: 1, at: P.DOUBLE_TAP_MS }).strong, true,
     'the window is inclusive at its edge');
 
-  // A different category in between does not upgrade.
+  // A different mark in between breaks the gesture.
   assert.strictEqual(P.doubleTap('lost', {
-    lastKey: 'returned', lastAt: 10000, lastId: 7, at: 10100 }).upgraded, false,
+    lastKey: 'returned', lastAt: 10000, lastId: 7, at: 10100 }).strong, false,
     'a different mark in between breaks the gesture');
 
-  // NO CLIMBING. A third press must not upgrade deep thinking to something else, and holding the key
-  // down must not manufacture marks — there is nothing above deep thinking.
-  const third = P.doubleTap('deep-thinking',
-    { lastKey: 'deep-thinking', lastAt: 10400, lastId: 43, at: 10500 });
-  assert.strictEqual(third.category, 'deep-thinking', 'a third press stays deep thinking');
-  assert.strictEqual(third.upgraded, false, 'and does not upgrade again');
+  /* A THIRD PRESS SAYS NOTHING NEW, and must neither add a mark nor toggle the strength back off. The
+     first would double-count one event; the second would let a held key flicker the strength of a mark
+     that is already recorded. `already` is how the caller knows to swallow it. */
+  const third = P.doubleTap('lost',
+    { lastKey: 'lost', lastAt: 10400, lastId: 43, lastStrong: true, at: 10500 });
+  assert.strictEqual(third.strong, true, 'a third press leaves it strong');
+  assert.strictEqual(third.upgraded, false, 'and is not a fresh upgrade');
   assert.strictEqual(third.replaces, null, 'and deletes nothing');
+  assert.strictEqual(third.already, true, 'and says so, so the caller can swallow it');
 
-  // A category with no double-tap is never upgraded, however fast it is pressed.
-  assert.strictEqual(P.doubleTap('returned', {
-    lastKey: 'returned', lastAt: 10000, lastId: 3, at: 10050 }).upgraded, false,
-    'only categories with a declared double-tap upgrade');
+  // There is no longer a category that cannot be pressed.
+  assert.strictEqual(P.PRIMARY_TAP_CATEGORIES.length, P.TAP_CATEGORIES.length,
+    'every category must be reachable by a keystroke');
+  assert.ok(P.TAP_CATEGORIES.every((t) => t.kbd), 'and every one must have a letter');
 
-  /* IT MUST NOT APPEAR IN THE MARK BAR. It has no letter, so a row for it would show an empty key —
-     and offering it beside Thinking invites pressing both for one event, which splits one state's
-     marks across two buckets. That is the same mistake the just-sitting/Being/shikantaza note
-     explains avoiding. */
-  assert.ok(!P.PRIMARY_TAP_CATEGORIES.some((t) => t.key === 'deep-thinking'),
-    'deep thinking must not be offered as a first-class category');
-  assert.ok(P.PRIMARY_TAP_CATEGORIES.every((t) => t.kbd),
-    'every category offered in the mark bar must have a letter to press');
-  // And the letter table must not have grown a null key.
-  assert.ok(!('null' in P.TAP_BY_KBD) && !(null in P.TAP_BY_KBD),
-    'a letterless category must not be indexed by its absent letter');
-
-  console.log('✓ double-tapping Thinking makes one deep-thinking mark and removes the first,'
-    + ' a slow second press stays two marks, a third does not climb, and it is not offered as a key');
+  console.log(`✓ double-tapping any of the ${P.TAP_CATEGORIES.length} states marks it strongly and`
+    + ' replaces the single mark, a slow second press stays two marks, and a third is swallowed');
 }
 
 console.log('\nAll probe tests passed.');

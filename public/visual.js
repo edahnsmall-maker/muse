@@ -187,16 +187,40 @@ function createZenVisual(canvas) {
   let patternT = 0;     // seconds accumulated for patterned breathing
   let breathLabel = null;
 
+  /*
+   * SIZED TO ITS OWN BOX, not to the window.
+   *
+   * This used to be innerWidth x innerHeight, which is the same thing as long as the canvas covers the
+   * viewport — and it did, with every panel floating on top of it. Asked for: "I don't just want sticky
+   * panels. I want it to look integrated. So the panels don't hide info anymore." Panels stop hiding the
+   * visual when the visual stops being underneath them, which means the canvas has to occupy a region
+   * rather than the screen. CSS decides that region; this reads it.
+   *
+   * The ResizeObserver is what makes the layout change work at all: moving between Meditate (full
+   * screen) and Train (the centre cell) changes the canvas box with no window resize to hear about, and
+   * a canvas whose backing store is the wrong size draws a stretched, blurred picture rather than an
+   * obviously broken one — the kind of wrong that is easy to look at for weeks.
+   *
+   * Falls back to the window when there is no box to measure, which is the case in the smoke test's
+   * stubbed canvas.
+   */
   function resize() {
     const dpr = Math.min(devicePixelRatio || 1, 2);
-    canvas.width = Math.max(1, Math.round(innerWidth * dpr));
-    canvas.height = Math.max(1, Math.round(innerHeight * dpr));
+    const box = canvas.getBoundingClientRect ? canvas.getBoundingClientRect() : null;
+    const w = Math.max(1, Math.round((box && box.width) || innerWidth));
+    const h = Math.max(1, Math.round((box && box.height) || innerHeight));
+    canvas.width = Math.max(1, Math.round(w * dpr));
+    canvas.height = Math.max(1, Math.round(h * dpr));
     const scale = Math.min(1, BUF_MAX_W / canvas.width);
     BW = Math.max(160, Math.round(canvas.width * scale));
     BH = Math.max(90, Math.round(canvas.height * scale));
     for (const c of [buf, lay, rec]) { c.width = BW; c.height = BH; }
   }
-  addEventListener('resize', resize); resize();
+  addEventListener('resize', resize);
+  if (typeof ResizeObserver === 'function' && canvas.getBoundingClientRect) {
+    try { new ResizeObserver(resize).observe(canvas); } catch (err) { /* window resize still works */ }
+  }
+  resize();
 
   function paintBase(c) {
     const g = c.createLinearGradient(0, 0, 0, BH);

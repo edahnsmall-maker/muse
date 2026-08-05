@@ -142,33 +142,6 @@
       grades: null,
     },
     {
-      /*
-       * DEEP THINKING, reached by pressing T twice quickly rather than by its own letter.
-       *
-       * Asked for as a distinct category, and the double-tap is the right gesture for it: Thinking is
-       * the most-pressed mark by a distance, and being deep in it is a different report from noticing
-       * a passing thought. Giving it a letter of its own would mean choosing between two letters at
-       * the moment of noticing, which is exactly when there is least attention to spare.
-       *
-       * A DISTINCT CATEGORY, NOT A GRADE. Grades on `restless` are an intensity of one state; this is
-       * closer to a different one — a thought you surfaced from rather than one you watched go past —
-       * and the whole reason for separate categories is that a single scale cannot tell those apart.
-       *
-       * The second press REPLACES the first rather than adding to it: see Probes.doubleTap. Two marks
-       * 400ms apart would otherwise be recorded as two separate returns to thinking, which is a count
-       * this data cannot afford to have wrong — the marks-versus-marks comparison is built on counts.
-       *
-       * No arrow by default. It is reachable by double-tapping whichever arrow carries Thinking, which
-       * falls out of the aliasing for free.
-       */
-      key: 'deep-thinking', kbd: null, label: 'Deep thinking',
-      hint: 'surfaced from a long one — press T twice quickly, rather than T once',
-      // Never offered as a first-class choice in the mark bar: it is the double-tap of another
-      // category, and listing it beside Thinking would invite pressing both.
-      viaDoubleTap: 'lost',
-      grades: null,
-    },
-    {
       key: 'returned', kbd: 'R', label: 'Returned to the object', arrow: 'ArrowLeft',
       hint: 'back on the breath or whatever you are holding',
       grades: null,
@@ -216,15 +189,10 @@
     if (t.kbd) m[t.kbd] = t;
     return m;
   }, {});
-  /* The categories a mark bar should offer: everything reachable by a deliberate keystroke. A
-     double-tap category is deliberately absent — it is a gesture on another category, and listing it
-     alongside would invite pressing both for one event. */
-  const PRIMARY_TAP_CATEGORIES = TAP_CATEGORIES.filter((t) => !t.viaDoubleTap);
-  // Which category a double-tap of `key` should produce, or null if none does.
-  const DOUBLE_TAP_OF = TAP_CATEGORIES.reduce((m, t) => {
-    if (t.viaDoubleTap) m[t.viaDoubleTap] = t;
-    return m;
-  }, {});
+  /* Every category is reachable by a deliberate keystroke now, so this is the whole list. Kept as a
+     separate name because the mark bar and the key legend both mean "what can be pressed", and an
+     earlier version had a category that could not be. */
+  const PRIMARY_TAP_CATEGORIES = TAP_CATEGORIES.slice();
 
   /*
    * DOUBLE-TAP WINDOW. Two presses of the same category inside this become one mark of the
@@ -241,24 +209,36 @@
   /*
    * Decide what a tap means given the tap before it.
    *
-   * PURE, and here rather than in the key handler, because it is the part that can be got subtly
-   * wrong: the second press must REPLACE the first, not add to it. Two marks 400ms apart recorded as
-   * two separate returns to thinking is a count this dataset cannot afford to have wrong — the
-   * marks-versus-marks comparison in explore.js is built entirely on counts.
+   * A DOUBLE TAP IS AN INTENSITY, NOT A DIFFERENT STATE. Asked for: "I would like double tapping in
+   * general to signify extra strong of any state just like thinking." So pressing any category twice
+   * quickly records THAT category, marked strong — rather than switching to a separate category, which
+   * is what an earlier version did for Thinking alone.
    *
-   * Returns { category, replaces } where `replaces` is the id of the mark to remove, or null.
+   * That reframing is the better one and not only because it generalises. A separate category per
+   * intensity splits one state's marks across two buckets, and explore.js compares mark kinds BY
+   * COUNTING them — so ten Thinkings of which four were strong would have been counted as six and four,
+   * two thin sets instead of one usable one. As a flag the count is intact and the strength is still
+   * there to filter on.
+   *
+   * THE SECOND PRESS REPLACES THE FIRST rather than adding to it, which is the part that has to be
+   * right for the same reason: one event must be one mark.
+   *
+   * Returns { category, strong, replaces } where `replaces` is the id of the mark to remove, or null.
    */
-  function doubleTap(catKey, { lastKey = null, lastAt = null, lastId = null, at = 0,
-    windowMs = DOUBLE_TAP_MS } = {}) {
-    const upgrade = DOUBLE_TAP_OF[catKey];
+  function doubleTap(catKey, { lastKey = null, lastAt = null, lastId = null, lastStrong = false,
+    at = 0, windowMs = DOUBLE_TAP_MS } = {}) {
     const inWindow = lastKey === catKey && lastAt != null && (at - lastAt) <= windowMs
       && (at - lastAt) >= 0;
-    if (upgrade && inWindow) {
-      return { category: upgrade.key, replaces: lastId == null ? null : lastId, upgraded: true };
+    /* A THIRD press does not climb further — there is no level above strong — and it must not toggle
+       back either, or holding a key down flickers the strength of a mark that is already recorded.
+       `lastStrong` is what makes press three a no-op instead of a downgrade. */
+    if (inWindow && !lastStrong) {
+      return { category: catKey, strong: true, replaces: lastId == null ? null : lastId, upgraded: true };
     }
-    /* A THIRD press does not climb further. There is no category above deep thinking, and treating
-       press three as a fresh single tap means holding the key down cannot manufacture marks. */
-    return { category: catKey, replaces: null, upgraded: false };
+    if (inWindow && lastStrong) {
+      return { category: catKey, strong: true, replaces: null, upgraded: false, already: true };
+    }
+    return { category: catKey, strong: false, replaces: null, upgraded: false };
   }
   /*
    * ARROWS for the four most-used categories, asked for so the common taps can be reached
@@ -487,7 +467,7 @@
   return {
     RESPONSES, RESPONSE_BY_KEY, RESPONSE_BY_KBD,
     TAP_CATEGORIES, TAP_BY_KEY, TAP_BY_KBD, TAP_BY_ARROW, ARROW_GLYPH,
-    PRIMARY_TAP_CATEGORIES, DOUBLE_TAP_OF, DOUBLE_TAP_MS, doubleTap,
+    PRIMARY_TAP_CATEGORIES, DOUBLE_TAP_MS, doubleTap,
     ARROWS, ARROW_STORE_KEY, readArrowMap, writeArrowMap, tapForArrow,
     DEFAULTS, schedule, dueProbe, windowFor, unitsFromProbes, metaAwarenessGap,
     seededRandom,
