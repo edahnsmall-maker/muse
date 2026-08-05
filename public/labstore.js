@@ -144,6 +144,24 @@
        * the lab used to analyse every sit on every page load and freeze doing it. */
       recorderId: session.recorderId || null,
       movement: session.movement || null,
+      /* Same reasoning as `alpha` and `movement`: derived from acc.csv, which is not stored, so dropping
+       * it would silently remove the breath comparison from any restored sit. The summary is a dozen
+       * numbers; the per-cycle list is not kept. */
+      breath: session.breath ? {
+        known: !!session.breath.known,
+        reason: session.breath.reason || null,
+        axis: session.breath.axis == null ? null : session.breath.axis,
+        hz: session.breath.hz == null ? null : session.breath.hz,
+        fundamentalHz: session.breath.fundamentalHz == null ? null : session.breath.fundamentalHz,
+        spectralRatePerMin: session.breath.spectralRatePerMin == null
+          ? null : session.breath.spectralRatePerMin,
+        consistencyPct: session.breath.consistencyPct == null ? null : session.breath.consistencyPct,
+        // Whether the chest estimate was checked against the heart, and by how much they differed.
+        // An unchecked number is not the same claim as a checked one and must not look like it.
+        referenceChecked: !!session.breath.referenceChecked,
+        referenceCheck: session.breath.referenceCheck || null,
+        summary: session.breath.summary || null,
+      } : null,
       wholeStats: session.wholeStats || null,
       storedAt: session.storedAt || null,
     };
@@ -153,8 +171,8 @@
   // downstream, or the views quietly behave differently depending on where the data came
   // from. The absent raw EEG is represented as four empty channels rather than missing.
   function rehydrate(stored) {
-    const s = Object.assign({ alpha: null, spectra: null, movement: null, wholeStats: null,
-      label: '', contentKey: null, recorderId: null }, stored);
+    const s = Object.assign({ alpha: null, spectra: null, movement: null, breath: null,
+      wholeStats: null, label: '', contentKey: null, recorderId: null }, stored);
     s.read = Object.assign({ eeg: [[], [], [], []], acc: [], rr: [], audio: {}, markdown: '' },
       stored.read || {});
     return s;

@@ -561,6 +561,37 @@ function logSessionSample(result, channels) {
     })(),
     hrBpm: strapUnreliable() ? null : hrBpm,
     hrvMs: strapUnreliable() ? null : hrvRmssd,
+    /*
+     * FOUR MORE THINGS THE APP KNEW AND NEVER WROTE DOWN.
+     *
+     * Found by walking every live signal against metrics.csv, and all four are the same failure as the
+     * breathing rate above: computed continuously, shown on screen, and absent from the only file the
+     * analysis reads. A measurement that exists on screen and nowhere in the data cannot be asked a
+     * single question afterwards.
+     */
+    /* BREATH PHASE, -1 exhaled to +1 inhaled. This is the one that matters most, because a breath HOLD
+       is a state that only phase can express: held at the top of an inhale the chest stays expanded, so
+       the bar stays right of centre — while the RATE looks identical to a dead sensor, since a held
+       breath has no respiratory modulation at all. Without this column "holding at full inhale" and
+       "the strap fell off" are the same row. */
+    breathPhase: strapUnreliable() ? null : breathAmount,
+    // Which way it is going, so an inhale and an exhale at the same amplitude are distinguishable.
+    breathRising: breathRising == null ? null : (breathRising ? 1 : 0),
+    /* WHERE THE BREATH NUMBER CAME FROM. Chest motion, RSA from beat timing, and temple PPG are three
+       different qualities of measurement — the row on screen says which, because "chest motion and an
+       inference from beat timing are not the same quality of number", and then the file did not. Pooling
+       them across sits silently mixes a measurement with an inference. */
+    breathSource: breathSource,
+    /* HOW MUCH OF THE STRAP'S DATA WAS THROWN AWAY. `hrBpm` and `hrvMs` above go null when the strap is
+       unreliable, which is right — but null then means both "no strap" and "a strap whose beats were
+       being rejected", and those want different treatment in an analysis. This says which. */
+    beatsRejected: strapConnected() ? rrBuffer.rejectRate() : null,
+    /* WHY a channel has no level, not merely that it has none. `levels` above is null for a channel
+       that read nothing, and a floating electrode, a flat dead input and a jaw clench are three
+       different facts with three different fixes. The live panel distinguishes them and says what to do
+       about each; the file could not tell them apart at all. */
+    chanState: channels.map((c) => (c.flat ? 'flat' : c.floating ? 'floating'
+      : c.artifact ? 'noisy' : 'ok')),
   };
   // Composites too, so a marked moment can be compared against every score
   // that was on screen at the time — that comparison is the whole point.

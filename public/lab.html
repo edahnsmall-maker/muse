@@ -259,6 +259,9 @@
 </script>
 <script src="dsp.js?v=2026-08-04g"></script>
 <script src="movement.js?v=2026-08-04g"></script>
+<!-- Chest-wall breath shape. Loaded by NOTHING before this: 450 lines with their own passing test
+     suite, wired into no page, so rate/depth/regularity had never been computed for a real sit. -->
+<script src="breath.js?v=2026-08-04g"></script>
 <script src="labels.js?v=2026-08-04g"></script>
 <script src="trials.js?v=2026-08-04g"></script>
 <script src="import.js?v=2026-08-04g"></script>
@@ -412,6 +415,30 @@ async function ingest(name, bytes, { recorderId = null } = {}) {
        * to be derived now. The summary is a few hundred bytes; the event list is not kept. */
       const movement = (read.acc && read.acc.length)
         ? Movement.summarise(Movement.analyse(read.acc)) : null;
+      /*
+       * BREATH SHAPE FROM THE CHEST STRAP — computed here, for the first time anywhere.
+       *
+       * breath.js was loaded by nothing. Not direct.html, not this page: 450 lines with a passing test
+       * suite of its own, wired into no product code, so none of rate, depth, regularity or the rise
+       * fraction had ever been computed for a real sit. This is the same failure as the breathing rate
+       * that "never reached metrics.csv, so the analysis lab has never seen a breathing rate at all" —
+       * a measurement that exists in the codebase and nowhere in the data.
+       *
+       * HERE rather than in the live app, for two reasons. It needs minutes of accelerometer history to
+       * see a breath at all (it refuses under 600 samples), which makes it a whole-sit measurement
+       * rather than a live one. And it needs the heart-derived rate as an independent cross-check, which
+       * is only cheap once rr.csv is already parsed.
+       *
+       * THE CROSS-CHECK IS THE POINT, and it is why this is worth having at all. On one real sit the
+       * spectrum and the counted cycles agreed with each other to within 2.8% and were both 41% from the
+       * truth — internal agreement cannot catch a shared error by construction. Chest motion and beat
+       * timing share no axis, no filter and no failure mode, so passing the RSA rate in turns two
+       * estimates that can fail together into two that cannot. It refuses rather than guessing: measured
+       * on three real sits it answered one and refused two, with none wrong.
+       */
+      const breath = (typeof Breath !== 'undefined' && read.acc && read.acc.length)
+        ? Breath.analyse(read.acc, { referenceRatePerMin: heartBreathRate(read) })
+        : null;
       // Whole-sit descriptors, so a session can be compared as a session rather than only at
       // its marks. Computed once here so every view agrees about them.
       const wholeStats = sessionStats({ read, notes, spans, durationSec: duration, movement });
@@ -468,7 +495,7 @@ async function ingest(name, bytes, { recorderId = null } = {}) {
            Null for a dropped archive, which may well have come off another machine. */
         recorderId,
         sessionId: f.name, file: f.name, read, notes, spans, wholeSit, trialBlocks,
-        durationSec: duration, alpha, spectra, movement, wholeStats,
+        durationSec: duration, alpha, spectra, movement, breath, wholeStats,
         // Only as a DEFAULT: a name typed into the list later must win, so setLabel() overwrites it.
         label: fromNote.slice(0, 120) || '',
       });
@@ -766,6 +793,25 @@ function spectralRows(eeg, hz, band) {
     return row;
   });
   return { windowSec: out.windowSec, binHz: out.binHz, alphaBand: out.alphaBand, rows };
+}
+
+/*
+ * THE HEART-DERIVED BREATHING RATE, for use as the chest accelerometer's independent reference.
+ *
+ * Read from metrics.csv rather than recomputed from rr.csv, because the app already wrote it there once
+ * per second and that column IS the RSA estimate — recomputing it here would be a second implementation
+ * of the same inference, free to disagree with the one the meditator actually saw.
+ *
+ * The MEDIAN, not the mean: a rate series with a handful of dropouts or double-counted beats has
+ * outliers by construction, and this number's whole job is to be a trustworthy second opinion.
+ */
+function heartBreathRate(read) {
+  const vals = ((read && read.metrics) || [])
+    .map((r) => Number(r.breathPerMin))
+    .filter((v) => Number.isFinite(v) && v > 0)
+    .sort((a, b) => a - b);
+  if (!vals.length) return null;
+  return vals[Math.floor(vals.length / 2)];
 }
 
 /* Which rows the analysis views read. One accessor, because the alternative is seven call
@@ -1914,9 +1960,63 @@ function renderSitDetail(i) {
       than above it. For eyes-open practice this number may simply not exist, and that is a fact about
       the sensor placement rather than about the sit.</div>
     </div>
+    ${breathCardHtml(s)}
     <div class="card" style="margin:8px 0"><div class="sideHead">Timeline</div>
       <div id="tl-${i}"></div></div>`;
   drawOneTimeline(i, document.getElementById(`tl-${i}`));
+}
+
+/*
+ * BREATH SHAPE, for one sit.
+ *
+ * Rate, depth, regularity and the rise fraction from the chest strap's accelerometer — computed for the
+ * first time here, because breath.js was wired into nothing. See the note at its call site in ingest().
+ *
+ * A REFUSAL IS SHOWN AS PROMINENTLY AS AN ANSWER, and in its own words. This module refuses more often
+ * than it answers — measured on three real sits it answered one and refused two — and that is the
+ * feature rather than the failure: every refusal is a case where two independent estimates disagreed, so
+ * a number would have been out by something like a factor of two. Printing "—" instead would make a
+ * caught error look like a missing sensor.
+ */
+function breathCardHtml(s) {
+  const b = s && s.breath;
+  if (!b) {
+    return `<div class="card" style="margin:8px 0"><div class="sideHead">Breath shape</div>
+      <span class="dim">No chest accelerometer in this sit, so there is nothing to measure breathing
+      from. It needs the Polar strap; the headband cannot see the chest.</span></div>`;
+  }
+  if (!b.known) {
+    return `<div class="card" style="margin:8px 0"><div class="sideHead">Breath shape</div>
+      <div class="warn">No breath reported for this sit.</div>
+      <div class="why" style="margin-top:6px">${esc(b.reason || 'the checks were not met')}</div>
+      <div class="why" style="margin-top:6px">This is a refusal, not a missing sensor. Chest motion and
+      heart timing share no axis and no failure mode, so when they disagree there is no way from here to
+      tell which is wrong — and a breathing rate that is out by a factor of two would corrupt every
+      comparison built on it.</div></div>`;
+  }
+  const u = b.summary || {};
+  const n = (v, d = 1) => (v == null || !Number.isFinite(v) ? '—' : v.toFixed(d));
+  const check = b.referenceChecked && b.referenceCheck
+    ? `<span class="good">cross-checked against the heart, ${n(b.referenceCheck.differencePct, 0)}% apart</span>`
+    : `<span class="warn">not cross-checked — no heart-derived rate in this sit, so this is one
+       estimate rather than two agreeing</span>`;
+  return `<div class="card" style="margin:8px 0"><div class="sideHead">Breath shape</div>
+    <div class="scroll"><table>
+      <tr><th>Rate</th><th>Period</th><th>Regularity</th><th>Rise</th><th>Depth</th><th>Cycles</th></tr>
+      <tr><td class="num">${n(u.ratePerMin)}/min</td>
+          <td class="num">${n(u.periodSec, 2)}s</td>
+          <td class="num">${n(u.periodCv, 3)} CV</td>
+          <td class="num">${n(u.riseFrac, 3)}</td>
+          <td class="num">${n(u.amplitudeMg, 1)} mG</td>
+          <td class="num">${u.cycles == null ? '—' : u.cycles}</td></tr>
+    </table></div>
+    <div class="why" style="margin-top:8px">${check}. Axis ${esc(String(b.axis))}, chosen by
+    respiratory-band power — magnitude is invariant under permuting axes, so which one faces the chest
+    cannot be assumed. Regularity is the coefficient of variation of the breath period, so it is
+    dimensionless and comparable between sits and between people; lower is steadier. Rise is the fraction
+    of each cycle spent inhaling — 0.5 is symmetric, below it means a quick in and a long out. Depth is
+    in milli-g of chest movement and is NOT comparable between sits: it depends on how tightly the strap
+    was fastened.</div></div>`;
 }
 
 /*

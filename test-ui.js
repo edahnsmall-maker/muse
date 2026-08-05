@@ -60,6 +60,11 @@ const server = http.createServer((req, res) => {
 });
 let PAGE = null;                       // assigned once the port is known, inside the async body
 const Labels = require('./public/labels.js');
+/* The lab's reader, required HERE in Node rather than reached for inside the page: import.js is a lab
+   module and direct.html does not load it. Using the real one matters — the point of the round-trip check
+   below is that what the app WRITES is what the analysis READS, and a hand-rolled parser in the test
+   would only prove the test agrees with itself. */
+const Importer = require('./public/import.js');
 const Labels_quadrant = (d) => Labels.quadrant(d);
 
 // startRecording() deliberately resets the session clock, which is right for the app
@@ -3994,6 +3999,103 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(out.after.chimes.length >= 3,
       `stopping must chime (got ${out.after.chimes.join(',')})`);
     console.log('✓ the timer running out stops the recording, chimes, and opens the summary');
+  }
+
+  /* EVERYTHING THE APP KNOWS MUST REACH metrics.csv.
+   *
+   * Asked for directly: "make sure it all works and all available data is being stored." The failure
+   * mode is specific and has already happened once, on the breathing rate: it was computed continuously,
+   * shown on screen, and written exactly once per sit as a sentence of prose — so the lab had never seen
+   * a breathing rate at all, and "did the breathing rate give us anything valuable?" was unanswerable
+   * because there was nothing to answer it with.
+   *
+   * This asserts the row the app actually logs, so a signal that is displayed but not stored fails here
+   * rather than a month later when someone tries to ask a question of it.
+   */
+  {
+    const stored = await page.evaluate(async () => {
+      // A strap, a chest breath estimate, and one bad channel — so the columns that only exist under
+      // those conditions are exercised rather than skipped as null.
+      hrBpm = 61; hrvRmssd = 44; strapContact = true;
+      breathAmount = 0.72; breathRising = true; breathSource = 'chest'; strapBreathSec = 5;
+      const W = 256;
+      for (let ch = 0; ch < 4; ch++) {
+        buffers[ch].length = 0;
+        for (let i = 0; i < W; i++) {
+          buffers[ch].push(ch === 0 ? 0 : 18 * Math.sin((2 * Math.PI * (9 + ch) * i) / 256));
+        }
+      }
+      const result = computeCalm();
+      const channels = computeChannelLabels();
+      sessionLog.length = 0;
+      logSessionSample(result, channels);
+      return sessionLog[sessionLog.length - 1];
+    });
+
+    /* Every column that has to be there, and WHY each one earns its place. A row missing any of these
+       is a question that cannot be asked of the data afterwards. */
+    const required = {
+      t: 'the session clock, or nothing can be aligned',
+      epochMs: 'absolute time, so notes and metrics align by wall clock rather than by trusting two files',
+      calm: 'what the app displayed',
+      calmAbs: 'and the absolute version, the only EEG score comparable between sits',
+      noise: 'how much of the window was artifact',
+      levels: 'per-channel alpha share',
+      chanState: 'and WHY a channel read nothing — floating, flat and noisy have different fixes',
+      breathPerMin: 'the rate in real units',
+      breathPhase: 'the phase, which is the only thing that can express a held breath',
+      breathRising: 'the direction, so an inhale and an exhale at one amplitude differ',
+      breathSource: 'which sensor it came from — a measurement and an inference are not the same',
+      hrBpm: 'beats per minute',
+      hrvMs: 'RMSSD in milliseconds',
+      beatsRejected: 'how much of the strap data was discarded, which is not the same as no strap',
+    };
+    for (const [key, why] of Object.entries(required)) {
+      assert.ok(Object.prototype.hasOwnProperty.call(stored, key),
+        `metrics.csv must carry "${key}" — ${why}`);
+    }
+    // And the values must be real, not placeholders: a column of nulls is not storage.
+    assert.strictEqual(stored.breathPhase, 0.72, 'breath phase must be the measured value');
+    assert.strictEqual(stored.breathRising, 1, 'rising must be written as 1/0, which survives CSV');
+    assert.strictEqual(stored.breathSource, 'chest', 'the source must be named');
+    assert.strictEqual(stored.hrBpm, 61, 'heart rate must be the measured value');
+    assert.ok(Array.isArray(stored.chanState) && stored.chanState.length === 4,
+      `chanState must carry one entry per channel (got ${JSON.stringify(stored.chanState)})`);
+    /* The dead channel must be NAMED as dead. This is the column's whole purpose: channel 0 is flat
+       zeros above, and a flat input is a connection fault rather than a fit problem. */
+    assert.ok(['flat', 'floating'].includes(stored.chanState[0]),
+      `a flat channel must be recorded as flat or floating, got "${stored.chanState[0]}"`);
+    assert.strictEqual(stored.chanState[2], 'ok', 'and a clean channel as ok');
+
+    /* AND THE COLUMNS MUST SURVIVE THE ROUND TRIP through the CSV writer and reader. A value that
+       serialises to something the importer reads back differently is stored in name only — which is how
+       an array or a boolean quietly becomes unusable. */
+    const csv = await page.evaluate((row) => Exporter.toCsv([row]), stored);
+    const roundTripped = { csv: csv.split('\n')[0], back: Importer.parseCsv(csv)[0] };
+    assert.strictEqual(roundTripped.back.breathSource, 'chest',
+      'breathSource must survive the CSV round trip as a string, not become a number');
+    assert.strictEqual(roundTripped.back.breathRising, 1, 'and breathRising as 1');
+    assert.strictEqual(roundTripped.back.breathPhase, 0.72, 'and the phase unchanged');
+    /* An ARRAY has to come back as something readable, and this is the column most likely to break
+       quietly: toCsv joins an array with spaces inside quotes, and parseCsv returns it as a string. That
+       is fine — a human and a spreadsheet can both read "flat ok ok ok" — but it must be four known
+       tokens in channel order, not "[object Object]" or a number. */
+    const backState = String(roundTripped.back.chanState).split(' ');
+    assert.strictEqual(backState.length, 4,
+      `chanState must round-trip as four entries (got "${roundTripped.back.chanState}")`);
+    for (const v of backState) {
+      assert.ok(['ok', 'noisy', 'floating', 'flat'].includes(v),
+        `"${v}" is not a channel state — the column must stay readable through the CSV`);
+    }
+    assert.strictEqual(backState[0], stored.chanState[0],
+      'and the order must survive, or a fault is attributed to the wrong electrode');
+    for (const col of Object.keys(required)) {
+      assert.ok(roundTripped.csv.split(',').includes(col),
+        `"${col}" must appear in the metrics.csv header (header: ${roundTripped.csv})`);
+    }
+    console.log(`✓ every live signal reaches metrics.csv (${Object.keys(required).length} columns`
+      + ' asserted, including breath phase, source, beat rejection and per-channel state) and each'
+      + ' survives the CSV round trip');
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);
