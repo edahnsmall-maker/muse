@@ -198,17 +198,73 @@
    * of the band. That is local and obviously transient. The entire recorded past sliding
    * under it is neither.
    */
-  function settleRange(current, target, dtSec, { rate = 0.06, widenRate = 1.0 } = {}) {
+  /*
+   * AND THEN IT STOPS MOVING ALTOGETHER. `holdAfterSec` is the fix, and it is the fourth attempt at
+   * this — the first three tuned the rates instead of removing the cause.
+   *
+   * Reported, three times, in the practitioner's own words: "the entire line seemed to sort of sink and
+   * raise a little bit almost arbitrarily... it feels like the axes are unstable", then "it looks like
+   * the history lines still drift, esp when the sensor reads 0 and everything pushes up", and finally
+   * "the lines still drift and i think it's bc the range is recent. it seems like a big mistake that's
+   * taken a long time to get corrected." That diagnosis is exactly right, and it is the one the previous
+   * three fixes did not act on: percentiles, then fast-attack/slow-release, then easing the widening,
+   * all of which make the axis move LESS while leaving it moving.
+   *
+   * It cannot be made to work by tuning. The same range is applied to the whole visible history, so ANY
+   * change to it moves every sample already drawn — and a range derived from recent data changes
+   * whenever the recent data does, which is continuously. A slower rate makes the drift slower, not
+   * absent, and slow drift over a three-minute trace is precisely what reads as "the line is sinking".
+   *
+   * So the range is learned over the first `holdAfterSec` seconds and then fixed for the rest of the
+   * sit. After that the axis is furniture: a sample moves on screen only if the sample changed.
+   *
+   * PADDED THROUGHOUT, not at the moment of holding, and the difference matters. A fixed axis has to
+   * accommodate what has not happened yet: without headroom the first later excursion beyond the
+   * warm-up range presses flat against the edge, which is the failure mode HANDOFF §6 names for hard
+   * clamps. But applying the padding AT the hold makes that frame widen the axis by a third — and one
+   * frame moving the whole drawn history is the very thing the previous fix established a budget for
+   * ("no single frame may move a recorded sample by more than ~1% of the band"). Measured: padding at
+   * the hold moved it 3.7% in a single frame, a visible lurch at the 90-second mark.
+   *
+   * So the target is padded on every frame while the axis is still learning. The axis then eases toward
+   * an already-padded range, and freezing it is a no-op — zero movement at the transition.
+   *
+   * Default null keeps the old easing behaviour unpadded, so nothing that has not opted in changes.
+   */
+  function padRange(range, pad) {
+    const mid = (range.min + range.max) / 2;
+    const half = ((range.max - range.min) / 2) * Math.max(1, pad);
+    return { min: mid - half, max: mid + half, span: half * 2 };
+  }
+
+  function settleRange(current, target, dtSec,
+    { rate = 0.06, widenRate = 1.0, holdAfterSec = null, pad = 1.33 } = {}) {
     if (!target) return current || null;
-    if (!current) return { min: target.min, max: target.max, span: target.span };
     const dt = Math.max(0, dtSec);
+    // Headroom only for a range that is going to be frozen; an eased range needs none, because it can
+    // still follow.
+    const want = holdAfterSec == null ? target : padRange(target, pad);
+    if (!current) return { min: want.min, max: want.max, span: want.span, age: dt, held: false };
+    // Once held, nothing moves it again — not a wider target, not a narrower one.
+    if (current.held) return current;
+    const age = (current.age || 0) + dt;
+    if (holdAfterSec != null && age >= holdAfterSec) {
+      // Frozen exactly where it was. The padding is already in it, so this frame moves nothing.
+      return { min: current.min, max: current.max, span: current.max - current.min, age, held: true };
+    }
     const kNarrow = Math.min(1, Math.max(0, rate * dt));
     const kWiden = Math.min(1, Math.max(0, widenRate * dt));
     const ease = (from, to, widening) => from + (to - from) * (widening ? kWiden : kNarrow);
-    const min = ease(current.min, target.min, target.min < current.min);
-    const max = ease(current.max, target.max, target.max > current.max);
-    return { min, max, span: max - min };
+    const min = ease(current.min, want.min, want.min < current.min);
+    const max = ease(current.max, want.max, want.max > current.max);
+    return { min, max, span: max - min, age, held: false };
   }
+
+  /* How long a trace's axis stays open before it is fixed. 90 seconds against a ~3-minute visible
+     history: long enough to have seen the range the signal actually uses, short enough that most of a
+     sit is drawn against a still axis. Named here because Flow and anything added later must agree —
+     two traces on one picture with axes that froze at different moments is worse than either choice. */
+  const RANGE_HOLD_SEC = 90;
 
   /*
    * How much of this series is sample-to-sample noise rather than signal.
@@ -778,7 +834,7 @@
   return {
     CHANNEL_COLORS, CHANNEL_LABELS, legendEntries, LEGENDS, legendFor, IRIS_MOOD,
     CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
-    MODES, nextMode, visibleModes, autoRange, inRange, settleRange, noiseLevel, EventDetector, BloomField, wobble, expand, expandSoft,
+    MODES, nextMode, visibleModes, autoRange, inRange, settleRange, RANGE_HOLD_SEC, noiseLevel, EventDetector, BloomField, wobble, expand, expandSoft,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,
   };

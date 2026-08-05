@@ -1075,8 +1075,12 @@ function createZenVisual(canvas) {
        line rise and sink — the past appearing to move, which is exactly what was
        reported. settleRange widens at once (never clip a real excursion) and narrows a
        few percent per second (nothing is lost by a range that is briefly too wide). */
+    /* AND IT HOLDS AFTER 90 SECONDS. See the long note on VizCore.settleRange: easing the range makes
+       the drift slower, not absent, and slow drift across a three-minute trace is exactly what reads as
+       the line sinking. Once held, a sample moves on screen only if the sample moved. */
     const ranges = series.map((sr, k) => {
-      flowRanges[k] = VizCore.settleRange(flowRanges[k], VizCore.autoRange(sr), flowDt);
+      flowRanges[k] = VizCore.settleRange(flowRanges[k], VizCore.autoRange(sr), flowDt,
+        { holdAfterSec: VizCore.RANGE_HOLD_SEC });
       return flowRanges[k];
     });
     const yOf = (i, k) => {
@@ -1157,6 +1161,11 @@ function createZenVisual(canvas) {
       }
     }
 
+    /* SOURCE-OVER FOR THE TRACES. `lighter` is additive, so two lines crossing summed toward white and
+       every line wore a halo of its own making — that is the "shiny" that was reported. The breath wash
+       above and the head glow below keep `lighter`, because both are washes where summing is the
+       intended look; only the data lines are solid. */
+    c.globalCompositeOperation = 'source-over';
     for (let ch = 0; ch < 4; ch++) {
       const col = colors[ch] || [200, 210, 255];
       if (yOf(n - 1, ch) == null) continue;   // nothing to say about this series
@@ -1182,12 +1191,26 @@ function createZenVisual(canvas) {
         const freshRatio = seenCount ? freshCount / seenCount : 1;
         const heldDim = composites ? 1 : (0.24 + 0.76 * freshRatio);
 
-        // Halo widens and dims with age — this IS the blur, done in geometry.
-        // Core stays narrow and bright at the head and gives out as it ages.
+        /*
+         * ONE SOLID STROKE, not three stacked ones.
+         *
+         * Asked for: "the lines for flow are still shiny not just solid color." The shine was
+         * deliberate and is now wrong. There were three passes per age group — a wide dim halo, a
+         * mid one, and a bright core — composited with `lighter`, which is additive: where the halo
+         * of one channel crossed another they summed toward white, and every line carried a glow
+         * that is not information about anything. That was the local answer to "everything renders
+         * into a small buffer that gets upscaled, so softness has to be built in geometry"; a solid
+         * line simply does not need it.
+         *
+         * The age fade STAYS. That is structural rather than decorative — it is how the trace
+         * dissolves leftward into the past instead of ending at a hard edge — so alpha still falls
+         * with age. What goes is the width stack and the additive blend.
+         *
+         * Drawn with `source-over` (set below), so a line is its own colour at its own opacity and
+         * two crossing lines do not brighten each other.
+         */
         const passes = [
-          { w: baseW * (1 + 20 * age * age), a: 0.055 * vis + 0.012 },
-          { w: baseW * (1 + 6 * age), a: 0.10 * vis },
-          { w: baseW * (1 + 0.8 * age), a: 0.62 * vis * (1 - 0.7 * age) },
+          { w: baseW * 2.2, a: (0.30 + 0.70 * vis) * (1 - 0.55 * age) },
         ];
         for (const p of passes) {
           if (p.a <= 0.004) continue;
@@ -1214,6 +1237,8 @@ function createZenVisual(canvas) {
     // Out of the clip: the head glow is a disc centred ON nowX, so half of it falls to
     // the right of the edge the trace is cut at.
     c.restore();
+    // Back to additive for the head glow, which IS a wash and should sum.
+    c.globalCompositeOperation = 'lighter';
 
     /* THE LIVE HEAD, at nowX, with its height interpolated between the last two samples
      * by the same phase the trace scrolls by. In its own pass over the channels so that

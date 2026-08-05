@@ -26,8 +26,13 @@
     --good: #7fd8a0; --warn: #ffd27a; --bad: #ff8f8f;
   }
   * { box-sizing: border-box; }
+  /* The font stack is character-for-character the one in app.css. It was missing
+     BlinkMacSystemFont, so on any machine without Inter installed the two pages resolved to DIFFERENT
+     fonts — which made every place in the bar a slightly different width and walked the wordmark and the
+     tabs sideways as you moved between the pages. That is half of "the logo and tabs jumps form page to
+     page"; the geometry was the other half. */
   body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 Inter,
-    ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+    ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
     padding: 28px clamp(16px, 4vw, 48px) 80px; }
   h1 { font-size: 19px; font-weight: 600; margin: 0 0 4px; letter-spacing: .01em; }
   h2 { font-size: 14px; font-weight: 600; margin: 30px 0 10px; letter-spacing: .02em; }
@@ -86,19 +91,51 @@
   /* ---- The shell ------------------------------------------------------------------
      A bar that says where you are, and tabs that say what there is. Both exist because this page
      used to be one scroll of six analyses with no indication of where to start. */
-  #appBar { display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
-    padding: 0 0 14px; border-bottom: 1px solid rgba(255,255,255,.08); margin-bottom: 4px; }
-  #appBar .brand { font-size: 15px; font-weight: 600; letter-spacing: .02em; }
+  /* ---- THE APP BAR: IDENTICAL TO THE ONE IN THE APP ---------------------------------------------
+     Reported as "the logo and tabs jumps form page to page", and it was two independent copies of one
+     bar. The app's is fixed at 44px tall with a 16px inset and a 14px wordmark; this one sat in normal
+     flow inside the body's 28px / clamp(16px, 4vw, 48px) padding with a 15px wordmark. So moving between
+     the two pages moved the logo horizontally AND vertically and resized it — the thing that reads as a
+     jump, and the reason the bar was given to both pages in the first place ("the ui at the top is diff
+     from everything else (doesn't carry to other page)").
+
+     Every number here now matches app.css exactly: height 44px, padding 0 16px, gap 18px, brand 14px.
+     The bar is pulled out of the body's own padding with negative margins so its left edge lands at the
+     same 16px as the app's, whatever the viewport does to the content inset below it.
+
+     If you change one bar, change the other. There is no shared stylesheet between these two pages on
+     purpose — the lab must work with app.css absent — so this is a duplication that has to be kept in
+     step by hand, and the test in test-ui.js compares the two. */
+  #appBar { display: flex; align-items: center; gap: 18px; height: 44px; flex-wrap: nowrap;
+    padding: 0 16px; margin: -28px calc(-1 * clamp(16px, 4vw, 48px)) 0;
+    /* `normal`, matching the app, where the body sets no line-height. The lab's body sets 1.6, which
+       made every item in the bar 6px taller here than there and shifted them all 4px up the bar. */
+    line-height: normal;
+    border-bottom: 1px solid rgba(255,255,255,.08); }
+  #appBar .brand { font-size: 14px; font-weight: 600; letter-spacing: .02em;
+    color: rgba(255,255,255,.82); white-space: nowrap; }
   #appBar .brand .mark { color: #7dd3fc; margin-right: 4px; }
-  #appBar .barNote { margin-left: auto; font-size: 11.5px; }
+  #appBar .barNote { margin-left: auto; font-size: 11px; text-align: right;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   #places { display: flex; gap: 4px; }
-  #places a, #places .here { padding: 5px 14px; border-radius: 9px; font-size: 13px;
-    text-decoration: none; color: rgba(255,255,255,.62); }
-  #places a:hover { background: rgba(255,255,255,.06); color: rgba(255,255,255,.85); }
+  /* Matched to .place in app.css: same padding, radius, size and colour, so a place does not resize
+     when you walk between the pages.
+     `box-sizing: content-box` on purpose, against this page's own `* { box-sizing: border-box }`. The app
+     has no such reset, so its places are content-box and 8px wider than these were at the same padding —
+     which walked each place further left than the one before it. Meditate's left edge matched and Lab's
+     was 14px out, which is what "the tabs jumps form page to page" looks like when the wordmark is
+     already pinned.
+     inline-flex so an anchor boxes the way the app's <button> does. */
+  #places a, #places .here { box-sizing: content-box; display: inline-flex; align-items: center;
+    padding: 5px 14px; border-radius: 9px; font-size: 13px;
+    text-decoration: none; color: rgba(255,255,255,.58); white-space: nowrap; }
+  #places a:hover { background: rgba(255,255,255,.07); color: rgba(255,255,255,.88); }
   #places .here { background: rgba(125,211,252,.14); color: #cbe9ff;
     box-shadow: inset 0 0 0 1px rgba(125,211,252,.30); }
+  @media (max-width: 720px) { #appBar .barNote { display: none; } }
 
-  #tabs { display: flex; gap: 2px; flex-wrap: wrap; margin: 14px 0 18px; }
+  /* 16px top, so the tabs clear the bar rather than sitting under its negative margin. */
+  #tabs { display: flex; gap: 2px; flex-wrap: wrap; margin: 16px 0 18px; }
   .tab { background: none; border: none; border-bottom: 2px solid transparent; cursor: pointer;
     color: rgba(255,255,255,.55); font: inherit; font-size: 13.5px; padding: 8px 15px 9px; }
   .tab:hover { color: rgba(255,255,255,.85); }

@@ -595,6 +595,70 @@ const VizCore = require('./public/viz-core.js');
   console.log('✓ traces scale to their own recent range, survive a spike, and a steady'
     + ' line stays steady rather than being amplified into noise');
 }
+/*
+ * AND THEN THE AXIS STOPS MOVING ALTOGETHER.
+ *
+ * This is the fourth attempt at one report, and the reason the first three did not settle it is worth
+ * keeping: percentiles, then fast-attack/slow-release, then easing the widening, all of which make the
+ * axis move LESS while leaving it moving. It cannot be tuned away — the same range is applied to the
+ * whole visible history, so any change to it moves every sample already drawn, and a range derived from
+ * recent data changes whenever the recent data does.
+ *
+ * Reported the third time as: "the lines still drift and i think it's bc the range is recent. it seems
+ * like a big mistake that's taken a long time to get corrected."
+ *
+ * So the property pinned here is absolute rather than a rate: after the hold, feeding a target that keeps
+ * sliding must not move the axis by any amount at all.
+ */
+{
+  const dt = 1 / 60;
+  const HOLD = VizCore.RANGE_HOLD_SEC;
+  assert.ok(HOLD > 30 && HOLD < 300, `the hold must be a plausible warm-up, got ${HOLD}`);
+
+  // A target that slides upward for the whole run, which is what a drifting signal looks like.
+  const sliding = (t) => ({ min: 0.2 + 0.3 * (t / 200), max: 0.4 + 0.3 * (t / 200), span: 0.2 });
+
+  let range = null, atHold = null, worstFrame = 0, moveAtFreeze = null, prevMin = null;
+  for (let f = 0; f < 200 * 60; f++) {
+    const before = range;
+    range = VizCore.settleRange(range, sliding(f * dt), dt, { holdAfterSec: HOLD });
+    if (prevMin != null) {
+      worstFrame = Math.max(worstFrame, Math.abs(range.min - prevMin));
+      if (before && !before.held && range.held) moveAtFreeze = Math.abs(range.min - prevMin);
+    }
+    if (range.held && !atHold) atHold = { min: range.min, max: range.max };
+    prevMin = range.min;
+  }
+
+  assert.ok(atHold, 'the range must eventually hold');
+  assert.strictEqual(range.min, atHold.min, 'a held axis must not move, at all, ever again');
+  assert.strictEqual(range.max, atHold.max, 'in either direction');
+
+  /* NO LURCH AT THE FREEZE. The headroom a fixed axis needs is applied on every frame while it is still
+     learning, not at the moment of freezing — applying it then widened the axis by a third in one frame,
+     which moves the whole drawn history and is exactly what the earlier fix set a budget against. */
+  assert.strictEqual(moveAtFreeze, 0, 'freezing the axis must move nothing');
+  assert.ok(worstFrame < 0.01,
+    `no single frame may move the axis by 1% of the band (worst was ${(worstFrame * 100).toFixed(3)}%)`);
+
+  /* IT CARRIES HEADROOM. A frozen axis has to fit what has not happened yet; without it the first later
+     excursion presses flat against the edge, which is the failure mode HANDOFF §6 names for hard clamps
+     — a flattened excursion reads as a confident reading rather than as out of range. */
+  const held = VizCore.settleRange(range, sliding(0), dt, { holdAfterSec: HOLD });
+  assert.ok((held.max - held.min) > 0.2 * 1.2,
+    `a held axis must carry headroom past the signal's own range (span ${(held.max - held.min).toFixed(3)}`
+    + ' against a signal range of 0.200)');
+
+  // OPTING OUT IS UNCHANGED. Without holdAfterSec the axis must still follow, or every other caller
+  // silently changed behaviour.
+  let loose = null;
+  for (let f = 0; f < 200 * 60; f++) loose = VizCore.settleRange(loose, sliding(f * dt), dt);
+  assert.ok(loose.min > 0.4, `an un-opted-in range must still follow its target (got ${loose.min})`);
+  assert.strictEqual(loose.held, false, 'and never report itself held');
+
+  console.log(`✓ a trace's axis holds after ${HOLD}s and then never moves again — no lurch at the freeze,`
+    + ' headroom carried, and callers that did not opt in are unchanged');
+}
 
 /*
  * AND THE AXIS MUST HOLD STILL.
@@ -609,8 +673,16 @@ const VizCore = require('./public/viz-core.js');
   const dt = 1 / 60;
   const r = (min, max) => ({ min, max, span: max - min });
 
+  /* Compared field by field rather than deep-equal: the returned range also carries `age` and `held`
+     now, which are bookkeeping for the hold below and not part of the claim being made here. */
+  const sameRange = (got, want, why) => {
+    assert.ok(Math.abs(got.min - want.min) < 1e-12 && Math.abs(got.max - want.max) < 1e-12
+      && Math.abs(got.span - want.span) < 1e-12,
+      `${why} — got ${JSON.stringify(got)}, wanted ${JSON.stringify(want)}`);
+  };
+
   // First frame adopts the target outright: there is nothing to be stable relative to.
-  assert.deepStrictEqual(VizCore.settleRange(null, r(0.2, 0.5), dt), r(0.2, 0.5));
+  sameRange(VizCore.settleRange(null, r(0.2, 0.5), dt), r(0.2, 0.5), 'the first frame adopts the target');
   assert.strictEqual(VizCore.settleRange(null, null, dt), null);
 
   /* WIDENING IS FAST BUT NOT INSTANT — a reversal, and the old assertion here read

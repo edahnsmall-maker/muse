@@ -3457,6 +3457,22 @@ let pendingGrade = null;   // { noteId, category, until }
  * The decision itself is in Probes.doubleTap, pure and tested. This holds only the state it needs.
  */
 let lastTap = null;        // { key, at, markId, noteId }
+/*
+ * TAPS WHOSE NOTE MUST BE DELETED THE MOMENT IT LANDS.
+ *
+ * An upgrade can happen while the first tap's note is still being written, which is the whole point of
+ * recording the tap before the await. When that happens there is no id to delete yet — and doing nothing
+ * leaves the write to land afterwards, so the screen shows one deep-thinking mark while notes.csv holds
+ * both a "lost" and a "deep-thinking". Measured: with a 600ms write the stored notes were
+ * ["lost","deep-thinking"] for one gesture.
+ *
+ * That is the exact failure the double-tap exists to prevent, and it is worse in the file than on screen:
+ * explore.js compares mark kinds BY COUNTING them, so one event recorded as two inflates the number the
+ * comparison rests on — and nothing downstream could ever tell it was one press.
+ *
+ * So the mark id is remembered here, and the write path deletes its own note on arrival.
+ */
+const orphanedTaps = new Set();
 
 async function markTap(tap) {
   const tSec = sessionTSec();
@@ -3473,6 +3489,9 @@ async function markTap(tap) {
        separate records of one event, and leaving either behind would mean the tally on screen and
        notes.csv disagreed about how many times thinking was marked. */
     if (decided.replaces != null) markerLog.remove(decided.replaces);
+    /* The first note may not have been written yet — that is the whole race this ordering fixes. If it
+       has not, its id is unknown, so the write path is told to delete it on arrival instead. */
+    if (lastTap && lastTap.noteId == null) orphanedTaps.add(lastTap.markId);
     if (lastTap && lastTap.noteId != null && recDb) {
       /* Best effort, through recDb — the same handle the Notes panel deletes with. A failed delete
          must not cost the upgraded mark: a duplicate note is recoverable from the timestamps, a
@@ -3489,6 +3508,26 @@ async function markTap(tap) {
   }
 
   const mark = markerLog.add(tSec, { kind: tap.key, note: null });
+  /*
+   * RECORDED FOR THE DOUBLE-TAP WINDOW *HERE*, BEFORE ANY await.
+   *
+   * This used to be set at the end of the function, after `await ensureRecording()` and
+   * `await recSession.addNote(...)`. Both touch IndexedDB, and until they resolve `lastTap` was still
+   * whatever it had been — so a second press arriving during the write saw no previous tap and made a
+   * second Thinking mark instead of one deep-thinking mark.
+   *
+   * It passed every test and every try on a fast machine, because there the writes resolve in a few
+   * milliseconds and a 400ms gap never overlaps them. Reproduced by delaying addNote by 600ms, which is
+   * an ordinary phone: two ArrowRight presses 400ms apart produced ["lost","lost"] instead of
+   * ["deep-thinking"]. Reported as "double tapping thinking (right arrow) doesn't create a deep thinking
+   * marker", and the report was right.
+   *
+   * The noteId is filled in below when the write lands. It is only needed to DELETE the first note on an
+   * upgrade, and that path checks for null — so a second press that beats the write still collapses the
+   * marks correctly, it just has no note to remove yet, which is the right outcome because there is not
+   * one.
+   */
+  lastTap = { key: tap.key, at: now, markId: mark.id, noteId: null };
   renderMarkCount();
   markFlashEl.classList.add('on');
   setTimeout(() => markFlashEl.classList.remove('on'), 60);
@@ -3503,9 +3542,20 @@ async function markTap(tap) {
     // So context typed at the summary reaches notes.csv and not just the report.
     if (noteId != null) markerLog.setNoteId(mark.id, noteId);
   }
-  /* Remembered AFTER the write, with the note id, so an upgrade has both records to undo. Set here
-     rather than at the top of the function because the note id does not exist until now. */
-  lastTap = { key: tap.key, at: now, markId: mark.id, noteId };
+  if (orphanedTaps.has(mark.id)) {
+    /* THIS TAP WAS UPGRADED WHILE ITS OWN NOTE WAS IN FLIGHT. The note has just landed and describes an
+       event that no longer exists as a separate mark, so it goes now. */
+    orphanedTaps.delete(mark.id);
+    if (noteId != null && recDb) {
+      try { await Recorder.deleteNote(recDb, noteId); }
+      catch (err) { console.log('[mark] could not remove an upgraded tap’s note:', err && err.message); }
+    }
+  } else if (lastTap && lastTap.markId === mark.id) {
+    /* Fill in the note id on the record made before the awaits — but ONLY if it is still the same tap.
+       A second press during the write replaces `lastTap`, and writing this tap's id onto that one would
+       make a later upgrade delete the wrong note. */
+    lastTap.noteId = noteId;
+  }
   if (tap.grades && noteId != null) {
     pendingGrade = { noteId, category: tap.key, until: Date.now() + 4000 };
     setStatus(`${tap.label} \u00b7 ${tap.grades.map((g) => `${g.value}=${g.label}`).join(' ')}`);
