@@ -246,7 +246,7 @@
    * so a grip held as an element reference silently stops working the first time the
    * panel redraws. Bound to the panel, the grip can be recreated as often as it likes.
    */
-  function makeDraggable(el, { key, from, handle, storage, win } = {}) {
+  function makeDraggable(el, { key, from, handle, storage, win, layoutDocked = null } = {}) {
     const w = win || window;
     const grip = handle || el;
     let drag = null;
@@ -298,10 +298,30 @@
       observer.observe(el);
     }
 
+    /*
+     * WHETHER THE LAST PRESS LANDED ON THE HANDLE.
+     *
+     * The double-click filter cannot read its OWN target. `setPointerCapture` below retargets every
+     * later pointer event — and the compatibility mouse events built from them — to the capturing
+     * element, so a press that genuinely started on `#readoutHead` arrives at the `dblclick` listener
+     * with `target` set to `#readout`. `closest('#readoutHead')` on that is null, and the gesture was
+     * silently dropped: reported as "the metrics panel doesn't snap or dock when you double click the
+     * top thing", and it was not the docking that was broken but the recognition of the click.
+     *
+     * `pointerdown` is the one event that is still delivered to the real target, and it already runs the
+     * same filter to decide whether to drag. So the answer is recorded there and read here, rather than
+     * asked a second time of an event that can no longer answer it.
+     */
+    let downOnHandle = false;
+
     grip.addEventListener('pointerdown', (e) => {
       // Only the primary button, and never from something that is itself interactive.
       if (e.button != null && e.button !== 0) return;
-      if (from && !(e.target.closest && e.target.closest(from))) return;
+      const onHandle = !from || !!(e.target.closest && e.target.closest(from));
+      // Recorded on EVERY press, cleared as well as set — otherwise one press on the header would leave
+      // the flag standing and a later double-click deep inside the panel would reset it.
+      downOnHandle = onHandle && !e.target.closest('button, input, textarea, select, a, .pill, .legendItem');
+      if (!onHandle) return;
       if (e.target.closest('button, input, textarea, select, a, .pill, .legendItem')) return;
       const start = currentPosition(el, w);
       drag = { id: e.pointerId, px: e.clientX, py: e.clientY, ox: start.x, oy: start.y,
@@ -350,7 +370,26 @@
      * out of any state, and no state is reachable only by knowing a second gesture.
      */
     grip.addEventListener('dblclick', (e) => {
-      if (from && !(e.target.closest && e.target.closest(from))) return;
+      // See `downOnHandle`: the press knows where it landed, this event no longer does.
+      if (!downOnHandle && from && !(e.target.closest && e.target.closest(from))) return;
+      /*
+       * WHEN THE PAGE ALREADY LAYS THIS PANEL OUT, double-click returns it to its slot.
+       *
+       * Reported as "the metrics panel doesn't snap or dock when you double click the top thing", and the
+       * cause was that it was ALREADY docked — by the Train layout, in CSS, through
+       * `#readout:not([data-dragged])`. Docking it again wrote an inline position, which set
+       * `data-dragged`, which made that CSS rule stop matching — so the gesture took the panel OUT of the
+       * layout it was asking to be put into. Exactly backwards.
+       *
+       * So when a layout owns the panel, the gesture means "go back where you belong": clear the inline
+       * position and let the layout have it again. Floating contexts keep the dock-to-an-edge cycle,
+       * which is what the gesture means where nothing else is deciding.
+       */
+      if (layoutDocked && layoutDocked()) {
+        unplace(el);
+        if (key) clear(key, storage);
+        return;
+      }
       if (isDocked(el)) {
         unplace(el);
         if (key) clear(key, storage);

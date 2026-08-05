@@ -298,8 +298,14 @@
      other side. 272px is the mockup's left column.
      It also now reads as one panel rather than a floating stack of pills, because it holds a heading, a
      list and a setting, and those need something to belong to. */
+  /* AN EXPLICIT COLOUR, because the rail now holds text that does not bring its own.
+     It never had one: every child was a `.a` chip that set its own colour, so the inherited value was
+     never used and nobody could see that it was BLACK — the page sets no colour on `body` either. The
+     moment the sit's history moved in here, its note rows and headings rendered black on a near-black
+     panel and were invisible. This is the fix, and the reason not to rely on inheritance for a panel. */
   #armedBar { position: fixed; left: 16px; top: 50%; transform: translateY(-50%);
-    width: 272px; max-height: 74vh; overflow-y: auto; z-index: 45; display: flex;
+    color: var(--text-main);
+    width: 272px; max-height: 74vh; overflow: hidden; z-index: 45; display: flex;
     flex-direction: column; gap: 5px; font: 11px/1.4 Inter, system-ui, sans-serif;
     padding: 10px 12px 12px; border-radius: 14px;
     background: rgba(8,10,20,.72); border: 1px solid rgba(255,255,255,.09);
@@ -310,6 +316,11 @@
      pixels each and the arrow editor pushed out of the bottom, rather than the rail scrolling as it was
      told to. Every child keeps its natural height and #armedBar's own overflow-y does the work. */
   #armedBar > * { flex-shrink: 0; }
+  /* EXCEPT THE PANE, which is the one child that MUST shrink: it is the thing that scrolls. With the
+     blanket `flex-shrink: 0` above it kept its natural height inside a rail whose height is fixed by the
+     layout, and the rail's `overflow: hidden` simply cut the bottom off — the Save button under the note
+     box was sliced in half and unreachable. The head and tabs stay put; the pane takes what is left. */
+  #armedBar > .railPane { flex: 1 1 auto; min-height: 0; }
   /* Transparent against the rail rather than each carrying its own dark box — ten stacked translucent
      boxes over a translucent panel is what made these read as stripes over the visual. */
   #armedBar .a { padding: 5px 9px; border-radius: 7px; border: 1px solid transparent;
@@ -329,6 +340,38 @@
   .armedNote { font-size: 10.5px; line-height: 1.45; color: rgba(255,255,255,.45);
     padding: 7px 2px 0; }
   .armedNote b { color: rgba(255,255,255,.72); }
+  /* ---- THE RAIL'S TWO TABS ------------------------------------------------------------------------
+     Marks is what you press, History is what has happened. Two short panes instead of one long column
+     whose arrow-key boxes had fallen below the fold. */
+  .railHead { flex: 0 0 auto; display: flex; flex-direction: column; gap: 8px;
+    padding-bottom: 9px; margin-bottom: 4px; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .railTabs { display: flex; gap: 3px; }
+  .railTab { flex: 1 1 0; font: inherit; font-size: 12px; padding: 6px 4px; cursor: pointer;
+    border-radius: 8px; background: rgba(255,255,255,.04); color: rgba(255,255,255,.55);
+    border: 1px solid transparent; }
+  .railTab:hover { background: rgba(255,255,255,.08); color: rgba(255,255,255,.85); }
+  .railTab.on { background: rgba(125,211,252,.14); color: #cbe9ff;
+    border-color: rgba(125,211,252,.32); }
+  /* The pane scrolls, not the rail, so the tabs stay put while a long history moves under them. */
+  .railPane { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column;
+    gap: 5px; }
+  .railPane[hidden] { display: none; }
+  .railBlock { display: flex; flex-direction: column; gap: 6px; padding: 4px 0 10px; }
+  .railBlock + .railBlock { border-top: 1px solid rgba(255,255,255,.07); padding-top: 10px; }
+  /* `.sideHead` and `.dim` were only ever defined in the lab's own stylesheet. The rail borrowed the
+     class names and got nothing — an 11px heading in the inherited colour, which on this panel was
+     black. Defined here, matching the lab, so one class means one thing across the two pages. */
+  #armedBar .sideHead { font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
+    color: rgba(255,255,255,.45); }
+  #armedBar .dim { font-size: 10.5px; color: rgba(255,255,255,.42); }
+  #railHistory textarea { width: 100%; box-sizing: border-box; resize: vertical; font: inherit;
+    font-size: 12.5px; padding: 7px 9px; border-radius: 9px; color: rgba(255,255,255,.9);
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.12); }
+  #railHistory textarea:focus { outline: none; border-color: rgba(125,211,252,.45);
+    background: rgba(255,255,255,.10); }
+  #railHistory .noteBar { margin: 0; }
+  #railHistory #noteList { font-size: 12px; }
+  #sitLabelState { font-size: 10.5px; color: rgba(255,255,255,.5); min-height: 13px; }
   #armedBar .a.hot { color: #dfe6ff; border-color: rgba(125,211,252,.38);
     background: rgba(125,211,252,.12); }
   #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
@@ -341,14 +384,23 @@
   .noteBar .grow { flex: 1; }
   .noteAnchor { display: flex; align-items: center; gap: 6px; font-size: 12px; opacity: .8;
     cursor: pointer; user-select: none; }
+  /* `flex-wrap` because a mark's row carries a fourth child — the box for saying what it was — and a
+     272px rail cannot hold a time, a label, a button AND a text box across without truncating the label,
+     which would defeat the point of showing which mark you are about to delete. So the box wraps under. */
   .noteItem { padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.07);
-    display: flex; gap: 10px; align-items: flex-start; font-size: 13px; }
+    display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: flex-start; font-size: 13px; }
   .noteItem .noteWhen { font: 11px/1.6 ui-monospace, monospace; opacity: .55;
     min-width: 62px; flex: none; }
-  .noteItem .noteText { flex: 1; white-space: pre-wrap; word-break: break-word; }
+  .noteItem .noteText { flex: 1; white-space: pre-wrap; word-break: break-word; min-width: 0; }
   .noteItem .noteX { flex: none; cursor: pointer; opacity: .35; padding: 0 4px;
     background: none; border: 0; color: inherit; font: inherit; }
   .noteItem .noteX:hover { opacity: .9; }
+  .noteItem .noteEdit { flex: 1 0 100%; box-sizing: border-box; width: 100%; font: inherit;
+    font-size: 11.5px; padding: 4px 7px; border-radius: 6px; color: rgba(255,255,255,.88);
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10); }
+  .noteItem .noteEdit::placeholder { color: rgba(255,255,255,.3); }
+  .noteItem .noteEdit:focus { outline: none; border-color: rgba(125,211,252,.45);
+    background: rgba(255,255,255,.10); }
   /* Saved-session rows inside the summary overlay. */
   .sesRow { display: flex; align-items: center; gap: 10px; padding: 8px 0;
     border-bottom: 1px solid rgba(255,255,255,.07); font-size: 13px; }
@@ -376,29 +428,14 @@
   /* The notes panel. Left side, opposite the metrics readout, so both can be open at once — the whole
      point of it not being a modal is that a note gets written while the thing it describes is on
      screen. Draggable like the rest; see DRAGGABLE_PANELS in app.js. */
-  #notePanel { position: absolute; left: 4vmin; top: 11vmin; width: 340px; max-width: 42vw;
-    max-height: calc(100vh - 11vmin - 110px); overflow-y: auto; padding: 14px;
-    color: var(--text-muted); font-size: 12.5px;
-    background: linear-gradient(180deg, var(--glass), rgba(5,8,18,.32));
-    border: 1px solid var(--glass-line); border-radius: 18px;
-    box-shadow: 0 0 0 1px rgba(255,255,255,.035) inset, 0 24px 90px rgba(0,0,0,.38);
-    backdrop-filter: blur(18px) saturate(125%); -webkit-backdrop-filter: blur(18px) saturate(125%);
-    opacity: 0; transition: opacity .35s, transform .3s, visibility .35s; z-index: 9; }
-  #notePanel.show { opacity: 1; }
-  #notePanel.panelClosed { opacity: 0; transform: translateY(10px); pointer-events: none;
-    visibility: hidden; }
-  #noteHead { letter-spacing: .16em; text-transform: uppercase; font-size: 10px;
-    color: var(--text-muted); margin-bottom: 10px; }
-  #notePanel textarea { width: 100%; min-height: 70px; resize: vertical; font: inherit;
-    font-size: 12.5px; padding: 9px 10px; border-radius: 10px; color: inherit;
-    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.13); }
-  #notePanel .noteBar { display: flex; align-items: center; gap: 8px; margin: 8px 0 4px; }
-  #notePanel .grow { flex: 1 1 auto; }
-  #notePanel button { font: inherit; font-size: 12px; padding: 6px 14px; border-radius: 9px;
+  /* THE NOTES PANEL IS GONE. It was a second floating box holding a textarea and a list of the sit's
+     notes, alongside a separate list of the sit's marks — three places for one sit's record. It is now the
+     History tab of the mark rail, so the styles that were on `#notePanel` belong to `#railHistory` and
+     live with the rest of the rail below. What is kept here is what the History tab still uses. */
+  #noteList { margin-top: 2px; }
+  .noteBar button { font: inherit; font-size: 12px; padding: 6px 14px; border-radius: 9px;
     cursor: pointer; color: #cbe9ff; background: rgba(125,211,252,.16);
     border: 1px solid rgba(125,211,252,.4); }
-  #notePanel .noteAnchor { display: flex; align-items: center; gap: 5px; font-size: 11.5px; }
-  #noteList { margin-top: 8px; max-height: 34vh; overflow-y: auto; }
   #dataPanel.show { opacity: 1; }
   #dataPanel.panelClosed { opacity: 0; transform: translateY(10px); pointer-events: none; visibility: hidden; }
   #dataToggle { cursor: pointer; user-select: none; letter-spacing: .16em; margin-bottom: 10px;
@@ -825,28 +862,11 @@
   /* The arrow-key assignment, now inside the mark rail. Its own block under the categories, separated,
      because it is a setting rather than one of the things you press. `min-width: 0` so its long legend
      wraps inside the rail instead of widening it — see the note on #armedBar's fixed width. */
-  /* THIS SIT'S MARKS, in the rail. A row per mark: when, what, a note field and a delete. The note field
-     is on its own line because a 272px rail cannot hold a time, a label, a button and a text box across,
-     and truncating the label would defeat the point of showing what the mark was. */
-  #markList { flex: 0 0 auto; min-width: 0; margin-top: 10px; padding-top: 10px;
-    border-top: 1px solid rgba(255,255,255,.09); max-height: 34vh; overflow-y: auto; }
-  .markListEmpty { font-size: 11px; line-height: 1.5; color: rgba(255,255,255,.4); }
-  .markRow { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px;
-    align-items: center; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
-  .markRow:last-child { border-bottom: none; }
-  .markWhen { font: 11px ui-monospace, monospace; color: rgba(255,255,255,.5);
-    font-variant-numeric: tabular-nums; }
-  .markKind { font-size: 11.5px; color: rgba(255,255,255,.78); overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap; }
-  .markX { grid-column: 3; background: none; border: none; cursor: pointer; padding: 0 4px;
-    font-size: 14px; line-height: 1; color: rgba(255,255,255,.35); }
-  .markX:hover { color: #ff8f8f; }
-  .markNote { grid-column: 1 / -1; width: 100%; font: inherit; font-size: 11.5px;
-    padding: 4px 7px; border-radius: 6px; color: rgba(255,255,255,.88);
-    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10); }
-  .markNote::placeholder { color: rgba(255,255,255,.3); }
-  .markNote:focus { outline: none; border-color: rgba(125,211,252,.45);
-    background: rgba(255,255,255,.10); }
+  /* THIS SIT'S MARKS ARE NOW THE HISTORY TAB'S LIST — one list of everything that happened, taps and
+     typed notes together, asked for as "the notes and marks should be consolidated". The separate
+     `#markList` and its `.markRow` are gone; `.noteItem` above carries the row, including the field for
+     saying what a mark was. Kept here as a pointer, because a second list of the same events reappearing
+     is the mistake this replaced. */
   .arrowEditor { flex: 0 0 auto; min-width: 0; margin-top: 10px; padding-top: 10px;
     border-top: 1px solid rgba(255,255,255,.09); }
   /* Four slots across, glyph over box. Beside each other they wrapped into two rows in a 272px rail,

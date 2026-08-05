@@ -93,6 +93,25 @@
       return m;
     }
 
+    /*
+     * ANNOTATE BY THE STORED ROW'S id, not this log's own.
+     *
+     * The mark list and the note list are one list now, and it is built from what storage holds — so the
+     * only id its rows carry is the note's. The in-memory marker still has to learn the words, because
+     * that is what the on-screen report and the end-of-sit summary read; without this the words reached
+     * `notes.csv` and the screen kept showing the mark with none. Same reason `removeByNoteId` exists.
+     *
+     * Returns the marker so a caller can tell a real annotation from a mark it does not know about —
+     * which is the normal case for a plain typed note, and not an error.
+     */
+    annotateByNoteId(noteId, note) {
+      if (noteId == null) return null;
+      const m = this.markers.find((x) => x.noteId === noteId);
+      if (!m) return null;
+      m.note = note;
+      return m;
+    }
+
     setKind(id, kind) {
       const m = this.markers.find((x) => x.id === id);
       if (!m) return null;

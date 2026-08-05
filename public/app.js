@@ -1820,86 +1820,25 @@ async function deleteMark(id) {
     }
   }
   markerLog.remove(id);
-  renderMarkCount();
-  renderMarkList();
+  renderMarkCount();      // refreshes the history when it is showing
   renderChart();
   return true;
 }
 
-/*
- * THIS SIT'S MARKS, in the mark rail, newest first.
- *
- * Asked for: "What about the marks showing up in the timeline? So i see them and can edit or delete?"
- * During a sit there was only a COUNT — the list of what you had actually marked lived on the end-of-sit
- * summary, which is the one moment you can no longer remember what the third one was about.
- *
- * IN THE RAIL rather than only on the chart. The ticks on the chart (see renderChart) say WHEN, which is
- * what a timeline is for; but 180 seconds across a 320px canvas is under two pixels a second, so a tick
- * is not a thing you can click. The rail is open all sit in Train and is the panel about marks, so the
- * editable copy belongs here.
- */
-function renderMarkList() {
-  const host = document.getElementById('markList');
-  if (!host) return;
-  /* NEVER REBUILD UNDER A CARET. If one of this list's own note fields has focus, the practitioner is
-     mid-sentence about a mark, and replacing the innerHTML would take the box and the caret with it. The
-     list is refreshed again on the next mark or delete, so nothing is lost by waiting. */
-  if (host.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
-  const marks = markerLog.list().slice().sort((a, b) => b.tSec - a.tSec);
-  if (!marks.length) {
-    host.innerHTML = '<div class="markListEmpty">Marks you make will appear here, with the'
-      + ' newest first — tap one to say what it was, or × to remove it.</div>';
-    return;
-  }
-  const label = (m) => {
-    const tap = Probes.TAP_BY_KEY[m.kind];
-    if (tap) return strongly(tap, m.strong);
-    const kind = Markers.KINDS.find((k) => k.key === m.kind);
-    return (kind && kind.label) || m.kind || 'mark';
-  };
-  host.innerHTML = `<div class="sideHead" style="margin-bottom:6px">This sit · ${marks.length}</div>`
-    + marks.map((m) => `<div class="markRow" data-mark="${m.id}">
-        <span class="markWhen">${Exporter.clock(m.tSec)}</span>
-        <span class="markKind">${escapeHtml(label(m))}</span>
-        <button class="markX" data-del-mark="${m.id}" title="Delete this mark, here and in the file"
-          >×</button>
-        <input class="markNote" data-note-mark="${m.id}" value="${escapeHtml(m.note || '')}"
-          placeholder="what was it?" maxlength="200">
-      </div>`).join('');
-
-  host.querySelectorAll('[data-del-mark]').forEach((b) => {
-    b.addEventListener('click', () => { deleteMark(Number(b.dataset.delMark)); });
-  });
-  host.querySelectorAll('[data-note-mark]').forEach((input) => {
-    // Off the global shortcuts, or typing "t" about a mark would make another one.
-    input.addEventListener('keydown', (e) => {
-      e.stopPropagation();
-      if (e.key === 'Enter') input.blur();
-    });
-    input.addEventListener('change', () => {
-      const id = Number(input.dataset.noteMark);
-      const mk = markerLog.list().find((x) => x.id === id);
-      if (!mk) return;
-      const text = input.value.trim();
-      markerLog.annotate(id, text, mk.durationSec);
-      if (mk.noteId == null || !recDb) return;
-      /* THE COMMENT FIELD FOR A TAP, never `text`. A tap's `text` is its own category label, written the
-         instant the key went down, and overwriting it would turn "Thinking" into whatever was typed —
-         the tap category is what the whole analysis keys off. An M-mark's `text` IS the note, so there
-         it is the same field. Same rule as the summary editor. */
-      const patch = Probes.TAP_BY_KEY[mk.kind]
-        ? { comment: text } : { text, comment: text };
-      Recorder.updateNote(recDb, mk.noteId, patch).catch(() => { /* the screen still has it */ });
-    });
-  });
-}
+/* The old per-mark list lived here. It read markerLog and showed only taps; the History tab shows taps,
+   typed notes and voice notes together from the notes store, which is where all three already went — see
+   renderNoteList. Two lists of overlapping things was the split the consolidation removed. */
 
 function renderMarkCount() {
   /* THE LIST IS REFRESHED HERE TOO. Every place that changes the marks already calls this — a tap, a
      saved M-mark, a delete from either editor — and none of them is on the 250ms tick, so this is the one
      hook that cannot go stale. Adding a second call at six sites is how one gets missed, which is
      exactly what happened first: the count updated after a tap and the list did not. */
-  renderMarkList();
+  /* THE HISTORY IS THE LIST NOW, and it is refreshed here for the same reason the old one was: every place
+     that changes the marks already calls this, and none of them is on the tick. Only when it is on screen —
+     it reads the notes store, and doing that on every tap while looking at the Marks tab is work for
+     nobody. */
+  if (railTab === 'history') renderNoteList();
   const el = armedBarEl.querySelector('.armedHint');
   if (!el) return;
   const n = markerLog.length;
@@ -4130,23 +4069,63 @@ function renderArmedBar() {
      no letter of its own; listing it here would show a row with an empty key and invite pressing both
      it and Thinking for one event, which splits one state's marks across two buckets. It is announced
      under Thinking instead, where the gesture is. */
-  armedBarEl.innerHTML = '<div class="armedHint">press <b>M</b> to mark</div>'
-    + Probes.PRIMARY_TAP_CATEGORIES.map((t) =>
+  /* ONLY THE MARKS PANE is rebuilt. The History pane is static markup in direct.html because it holds
+     textareas, and reassigning innerHTML over a half-typed sentence takes the sentence and the caret with
+     it — the same reason the metrics header and the notes textarea were made static before this. */
+  const marksPane = document.getElementById('railMarks');
+  if (marksPane) {
+    marksPane.innerHTML = Probes.PRIMARY_TAP_CATEGORIES.map((t) =>
       `<span class="a${t.key === armedTap ? ' hot' : ''}" data-arm="${t.key}"`
       + ` title="${escapeHtml(t.hint)} — press twice quickly for a strong one"`
       + `><b>${t.kbd}${t.arrow ? ` ${arrowGlyphFor(t)}` : ''}</b>${escapeHtml(t.label)}`
       + `${t.grades ? ' <i style="opacity:.5">+1/2</i>' : ''}</span>`).join('')
-    /* SAID ONCE, not on every row. The double-tap works on all ten now, so a "×2 = …" on each would be
-       ten copies of one sentence in the panel that most needs to be short on a phone. */
-    + '<div class="armedNote">Press any of these <b>twice quickly</b> for a strong one.</div>'
-    + '<div id="markList"></div>'
-    + renderArrowEditorHtml();
-  ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
-  renderMarkCount();       // the hint carries the tally, and refreshes the list, in the rebuilt markup
-  armedBarEl.querySelectorAll('[data-arm]').forEach((el) => {
-    el.addEventListener('click', () => { armedTap = el.dataset.arm; renderArmedBar(); });
-  });
-  wireArrowEditor(armedBarEl);
+      /* SAID ONCE, not on every row. The double-tap works on all ten now, so a "×2 = …" on each would be
+         ten copies of one sentence in the panel that most needs to be short on a phone. */
+      + '<div class="armedNote">Press any of these <b>twice quickly</b> for a strong one.</div>'
+      + renderArrowEditorHtml();
+    marksPane.querySelectorAll('[data-arm]').forEach((el) => {
+      el.addEventListener('click', () => { armedTap = el.dataset.arm; renderArmedBar(); });
+    });
+    wireArrowEditor(marksPane);
+  }
+  ensureGrip(armedBarEl);
+  renderMarkCount();       // the hint carries the tally
+  renderRailTabs();
+}
+
+/*
+ * WHICH TAB THE RAIL IS SHOWING.
+ *
+ * Marks is what you press; History is what has happened. Asked for as two tabs, and it also fixes the
+ * column that was scrolling — two short panes rather than one long one with the arrow-key boxes below the
+ * fold.
+ */
+let railTab = 'marks';
+function renderRailTabs() {
+  for (const b of armedBarEl.querySelectorAll('.railTab')) {
+    b.classList.toggle('on', b.dataset.rail === railTab);
+    if (!b.dataset.wired) {
+      b.dataset.wired = '1';
+      b.addEventListener('click', () => showRailTab(b.dataset.rail));
+    }
+  }
+  for (const p of armedBarEl.querySelectorAll('.railPane')) {
+    p.hidden = p.id !== (railTab === 'marks' ? 'railMarks' : 'railHistory');
+  }
+}
+
+function showRailTab(next) {
+  railTab = next === 'history' ? 'history' : 'marks';
+  /* ONE SOURCE OF TRUTH for "the history is showing". `notesOpen` is read by the Notes pill's lit state
+     and by the clock that keeps `at 0:42` counting while a note is being typed — and clicking the tab
+     itself set neither, so the pill stayed dark and the stamp stayed at an em dash while the history was
+     plainly on screen. Set here rather than only in toggleNotes, because this is the one function both
+     the key and the tab go through. */
+  notesOpen = railTab === 'history';
+  renderNotesPanel();
+  renderRailTabs();
+  // The history is read from the notes store, so it is fetched when it is shown rather than kept warm.
+  if (railTab === 'history') renderNoteList();
 }
 
 function fireProbe(due) {
@@ -4615,22 +4594,32 @@ function wireArrowEditor(host) {
  * The markup is static in direct.html now for the same reason the metrics header is: this panel holds a
  * textarea, and rebuilding it on every render would throw away half-typed text and the caret with it.
  */
+/*
+ * "NOTES" IS THE RAIL'S HISTORY TAB NOW.
+ *
+ * There was a separate Notes panel with its own textarea and its own list. Both wrote to the same notes
+ * store as the marks — a tap is a note with a category on it — so the split existed only on screen, and it
+ * meant what you thought about the sit was filed somewhere other than what happened in it. Asked for:
+ * "the notes and marks should be consolidated."
+ *
+ * `notesOpen` survives as "the history is showing", because the Notes pill's active state and the N key
+ * both read it.
+ */
 let notesOpen = false;
-const notePanelEl = document.getElementById('notePanel');
 
 function renderNotesPanel() {
-  if (!notePanelEl) return;
-  notePanelEl.classList.toggle('panelClosed', !notesOpen);
-  notePanelEl.classList.toggle('show', notesOpen);
   const link = document.getElementById('notesLink');
   if (link) link.classList.toggle('active', notesOpen);
 }
 
 function toggleNotes(force) {
   notesOpen = force == null ? !notesOpen : !!force;
+  /* Notes only exist inside a sit being trained, which is where the rail is. Turning Training on rather
+     than failing silently: the alternative is a key that does nothing and looks broken. */
+  if (notesOpen && !trainingMode) setTrainingMode(true);
+  showRailTab(notesOpen ? 'history' : 'marks');
   renderNotesPanel();
   if (!notesOpen) return;
-  renderNoteList();
   const box = document.getElementById('noteBox');
   if (box) box.focus();
 }
@@ -4696,6 +4685,11 @@ async function renderNoteList() {
       + ' or write a note anyway and it will start one.</p>';
     return;
   }
+  /* NEVER REBUILD UNDER A CARET. Each row carries a field for saying what the mark was, so if one of
+     them has focus the practitioner is mid-sentence and replacing the innerHTML would take the box and
+     the caret with it. The list is rebuilt again on the next mark, save or delete, so nothing is lost by
+     waiting — the same rule the metrics header and the notes textarea are held to. */
+  if (list.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
   const notes = await Recorder.listNotes(recDb, recSession.id);
   if (!notes.length) { list.innerHTML = '<p style="opacity:.6">No notes in this sit yet.</p>'; return; }
   // Newest first: the note you just wrote is the one you might want to remove.
@@ -4712,10 +4706,38 @@ async function renderNoteList() {
       : (cat
         ? `<b>${escapeHtml(cat.label)}</b>${n.comment ? ' — ' + escapeHtml(n.comment) : ''}`
         : escapeHtml(n.text || '(empty)'));
-    return `<div class="noteItem" data-id="${n.id}"><span class="noteWhen">${escapeHtml(when)}</span>`
+    /* A MARK'S ROW CARRIES A FIELD FOR SAYING WHAT IT WAS.
+       "so i see them and can edit or delete?" \u2014 the per-mark note box used to live in a separate mark
+       list, and consolidating the two lists into this one would have dropped it. A tap is one keypress
+       with no words attached; the words are the only thing that makes it recoverable months later.
+       Voice notes and the whole-sit label are edited where they are written, so they get no box. */
+    const editable = !!cat && n.kind !== 'voice';
+    return `<div class="noteItem${editable ? ' hasNote' : ''}" data-id="${n.id}">`
+      + `<span class="noteWhen">${escapeHtml(when)}</span>`
       + `<span class="noteText">${body}</span>`
-      + `<button class="noteX" title="delete this note">\u00d7</button></div>`;
+      + `<button class="noteX" title="delete this note">\u00d7</button>`
+      + (editable ? `<input class="noteEdit" data-comment="${n.id}"`
+        + ` value="${escapeHtml(n.comment || '')}" placeholder="what was it?" maxlength="200">` : '')
+      + `</div>`;
   }).join('');
+
+  list.querySelectorAll('[data-comment]').forEach((input) => {
+    // Off the global shortcuts, or typing "t" about a mark would make another mark.
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') input.blur();
+    });
+    input.addEventListener('change', () => {
+      const id = Number(input.dataset.comment);
+      const text = input.value.trim();
+      /* THE `comment` FIELD, never `text`. A tap's `text` is its own category label, written the instant
+         the key went down, and overwriting it would turn "Thinking" into whatever was typed \u2014 the tap
+         category is what the whole analysis keys off. Same rule as the summary editor. */
+      Recorder.updateNote(recDb, id, { comment: text })
+        .then(() => { markerLog.annotateByNoteId(id, text); renderNoteList(); })
+        .catch(() => { /* the screen still has it */ });
+    });
+  });
   list.querySelectorAll('.noteX').forEach((x) => {
     x.addEventListener('click', async () => {
       const id = Number(x.closest('.noteItem').dataset.id);
@@ -5267,14 +5289,32 @@ function ensureAffordance(el) {
 const DRAGGABLE_PANELS = [
   ['readout', readoutEl],
   ['dataPanel', document.getElementById('dataPanel')],
-  ['notePanel', notePanelEl],
   ['modeBar', modeBarEl],
   ['armedBar', armedBarEl],
 ];
 for (const [key, el] of DRAGGABLE_PANELS) {
   if (!el) continue;
   ensureGrip(el);
-  const handle = Panels.makeDraggable(el, { key, from: '.panelGrip' });
+  /*
+   * THE WHOLE HEADER IS THE HANDLE, not only the 14px grip strip.
+   *
+   * "double click the top thing" is what a person does, and the top thing is the title — LIVE METRICS,
+   * the Marks/History tabs — not a row of three faint dots above it. A gesture that only works on a
+   * target nobody knows is there is a gesture nobody has.
+   *
+   * `#dataToggle` is deliberately NOT here even though it is the live feed's title, because it is also
+   * the button that collapses the panel. Making it a drag handle meant a 100px drag from it moved the
+   * panel instead of being the press half of a click, which is the one thing that panel's title has to
+   * do. That panel is dragged by its grip, immediately above.
+   */
+  const handle = Panels.makeDraggable(el, {
+    key,
+    from: '.panelGrip, #readoutHead, .railHead',
+    /* In Train these three are laid out by CSS. Double-clicking then means "put it back in its slot",
+       because docking it again would write an inline position and take it OUT of the layout. */
+    layoutDocked: () => document.body.classList.contains('training')
+      && ['readout', 'dataPanel', 'armedBar'].includes(key),
+  });
   /* Only the two panels that are really read for minutes at a time carry the hint. On the mode bar and
      the mark bar it would be a line of instructions under a row of buttons, which is noise — they are
      still draggable, and their grip still says so on hover. */

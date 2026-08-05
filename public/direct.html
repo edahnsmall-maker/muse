@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Muse Zen Spike — Direct Bluetooth</title>
-<link rel="stylesheet" href="app.css?v=2026-08-05c">
+<link rel="stylesheet" href="app.css?v=2026-08-05d">
 </head>
 <body>
 <!--
@@ -45,19 +45,8 @@
   <span class="pill" id="barResponse" title="How fast the visual follows the signal">Response: sensitive</span>
   <div id="barStatus" class="dim"></div>
 </header>
-<!--
-  NAMING THE SIT, GIVEN ITS OWN ROW.
-
-  It was an input squeezed into the app bar between the places and the status, which is why it "doesn't
-  look nice" — a 340px box fighting for a 44px bar with five other things, and the thing it holds is a
-  sentence. It gets the full width under the bar now, quiet until touched, with what it is for said in
-  the placeholder rather than in a label taking more space.
--->
-<div id="sitNoteBar">
-  <input id="sitLabel" placeholder="Name this sit — what is true of the whole of it?" maxlength="200"
-    autocomplete="off" />
-  <span id="sitLabelState" class="dim"></span>
-</div>
+<!-- Naming the sit lives in the rail's History tab now, at the top of it, where the rest of what you
+     say about the sit already is. It had a row of its own here for one build. -->
 <canvas id="gl"></canvas>
 <div id="modeBar"></div>
 <div id="patternBar"></div>
@@ -81,7 +70,59 @@
 <!-- Probe response. Five options, one tap, digits 1-5 — it must be answerable
      without reading, because a probe that takes twenty seconds destroys the sit it is
      measuring. -->
-<div id="armedBar" hidden></div>
+<!--
+  THE MARK RAIL, TWO TABS.
+
+  Asked for: "in training, the mark window should just have 2 tabs, one for marks and one for history, and
+  the history should have the general note (overall sit that becomes the name by default) plus other marks
+  and/or notes. the notes and marks should be consolidated."
+
+  Marks and notes were two panels writing to one place. Every tap and every typed note already lands in the
+  same notes store — a tap is a note with a category on it — so showing them in two lists was a split that
+  existed only in the UI, and it meant the record of a sit was somewhere different from the record of what
+  you thought about it. One chronological history, with the general note at the top of it because that note
+  IS the sit's name.
+
+  MARKS is what you press; HISTORY is what has happened. That is also why the tabs fix the column that was
+  scrolling: two short panes instead of one long one.
+
+  #railHistory is STATIC MARKUP, deliberately. It holds textareas, and renderArmedBar rebuilds its pane's
+  innerHTML — which would take a half-typed sentence and the caret with it. Only #railMarks is regenerated.
+-->
+<div id="armedBar" hidden>
+  <div class="railHead">
+    <div class="armedHint"></div>
+    <div class="railTabs" role="tablist">
+      <button class="railTab on" data-rail="marks" role="tab">Marks</button>
+      <button class="railTab" data-rail="history" role="tab">History</button>
+    </div>
+  </div>
+  <div id="railMarks" class="railPane"></div>
+  <div id="railHistory" class="railPane" hidden>
+    <!-- THE GENERAL NOTE, AND IT IS THE NAME. One field, shared with the summary's textarea through
+         saveSitNoteFrom, so the lab has one candidate name for the sit rather than two. -->
+    <div class="railBlock">
+      <div class="sideHead">This whole sit</div>
+      <textarea id="sitLabel" rows="2"
+        placeholder="What was true of all of it? This names the sit."></textarea>
+      <div id="sitLabelState" class="dim"></div>
+    </div>
+    <!-- EVERYTHING THAT HAPPENED, in one list: taps, typed notes and voice notes together, newest first,
+         each deletable. Built by renderNoteList from the notes store, which is where both already went. -->
+    <div class="railBlock">
+      <div class="sideHead">Everything so far</div>
+      <div id="noteList"></div>
+    </div>
+    <div class="railBlock">
+      <textarea id="noteBox" rows="2" placeholder="Add a note…"></textarea>
+      <div class="noteBar">
+        <label class="noteAnchor"><input type="checkbox" id="noteAnchor"> at <b id="noteStamp">—</b></label>
+        <span class="grow"></span>
+        <button id="noteSave">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
 <div id="probeHud" hidden>
   <div id="probeQ">Where was attention <em>just before</em> that sound?</div>
   <div id="probeOpts"></div>
@@ -119,30 +160,9 @@
   <div id="readoutSpan"></div>
   <div id="readoutRows"></div>
 </div>
-  <!-- NOTES AS A PANEL THAT STAYS, not a modal that covers the sit.
-       Asked for: "i want that to be something on the screen that maybe opens and stays there. like if i
-       hit note, there's a space to add a note at t time, or add a general note. then when i click on it
-       again, i see all that in the panel and can still add something new."
-       It was a full-screen overlay over #summary, which meant writing a note hid the visual and the
-       clock — so a note about what was happening had to be written after it stopped happening. -->
-  <div id="notePanel" class="panelClosed">
-    <div id="noteHead">Notes</div>
-    <div id="noteBody">
-      <textarea id="noteBox" placeholder="What's happening? (Ctrl+Enter to save)"></textarea>
-      <div class="noteBar">
-        <label class="noteAnchor"><input type="checkbox" id="noteAnchor"> stamp it at
-          <b id="noteStamp">—</b></label>
-        <span class="grow"></span>
-        <button id="noteSave">Save</button>
-      </div>
-      <div id="noteList"></div>
-      <!-- The arrow-key assignment used to live here and has moved into the mark bar, as asked:
-           "the arrow key assignment makes much more sense from the Mark panel than the notes panel."
-           It is a control over what the marks are; having it here meant opening the panel for
-           writing prose in order to change a key that marks something else. -->
-
-    </div>
-  </div>
+  <!-- The Notes panel is gone: its textarea, its anchor toggle and its list are the History tab of the
+       mark rail now. "the notes and marks should be consolidated" — they were two panels writing to one
+       notes store, so the split existed only on screen. The Notes pill opens that tab. -->
   <div id="dataPanel" class="panelClosed">
     <div id="dataToggle">Live feed</div>
     <!-- MOVED HERE FROM THE METRICS PANEL. It never divided the metrics — MIND / BODY / SIGNAL does that,
@@ -254,7 +274,7 @@
    * shows an old date here while the version string still reads new — which is exactly the mismatch
    * that has been the root cause twice.
    */
-  var BUILD = '2026-08-05c';
+  var BUILD = '2026-08-05d';
   window.__BUILD = BUILD;
   try {
     var stamp = document.createElement('div');
@@ -291,28 +311,28 @@
   });
 }());
 </script>
-<script src="dsp.js?v=2026-08-05c"></script>
+<script src="dsp.js?v=2026-08-05d"></script>
 <!-- A fake headband, only when the URL asks for it (?sim=1). See simdevice.js: it exists so
      "the panels do not open" can be told apart from "the headband is not streaming". -->
-<script src="simdevice.js?v=2026-08-05c"></script>
-<script src="clockcheck.js?v=2026-08-05c"></script>
-<script src="selfcheck.js?v=2026-08-05c"></script>
-<script src="viz-core.js?v=2026-08-05c"></script>
-<script src="visual.js?v=2026-08-05c"></script>
-<script src="chart.js?v=2026-08-05c"></script>
-<script src="summary.js?v=2026-08-05c"></script>
-<script src="cues.js?v=2026-08-05c"></script>
-<script src="metrics.js?v=2026-08-05c"></script>
-<script src="markers.js?v=2026-08-05c"></script>
-<script src="polar.js?v=2026-08-05c"></script>
-<script src="record.js?v=2026-08-05c"></script>
-<script src="export.js?v=2026-08-05c"></script>
-<script src="labels.js?v=2026-08-05c"></script>
-<script src="trials.js?v=2026-08-05c"></script>
-<script src="probes.js?v=2026-08-05c"></script>
-<script src="panels.js?v=2026-08-05c"></script>
+<script src="simdevice.js?v=2026-08-05d"></script>
+<script src="clockcheck.js?v=2026-08-05d"></script>
+<script src="selfcheck.js?v=2026-08-05d"></script>
+<script src="viz-core.js?v=2026-08-05d"></script>
+<script src="visual.js?v=2026-08-05d"></script>
+<script src="chart.js?v=2026-08-05d"></script>
+<script src="summary.js?v=2026-08-05d"></script>
+<script src="cues.js?v=2026-08-05d"></script>
+<script src="metrics.js?v=2026-08-05d"></script>
+<script src="markers.js?v=2026-08-05d"></script>
+<script src="polar.js?v=2026-08-05d"></script>
+<script src="record.js?v=2026-08-05d"></script>
+<script src="export.js?v=2026-08-05d"></script>
+<script src="labels.js?v=2026-08-05d"></script>
+<script src="trials.js?v=2026-08-05d"></script>
+<script src="probes.js?v=2026-08-05d"></script>
+<script src="panels.js?v=2026-08-05d"></script>
 <!-- Only for handing a finished sit to the lab's inbox; the app never reads lab data. -->
-<script src="labstore.js?v=2026-08-05c"></script>
-<script src="app.js?v=2026-08-05c"></script>
+<script src="labstore.js?v=2026-08-05d"></script>
+<script src="app.js?v=2026-08-05d"></script>
 </body>
 </html>

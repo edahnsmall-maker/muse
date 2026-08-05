@@ -3843,17 +3843,15 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const to = el.getBoundingClientRect();
       const saved = localStorage.getItem('zenbio.panel.dataPanel');
 
-      /* DOUBLE-CLICK DOCKS, AND A SECOND ONE PUTS IT BACK.
-         It used to go straight home. The escape from a bad drag must survive — otherwise the only way
-         out is clearing browser storage — so the gesture cycles rather than toggles: one double-click
-         docks to the nearer side, a second returns it to where the stylesheet puts it and forgets the
-         stored position. Two of one gesture gets you out of any state. */
-      grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-      await new Promise((r) => setTimeout(r, 30));
-      const dockedRect = el.getBoundingClientRect();
-      const dockedEdge = el.dataset.docked || null;
-      const dockedStore = JSON.parse(localStorage.getItem('zenbio.panel.dataPanel') || 'null');
-
+      /*
+       * ONE DOUBLE-CLICK PUTS A LAYOUT-OWNED PANEL BACK IN ITS SLOT.
+       *
+       * In Train the live feed is placed by the stylesheet, between the two docked columns. Docking it
+       * to an EDGE there — which is what this used to assert — writes an inline position, and an inline
+       * position is exactly what takes the panel out of the layout it is being asked to join. So where a
+       * layout owns the panel the gesture means "go home", and the dock-to-an-edge cycle is asserted
+       * below on a panel that really does float.
+       */
       grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
       /* 450ms, past the panel's 350ms transform transition — not the 30ms this used to wait.
          Releasing a panel now hands `transform` back to the stylesheet, and in Train the stylesheet's
@@ -3865,6 +3863,30 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const reset = el.getBoundingClientRect();
       const clearedStore = localStorage.getItem('zenbio.panel.dataPanel');
       const stillDocked = el.dataset.docked || null;
+      const stillDragged = el.dataset.dragged || null;
+
+      /*
+       * THE FLOATING CASE: the Visuals popover, which no layout places. There the gesture still cycles —
+       * one double-click docks it flush to the nearer side, a second releases it and forgets the
+       * position. That escape must survive, or the only way out of a bad drag is clearing site data.
+       */
+      const bar = document.getElementById('modeBar');
+      renderModeBar();                       // it rebuilds its own innerHTML, and ate the grip once
+      bar.classList.add('show', 'open');     // the popover is opened by the V pill; open it directly
+      /* 450ms, past its 350ms transition. Opening it animates transform from translate(-50%,-10px) to
+         translate(-50%,0), so a home position captured at 60ms is 10px above where it settles — and the
+         release below then reads as landing in the wrong place. */
+      await new Promise((r) => setTimeout(r, 450));
+      const barGrip = bar.querySelector(':scope > .panelGrip');
+      const barHome = bar.getBoundingClientRect();
+      barGrip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 60));
+      const barDockedRect = bar.getBoundingClientRect();
+      const barEdge = bar.dataset.docked || null;
+      const barStore = JSON.parse(localStorage.getItem('zenbio.panel.modeBar') || 'null');
+      barGrip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
+      await new Promise((r) => setTimeout(r, 450));
+      const barReset = bar.getBoundingClientRect();
 
       // A drag must NOT be triggered by clicking a control inside the panel.
       const toggle = document.getElementById('dataToggle');
@@ -3882,10 +3904,16 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         saved: saved ? JSON.parse(saved) : null,
         resetBack: Math.abs(reset.left - from.left) < 2 && Math.abs(reset.top - from.top) < 2,
         clearedStore,
-        dockedEdge, dockedStore, stillDocked,
-        dockedFlush: dockedEdge === 'right'
-          ? Math.abs(dockedRect.right - innerWidth) < 2 : Math.abs(dockedRect.left) < 2,
+        stillDocked, stillDragged,
+        barEdge, barStore,
+        barDockedFlush: barEdge === 'right'
+          ? Math.abs(barDockedRect.right - innerWidth) < 2 : Math.abs(barDockedRect.left) < 2,
+        barResetBack: Math.abs(barReset.left - barHome.left) < 2
+          && Math.abs(barReset.top - barHome.top) < 2,
+        barStillDocked: bar.dataset.docked || null,
+        barClearedStore: localStorage.getItem('zenbio.panel.modeBar'),
         innerDragMoved: Math.abs(afterInnerDrag.left - beforeClick.left) > 2,
+        innerDragDelta: afterInnerDrag.left - beforeClick.left, dataDragged: el.dataset.dragged || null,
       };
     });
 
@@ -3907,24 +3935,35 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(Math.abs(out.dy - (-80)) <= 1, `and up 80px (got ${out.dy})`);
     assert.ok(out.saved && Number.isFinite(out.saved.x),
       `the position must persist, got ${JSON.stringify(out.saved)}`);
-    /* FIRST double-click docks: flush to a side, the edge recorded, and the EDGE persisted rather than
-       the x it resolved to — restoring a right-docked panel by pixel would put it mid-screen on a wider
-       window and off the side of a narrower one, which is the failure docking exists to prevent. */
-    assert.ok(['left', 'right'].includes(out.dockedEdge),
-      `the first double-click must dock the panel to a side (got ${out.dockedEdge})`);
-    assert.ok(out.dockedFlush, `and it must sit flush against that side`);
-    assert.strictEqual(out.dockedStore && out.dockedStore.docked, out.dockedEdge,
-      `the docked EDGE must persist, got ${JSON.stringify(out.dockedStore)}`);
-    // SECOND double-click releases it, all the way home, and forgets the position.
+    /* IN TRAIN, ONE double-click puts the panel back in the slot the stylesheet gives it. Reported as
+       "the metrics panel doesn't snap or dock when you double click the top thing": the gesture was
+       being dropped outright, because `setPointerCapture` retargets the click to the panel and the
+       filter was testing the click's own target against the header selector. */
     assert.ok(out.resetBack,
-      'a second double-click must put the panel back where it started');
-    assert.strictEqual(out.stillDocked, null, 'and must clear the docked state');
+      'in Train, one double-click must put the panel back in its laid-out slot');
+    assert.strictEqual(out.stillDragged, null,
+      'and must clear data-dragged, or the layout rule stops matching and it stays loose');
+    assert.strictEqual(out.stillDocked, null, 'and must not edge-dock a panel the layout places');
     assert.strictEqual(out.clearedStore, null, 'and must forget the stored position');
+
+    /* A FLOATING PANEL STILL CYCLES: dock to a side, then home. The EDGE is what persists, not the x it
+       resolved to — restoring a right-docked panel by pixel would put it mid-screen on a wider window
+       and off the side of a narrower one, which is the failure docking exists to prevent. */
+    assert.ok(['left', 'right'].includes(out.barEdge),
+      `a floating panel's first double-click must dock it to a side (got ${out.barEdge})`);
+    assert.ok(out.barDockedFlush, 'and it must sit flush against that side');
+    assert.strictEqual(out.barStore && out.barStore.docked, out.barEdge,
+      `the docked EDGE must persist, got ${JSON.stringify(out.barStore)}`);
+    assert.ok(out.barResetBack, 'a second double-click must put it back where it started');
+    assert.strictEqual(out.barStillDocked, null, 'and must clear the docked state');
+    assert.strictEqual(out.barClearedStore, null, 'and must forget the stored position');
+
     assert.ok(!out.innerDragMoved,
       'dragging from a control INSIDE the panel must not move the panel — that would'
-      + ' make the Live feed collapse toggle unusable');
-    console.log('✓ panels drag by their grip, persist, reset on double-click, and'
-      + ' ignore drags that start on a control');
+      + ` make the Live feed collapse toggle unusable (moved ${out.innerDragDelta}px,`
+      + ` dragged ${out.dataDragged})`);
+    console.log('✓ panels drag by their grip and persist; one double-click puts a laid-out panel back,'
+      + ' a floating one docks then releases, and a drag from a control is ignored');
   }
 
   // 27f) The panels that were reported as being in the way are all draggable, and the
@@ -3989,6 +4028,156 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       `and must say why, rather than claiming "recording started" (got "${out.autoStatus}")`);
     console.log('✓ four panels drag, grips survive re-renders, Training highlights,'
       + ' and the mark hint heads the word panel');
+  }
+
+  /* 27g) THE MARK RAIL IS TWO TABS, AND THE SIT'S RECORD IS ONE LIST.
+   *
+   *      Asked for: "the mark window should just have 2 tabs, one for marks and one for history, and the
+   *      history should have the general note (overall sit that becomes the name by default) plus other
+   *      marks and/or notes. the notes and marks should be consolidated."
+   *
+   *      There used to be three places holding one sit's record — a floating notes panel with a typed
+   *      list, a separate mark list in the rail, and a whole-sit label in a bar of its own — so what you
+   *      thought about a sit was filed away from what happened in it.
+   *
+   *      The colour is asserted, not just the markup, because the first version of this was invisible:
+   *      the rail had never declared a text colour (every child was a chip carrying its own), so the
+   *      inherited value was BLACK, and the moment real text moved in it rendered black on a near-black
+   *      panel. Markup that is present and unreadable passes every structural assertion there is.
+   */
+  {
+    const out = await page.evaluate(async () => {
+      setTrainingMode(true);
+      renderArmedBar();
+      const alpha = (c) => {
+        const m = /rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,/\s]+([\d.]+))?/.exec(c || '');
+        if (!m) return null;
+        const lum = (Number(m[1]) + Number(m[2]) + Number(m[3])) / 3;
+        return { lum, a: m[4] === undefined ? 1 : Number(m[4]) };
+      };
+      const tabs = Array.from(document.querySelectorAll('.railTab'));
+
+      showRailTab('marks');
+      const marksOn = {
+        marksShown: !document.getElementById('railMarks').hidden,
+        historyShown: !document.getElementById('railHistory').hidden,
+        chips: document.querySelectorAll('#railMarks .a').length,
+        arrowEditor: !!document.querySelector('#railMarks .arrowEditor'),
+      };
+
+      // Two marks and a typed note, so the history has both kinds in it.
+      const key = (k) => document.dispatchEvent(
+        new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true }));
+      key('c');
+      await new Promise((r) => setTimeout(r, 250));
+      key('t');
+      await new Promise((r) => setTimeout(r, 250));
+      showRailTab('history');
+      document.getElementById('noteBox').value = 'knee, then it passed';
+      await saveNote();
+      await new Promise((r) => setTimeout(r, 120));
+      // The whole-sit label, which is what names the sit in the lab.
+      const label = document.getElementById('sitLabel');
+      label.value = 'shallow all the way through';
+      label.dispatchEvent(new Event('blur'));
+      await new Promise((r) => setTimeout(r, 200));
+      await renderNoteList();
+
+      const rows = Array.from(document.querySelectorAll('#noteList .noteItem'));
+      const text = document.getElementById('noteList').textContent;
+      const railColour = alpha(getComputedStyle(document.getElementById('armedBar')).color);
+      const rowColour = alpha(getComputedStyle(rows[0].querySelector('.noteText')).color);
+
+      // The per-mark box: a tap is one keypress, and the words are the only thing that makes it
+      // recoverable later. Editing one must reach the STORED row, not just the screen.
+      const box = document.querySelector('#noteList .noteItem.hasNote .noteEdit');
+      let stored = null;
+      if (box) {
+        const id = Number(box.dataset.comment);
+        box.value = 'about the drive home';
+        box.dispatchEvent(new Event('change'));
+        await new Promise((r) => setTimeout(r, 250));
+        const notes = await Recorder.listNotes(recDb, recSession.id);
+        const n = notes.find((x) => x.id === id);
+        stored = n ? { comment: n.comment || null, text: n.text || null } : null;
+      }
+
+      return {
+        tabLabels: tabs.map((t) => t.textContent.trim()),
+        marksOn,
+        historyShown: !document.getElementById('railHistory').hidden,
+        marksHiddenNow: document.getElementById('railMarks').hidden,
+        rows: rows.length,
+        text,
+        editBoxes: document.querySelectorAll('#noteList .noteEdit').length,
+        stored,
+        // The panes scroll; the rail itself must not clip its own bottom control away.
+        /* SCROLLED TO THE BOTTOM FIRST. A long history is taller than the rail, and that is fine — what
+           must not happen is the RAIL clipping its own content away with nowhere to scroll, which is what
+           `overflow: hidden` on the rail plus `flex-shrink: 0` on every child produced: the Save button
+           under the note box was sliced in half and unreachable at any scroll position. */
+        railBox: (() => {
+          const p = document.getElementById('railHistory');
+          const overflows = p.scrollHeight > p.clientHeight + 1;
+          p.scrollTop = p.scrollHeight;
+          const s = document.getElementById('noteSave').getBoundingClientRect();
+          const b = document.getElementById('armedBar').getBoundingClientRect();
+          return { save: { b: Math.round(s.bottom), h: Math.round(s.height) },
+            rail: { b: Math.round(b.bottom) },
+            overflows, scrolled: p.scrollTop > 0,
+            paneScroll: p.scrollHeight, paneClient: p.clientHeight };
+        })(),
+        railColour, rowColour,
+        // The three separate homes this replaced must be gone, not merely hidden.
+        gone: { notePanel: !document.getElementById('notePanel'),
+          sitNoteBar: !document.getElementById('sitNoteBar'),
+          markList: !document.getElementById('markList') },
+      };
+    });
+
+    assert.deepStrictEqual(out.tabLabels, ['Marks', 'History'],
+      `the rail must be exactly two tabs, got ${JSON.stringify(out.tabLabels)}`);
+    assert.ok(out.marksOn.marksShown && !out.marksOn.historyShown,
+      'the Marks tab shows the keys and hides the history');
+    assert.ok(out.marksOn.chips >= 8 && out.marksOn.arrowEditor,
+      `and the keys and the arrow assignment are both in it (${out.marksOn.chips} chips,`
+      + ` editor ${out.marksOn.arrowEditor})`);
+    assert.ok(out.historyShown && out.marksHiddenNow, 'and switching tabs swaps them');
+
+    /* ONE LIST holding both kinds plus the whole-sit label — three rows from three different sources. */
+    assert.ok(out.rows >= 4, `the history must hold every kind of record in one list (got ${out.rows})`);
+    assert.match(out.text, /knee, then it passed/, 'the typed note is in it');
+    assert.match(out.text, /Thinking/, 'the taps are in it, named by category rather than left bare');
+    assert.match(out.text, /shallow all the way through/, 'and so is the whole-sit label');
+    assert.match(out.text, /whole sit/, 'which is marked as covering the sit rather than a moment');
+
+    assert.ok(out.editBoxes >= 2,
+      `each mark must carry a box for saying what it was (got ${out.editBoxes})`);
+    assert.ok(out.stored && out.stored.comment === 'about the drive home',
+      `and editing one must reach the stored row, got ${JSON.stringify(out.stored)}`);
+    /* THE CATEGORY SURVIVES. A tap's `text` IS its category, written the instant the key went down, and
+       the whole analysis keys off it — writing the typed words there would turn "Thinking" into whatever
+       was said about it. Same rule as the summary editor. */
+    assert.strictEqual(out.stored.text, 'Thinking',
+      `and must NOT overwrite the tap's category, got ${JSON.stringify(out.stored.text)}`);
+
+    assert.ok(out.railBox.overflows === out.railBox.scrolled,
+      `a pane taller than the rail must be scrollable, ${JSON.stringify(out.railBox)}`);
+    assert.ok(out.railBox.save.h > 0 && out.railBox.save.b <= out.railBox.rail.b + 1,
+      'scrolling the pane to the bottom must bring the Save button fully inside the rail, rather than the'
+      + ` rail clipping it away with nowhere to scroll: ${JSON.stringify(out.railBox)}`);
+
+    /* LEGIBLE, not merely present. The rail is a near-black panel; text at low luminance on it cannot be
+       read, and that is exactly what inheriting an undeclared colour produced. */
+    assert.ok(out.railColour && out.railColour.lum > 128 && out.railColour.a >= 0.7,
+      `the rail must declare a light text colour, got ${JSON.stringify(out.railColour)}`);
+    assert.ok(out.rowColour && out.rowColour.lum > 128 && out.rowColour.a >= 0.7,
+      `and the history rows must inherit it, got ${JSON.stringify(out.rowColour)}`);
+
+    assert.deepStrictEqual(out.gone, { notePanel: true, sitNoteBar: true, markList: true },
+      `the three separate homes for one sit's record must be gone, got ${JSON.stringify(out.gone)}`);
+    console.log('✓ the rail is Marks + History, one list holds taps, notes and the whole-sit label,'
+      + ' each mark is editable down to the stored row, and all of it is legible');
   }
 
   // 28) THE TIMER RUNNING OUT MUST STOP THE RECORDING. Reported: it did not, and the
