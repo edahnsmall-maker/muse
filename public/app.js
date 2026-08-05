@@ -1331,9 +1331,13 @@ function renderPlaces() {
   if (tr) tr.classList.toggle('here', trainingMode);
   const bar = document.getElementById('barStatus');
   if (bar) {
+    /* Says what the SCREEN is, not only what recording is doing. "nothing is being recorded" was also
+       wrong whenever a recording was still running: turning Training off deliberately does not stop
+       one, so the bar was contradicting the Record button. */
     bar.textContent = trainingMode
-      ? 'Training — marks and recording on'
-      : 'Meditating — nothing is being recorded';
+      ? 'Training — marks, metrics and recording'
+      : (recArmed ? 'Meditating — still recording, no numbers on screen'
+        : 'Meditating — just the visual');
   }
 }
 {
@@ -1742,12 +1746,97 @@ document.addEventListener('click', (e) => {
   statusLockUntil = Date.now() + 2600;
 });
 
+/*
+ * MEDITATE AND TRAIN ARE GENUINELY DIFFERENT SCREENS NOW.
+ *
+ * Reported as "the meditate page and train is the same thing", and it was — the flag armed recording
+ * and showed the mark bar, while every panel, every number and the whole control bar stayed exactly
+ * where they were. Two names for one screen.
+ *
+ * The instruction was to "differentiate the meditate page a little from the training area", so the
+ * difference is now the one the practice actually asks for. From ROADMAP: feedback "shouldn't feel like
+ * a game or a score to chase — it's closer to a mirror than a meter."
+ *
+ *   MEDITATE  the mirror. The visual, and as close to nothing else as is safe. No scores, no graph,
+ *             no mark bar, no metrics — a number on screen is a thing to check, and checking is the
+ *             opposite of sitting.
+ *   TRAIN     the instrument. Everything: marks, the live feed, the grouped metrics, recording armed.
+ *
+ * WHAT IS DELIBERATELY STILL THERE IN MEDITATE: the app bar (so there is a way out), Record, the
+ * status line, and the control bar — faded almost to nothing and legible again on hover. Hiding the
+ * controls outright would mean a screen with no way back, which is a worse failure than an austere one.
+ *
+ * The panels' open/closed state is REMEMBERED across the switch rather than reset, so going to
+ * Meditate and back does not cost the arrangement someone set up for a sit.
+ */
+let panelsBeforeMeditate = null;
+
+/*
+ * AUSTERITY APPLIES TO A WORKING SIT, NOT TO AN UNCONFIGURED APP.
+ *
+ * Meditate hides the metrics panel, and that panel is also where a fresh page says "No headband
+ * connected — press Connect". Stripping it unconditionally would have recreated the exact defect that
+ * message was written for: "i dont see any panels. do i need to connect in order to see the metrics?",
+ * asked of a perfectly healthy app that said nothing anywhere on screen.
+ *
+ * So the mirror is only bare once there is something to mirror. With nothing connected, Meditate keeps
+ * the panel and its explanation; the moment a headband is streaming, the numbers go away.
+ */
+function meditateIsBare() { return museConnected() || strapConnected(); }
+
+function applyPlaceChrome() {
+  document.body.classList.toggle('meditating', !trainingMode);
+  document.body.classList.toggle('training', trainingMode);
+  // Drives the CSS that keeps the explanation visible in Meditate before a connection.
+  document.body.classList.toggle('preflight', !meditateIsBare());
+  /*
+   * THE KEY COMES OFF THE MIRROR IN MEDITATE.
+   *
+   * The visual draws its own legend onto the canvas — the four channel names, and a line or two saying
+   * what the shapes mean ("void grows — settling", "corona reaches out — thinking"). Hiding the panels
+   * and leaving that behind misses the point entirely: it is a running commentary telling you how to
+   * read your own state, printed over the thing that is supposed to be a mirror. It also cannot be
+   * hidden with CSS, because it is painted into the canvas.
+   *
+   * In Train it stays. Naming what is drawn is exactly right when the screen is an instrument, and
+   * VizCore.legendFor exists so a mode can never draw a key that disagrees with what it plotted.
+   */
+  if (typeof visual !== 'undefined' && visual.setLegend) {
+    visual.setLegend(trainingMode);
+    /* And keep it clear of the mark rail, which occupies the left edge in Train. Measured from the
+       element rather than hard-coded, so the two cannot disagree after a CSS change. */
+    if (visual.setLegendInset) {
+      const rail = trainingMode && armedBarEl && !armedBarEl.hidden
+        ? Math.round(armedBarEl.getBoundingClientRect().right) : 0;
+      visual.setLegendInset(rail ? rail + 14 : 0);
+    }
+  }
+  if (!trainingMode && meditateIsBare()) {
+    // Remember once, on the way in — not on every render, or the remembered state becomes the
+    // closed-for-meditation state and the arrangement is lost anyway.
+    if (!panelsBeforeMeditate) {
+      panelsBeforeMeditate = { metrics: metricsOpen, feed: feedOpen, visuals: visualsOpen };
+    }
+    metricsOpen = false; feedOpen = false; visualsOpen = false;
+  } else if (trainingMode && panelsBeforeMeditate) {
+    metricsOpen = panelsBeforeMeditate.metrics;
+    feedOpen = panelsBeforeMeditate.feed;
+    visualsOpen = panelsBeforeMeditate.visuals;
+    panelsBeforeMeditate = null;
+  }
+  updatePanelVisibility();
+}
+
 function setTrainingMode(on) {
   const wasOn = trainingMode;
   trainingMode = !!on;
   renderPlaces();
   renderArmedBar();
   renderMarkCount();
+  /* AFTER renderArmedBar, not before. applyPlaceChrome measures the mark rail to keep the visual's
+     legend clear of it, and renderArmedBar is what unhides the rail — so measuring first read a hidden
+     element as zero-width and the legend landed back on top of it. */
+  applyPlaceChrome();
   /* TURNING TRAINING ON STARTS RECORDING.
    * Training mode exists to gather data, and every label it collects is worthless if
    * nothing is saving them. This is the exact failure that already happened once: a
@@ -4121,9 +4210,9 @@ function renderArrowEditorHtml() {
       + `<input data-arrowkey="${a}" value="${escapeHtml(map[a] || '')}" maxlength="1"`
       + ` style="width:34px;text-align:center;text-transform:uppercase;font:13px ui-monospace,monospace"`
       + `></label>`).join('')
-    + `</div><div style="font-size:11.5px;opacity:.6;margin-top:8px;line-height:1.5">`
-    + `Type the letter of the mark each arrow should make; leave one blank to unbind it.<br>`
-    + `${escapeHtml(letters)}</div></div>`;
+    + `</div><div class="arrowHelp">`
+    + `Type the letter of the mark each arrow should make; leave one blank to unbind it.`
+    + `<div class="arrowLegend">${escapeHtml(letters)}</div></div></div>`;
 }
 
 function wireArrowEditor(host) {
@@ -4441,6 +4530,15 @@ setInterval(() => {
   // return that required Muse data, which meant a strap-only session showed a
   // permanently stuck status message and never displayed a single heart row.
   renderDevices();
+  /* ABOVE the early return, deliberately — see the note below and HANDOFF §3. This tracks whether
+     Meditate should be bare, and the transition it exists to catch (nothing connected -> streaming) is
+     exactly the moment `result` is still null. Below the return it would only fire once a headband was
+     already delivering, which is one tick too late and, on a strap-only sit, never.
+     Idempotent: classList.toggle with an explicit boolean, and applyPlaceChrome only reassigns panel
+     state when the answer has changed. */
+  if (!trainingMode && document.body.classList.contains('preflight') === meditateIsBare()) {
+    applyPlaceChrome();
+  }
   const lockedNow = Date.now() < statusLockUntil;
   if (!lockedNow && !museConnected() && !museConnecting) {
     setStatus(strapConnected()
@@ -4835,6 +4933,9 @@ addEventListener('resize', () => {
    declared halfway down this file — and anything above that declaration reads it inside its temporal
    dead zone and throws. Two of this project's three total outages were exactly that. */
 renderPlaces();
+/* And the chrome that goes with the place. The app opens on Meditate, so without this the first screen
+   is the fully instrumented one wearing the Meditate highlight — the exact confusion this fixes. */
+applyPlaceChrome();
 /* The always-on-screen sit name. Wired here for the same reason: it reads `sitNoteText`, another `let`
    declared partway down this file, so wiring it earlier would touch it in its temporal dead zone. */
 wireSitLabel();

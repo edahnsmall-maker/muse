@@ -291,18 +291,34 @@
      last two chips sat on top of the Practice group. Centred, it clears the training
      clock above and the bar below at any ordinary window height, and max-height keeps
      it inside a short one. Draggable either way; this is just a sane starting point. */
+  /* THE MARKERS RAIL. A fixed width, and that is a bug fix rather than a preference: a fixed-position
+     element with no width shrinks to fit its widest content, and the arrow-key legend that moved in here
+     ("C = Concentrating · A = Naturally concentrated · ...") is one long line — so the bar stretched
+     most of the way across the screen and its translucent panel showed through the metrics panel on the
+     other side. 272px is the mockup's left column.
+     It also now reads as one panel rather than a floating stack of pills, because it holds a heading, a
+     list and a setting, and those need something to belong to. */
   #armedBar { position: fixed; left: 16px; top: 50%; transform: translateY(-50%);
-    max-height: 62vh; overflow-y: auto; z-index: 45; display: flex;
-    flex-direction: column; gap: 5px; font: 11px/1.4 Inter, system-ui, sans-serif; }
+    width: 272px; max-height: 74vh; overflow-y: auto; z-index: 45; display: flex;
+    flex-direction: column; gap: 5px; font: 11px/1.4 Inter, system-ui, sans-serif;
+    padding: 10px 12px 12px; border-radius: 14px;
+    background: rgba(8,10,20,.72); border: 1px solid rgba(255,255,255,.09);
+    backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
   #armedBar[hidden] { display: none; }
-  #armedBar .a { padding: 4px 9px; border-radius: 7px; border: 1px solid rgba(255,255,255,.12);
-    background: rgba(10,12,20,.6); color: rgba(255,255,255,.5); cursor: pointer;
-    white-space: nowrap; }
+  /* Transparent against the rail rather than each carrying its own dark box — ten stacked translucent
+     boxes over a translucent panel is what made these read as stripes over the visual. */
+  #armedBar .a { padding: 5px 9px; border-radius: 7px; border: 1px solid transparent;
+    background: none; color: rgba(255,255,255,.68); cursor: pointer;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #armedBar .a:hover { background: rgba(255,255,255,.07); color: rgba(255,255,255,.92); }
+  /* The double-tap gesture, said under the key it belongs to. */
+  #armedBar .a i { font-style: italic; font-size: 10px; }
   #armedBar .a b { font-family: ui-monospace, monospace; opacity: .8; margin-right: 6px; }
   .armedHint { font-size: 10px; letter-spacing: .12em; text-transform: uppercase;
     color: rgba(255,255,255,.38); padding: 0 2px 3px; }
   .armedHint b { font-family: ui-monospace, monospace; color: rgba(255,255,255,.6); }
-  #armedBar .a.hot { color: #dfe6ff; border-color: rgba(255,255,255,.3); }
+  #armedBar .a.hot { color: #dfe6ff; border-color: rgba(125,211,252,.38);
+    background: rgba(125,211,252,.12); }
   #sumNote { width: 100%; min-height: 70px; resize: vertical; font: inherit; font-size: 13px;
     padding: 8px 10px; border-radius: 8px; background: rgba(255,255,255,.06);
     color: inherit; border: 1px solid rgba(255,255,255,.16); }
@@ -586,6 +602,43 @@
     background: linear-gradient(180deg, rgba(5,8,18,.82), rgba(5,8,18,0));
     pointer-events: none; }
   #appBar .brand, #appBar #places, #appBar #sitLabelWrap { pointer-events: auto; }
+
+  /* ---- MEDITATE IS A DIFFERENT SCREEN FROM TRAIN ---------------------------------------------
+     Reported as "the meditate page and train is the same thing", and it was: the flag armed recording
+     and showed the mark bar while every panel and number stayed put. From ROADMAP, on why this is the
+     right axis to differentiate on — feedback "shouldn't feel like a game or a score to chase — it's
+     closer to a mirror than a meter."
+
+     So Meditate is the mirror: the visual, and as close to nothing else as is safe. A number on screen
+     is a thing to check, and checking is the opposite of sitting. `display: none` rather than an opacity
+     fade, so nothing is faintly legible enough to squint at.
+
+     THE CONTROL BAR STAYS, faded almost out and legible again on hover or keyboard focus. Hiding it
+     would leave a screen with no way back, which is a worse failure than an austere one. */
+  body.meditating #readout,
+  body.meditating #dataPanel,
+  body.meditating #armedBar,
+  body.meditating #patternBar { display: none !important; }
+  /* EXCEPT BEFORE A CONNECTION. The metrics panel is also where a fresh page says "No headband
+     connected — press Connect", and hiding it unconditionally would recreate the defect that message
+     exists for: an app that is working perfectly and says nothing about why the screen is empty. The
+     mirror goes bare once there is something to mirror. */
+  body.meditating.preflight #readout { display: block !important; }
+  /* AND THE CONTROL BAR STAYS AT FULL STRENGTH BEFORE A CONNECTION. The device buttons live inside it,
+     so fading it on the first screen makes connecting a hunt — and the whole point of the austerity is
+     that it belongs to a sit that is already under way, not to setting one up. */
+  body.meditating.preflight #controls { opacity: 1; }
+  body.meditating.preflight #appBar { opacity: 1; }
+  body.meditating #controls { opacity: .14; transition: opacity .45s ease; }
+  body.meditating #controls:hover,
+  body.meditating #controls:focus-within { opacity: 1; }
+  /* The wordmark and the sit name recede too — they are the only text left on screen, and text is what
+     the eye goes to. Both come back on hover, like the controls. */
+  body.meditating #appBar { opacity: .45; transition: opacity .45s ease; }
+  body.meditating #appBar:hover, body.meditating #appBar:focus-within { opacity: 1; }
+  /* Record stays reachable at full strength. A sit worth sitting is a sit worth keeping, and hunting
+     for the button is exactly the sort of fumbling that ends a settled state. */
+  body.meditating #recBtn { opacity: .9; }
   /* NAME THE SIT. Quiet until touched — it is on screen for the whole sit, so it must not compete
      with the visual. `margin-left: auto` puts it after the places and before the status, and it is
      the only flexible item in the bar so it takes the slack. */
@@ -605,8 +658,28 @@
   @media (max-width: 720px) { #sitLabelWrap { display: none; } }
   /* The arrow-key assignment, now inside the mark bar. Its own line under the categories, separated,
      because it is a setting rather than one of the things you press. */
-  .arrowEditor { flex-basis: 100%; margin-top: 10px; padding-top: 10px;
+  /* The arrow-key assignment, now inside the mark rail. Its own block under the categories, separated,
+     because it is a setting rather than one of the things you press. `min-width: 0` so its long legend
+     wraps inside the rail instead of widening it — see the note on #armedBar's fixed width. */
+  .arrowEditor { flex: 0 0 auto; min-width: 0; margin-top: 10px; padding-top: 10px;
     border-top: 1px solid rgba(255,255,255,.09); }
+  .arrowEditor input { background: rgba(255,255,255,.07); color: rgba(255,255,255,.9);
+    border: 1px solid rgba(255,255,255,.14); border-radius: 6px; padding: 3px 0; }
+  .arrowEditor input:focus { outline: none; border-color: rgba(125,211,252,.5);
+    background: rgba(255,255,255,.12); }
+  /* Legible over the visual. This was an inline opacity of .6, which is fine on a solid panel and not
+     on a translucent one floating over a bright bloom — the instruction for a control is not worth
+     having if it cannot be read while sitting in front of it. */
+  .arrowHelp { font-size: 11px; line-height: 1.5; margin-top: 9px;
+    color: rgba(255,255,255,.62); }
+  /* The key table folded away: eleven "letter = name" pairs is a paragraph, and it is needed once while
+     choosing a binding, not every time the rail is on screen. */
+  .arrowLegend { margin-top: 6px; max-height: 3.1em; overflow: hidden; position: relative;
+    color: rgba(255,255,255,.45); transition: max-height .25s ease, color .25s ease;
+    mask-image: linear-gradient(#000 55%, transparent); -webkit-mask-image: linear-gradient(#000 55%, transparent); }
+  .arrowEditor:hover .arrowLegend, .arrowEditor:focus-within .arrowLegend {
+    max-height: 14em; color: rgba(255,255,255,.66);
+    mask-image: none; -webkit-mask-image: none; }
   #appBar .brand { font-size: 14px; font-weight: 600; letter-spacing: .02em;
     color: rgba(255,255,255,.82); }
   #appBar .brand .mark { color: #7dd3fc; margin-right: 4px; }

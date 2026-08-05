@@ -120,6 +120,8 @@ function createZenVisual(canvas) {
    * screen during a sit, and someone who has learned the palette will want it gone.
    */
   let legendOn = true;
+  // Pixels to keep clear on the left. See the note in drawLegend.
+  let legendInset = 0;
 
   /*
    * HAS THIS ELECTRODE EVER READ ANYTHING?
@@ -229,7 +231,11 @@ function createZenVisual(canvas) {
    */
   function drawLegend(c, W, H, entries) {
     if (!entries || !entries.length) return;
-    const pad = Math.round(Math.min(W, H) * 0.030);
+    /* `legendInset` shifts the key clear of anything the page has parked down the left edge. The mark
+       rail in Train is a 272px column there, and the key was drawn straight over it — two unrelated
+       lists of words on top of each other, which is worse than either alone. The page owns that layout,
+       so the page supplies the inset; nothing here knows what a mark rail is. */
+    const pad = Math.round(Math.min(W, H) * 0.030) + Math.max(0, legendInset);
     const size = Math.max(10, Math.round(H * 0.0165));
     const lh = Math.round(size * 1.75);
     const swatch = Math.round(size * 1.7);
@@ -2516,6 +2522,7 @@ function createZenVisual(canvas) {
       return seriesMode;
     },
     setLegend(on) { legendOn = !!on; return legendOn; },
+    setLegendInset(px) { legendInset = Number.isFinite(px) ? Math.max(0, px) : 0; return legendInset; },
     // Null clears it, which is right when the view is showing raw sensors: nothing is being
     // selected, so there is no driver to name.
     setDriver(label) { driverLabel = label || null; return driverLabel; },

@@ -124,6 +124,21 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   });
   await page.goto(PAGE);
   await page.waitForTimeout(600);
+  /*
+   * THE MAIN PAGE SITS IN TRAIN, because that is where the instrument is.
+   *
+   * Meditate and Train are genuinely different screens now: Meditate is the mirror — the visual, and as
+   * close to nothing else as is safe, since a number on screen is a thing to check and checking is the
+   * opposite of sitting. Almost everything this file asserts is about the instrumentation: the metrics
+   * panel and its rows, the Sensors/Composites switch, the mark bar, the live feed, panel dragging. All
+   * of that lives in Train, and asking about it from Meditate is asking about a screen that
+   * deliberately does not have it.
+   *
+   * The tests that are genuinely about Meditate — the app bar's places, and the fresh-page "no headband
+   * connected" message — use their own contexts further down and are unaffected.
+   */
+  await page.click('#placeTrain');
+  await page.waitForTimeout(400);
   await page.evaluate(ARM_WITHOUT_RESET);
 
   assert.deepStrictEqual(errors, [], `the page must load without console errors:\n  ${errors.join('\n  ')}`);
@@ -250,6 +265,16 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     assert.ok(stampAt > 0 && stampAt < firstModule,
       'the build stamp must be written by the inline boot script, before any module can throw — a'
       + ' stamp that dies with the app cannot identify the build that died');
+    /* AND IT MUST NAME THE VERSION THE PAGE ACTUALLY LOADED.
+       The stamp is there to answer "what is your browser running?", and it had drifted a version
+       behind the assets — so it would have answered that question wrongly, in the one situation it
+       exists for. Two hand-maintained version strings in one file drift; asserting they match is what
+       stops the diagnostic from lying. */
+    const build = (html.match(/var BUILD = '([^']+)'/) || [])[1];
+    assert.ok(build, 'the boot script must declare a BUILD string');
+    assert.strictEqual(build, [...versions][0],
+      `the build stamp says "${build}" while the assets say "${[...versions][0]}" — the stamp exists to`
+      + ' identify what is loaded and must not disagree with it');
     console.log(`✓ ${includes.length} modules and ${links.length} stylesheet are cache-busted on one`
       + ` version (${[...versions][0]}), version skew costs only its own feature, a boot failure`
       + ' paints its reason on screen, and the build stamp survives it');
@@ -273,6 +298,18 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     const simErrors = [];
     pageSim.on('pageerror', (e) => simErrors.push(e.message));
     await pageSim.goto(PAGE + '?sim=1');
+
+    /* INTO TRAIN FIRST, because Meditate no longer shows the metrics panel.
+     *
+     * Meditate is the mirror — the visual and as close to nothing else as is safe, since a number on
+     * screen is a thing to check and checking is the opposite of sitting. Train is the instrument. The
+     * app opens on Meditate, so the panel this test is about is legitimately closed there.
+     *
+     * The assertion itself is unchanged and still worth every line: "none of the panels open" has been
+     * reported against builds that open them, and computed opacity is the only way to tell a working
+     * build from a class with stale CSS behind it. It just has to be asked in the place that has panels.
+     */
+    await pageSim.click('#placeTrain');
 
     // The simulator auto-connects, then the page needs a few of its own 250ms ticks before the
     // adaptive normalisers have a range to work with. Polling rather than sleeping, for the reason
@@ -444,7 +481,15 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       places: [...document.querySelectorAll('.place')].map((e) => e.textContent.trim()),
       here: [...document.querySelectorAll('.place.here')].map((e) => e.textContent.trim()),
       status: (document.getElementById('barStatus') || {}).textContent || '',
-      // The readout must sit BELOW the bar, not under it.
+    }));
+    /* GEOMETRY MEASURED IN TRAIN, because Meditate does not draw the metrics panel at all — it is the
+       mirror, and a hidden element's rect is all zeros, which is not the panel sitting under the bar.
+       The claim being checked is that the panel clears the bar wherever the panel exists. */
+    await pgBar.click('#placeTrain');
+    await pgBar.waitForTimeout(400);
+    const inTrain = await pgBar.evaluate(() => ({
+      here: [...document.querySelectorAll('.place.here')].map((e) => e.textContent.trim()),
+      status: (document.getElementById('barStatus') || {}).textContent || '',
       readoutTop: Math.round(document.getElementById('readout').getBoundingClientRect().top),
       barBottom: Math.round(document.getElementById('appBar').getBoundingClientRect().bottom),
     }));
@@ -452,10 +497,18 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       'the same three places as the lab, in the same order');
     assert.deepStrictEqual(onLoad.here, ['Meditate'],
       'and exactly one highlighted on load — neither highlighted reads as being in no place at all');
-    assert.match(onLoad.status, /nothing is being recorded/i,
-      'and the bar must say whether anything is being recorded, which is the difference that matters');
-    assert.ok(onLoad.readoutTop >= onLoad.barBottom,
-      `the metrics panel must sit below the bar, not under it (${onLoad.readoutTop} vs ${onLoad.barBottom})`);
+    /* The bar names the PLACE, and the old wording had a bug in it: "nothing is being recorded" was
+       false whenever a recording was still running, because turning Training off deliberately does not
+       stop one — so the bar could contradict the Record button. It now says what the screen is, and adds
+       the recording state only when there is one to report. */
+    assert.match(onLoad.status, /just the visual/i,
+      'the bar must say what this place is, and Meditate is the visual alone');
+    assert.deepStrictEqual(inTrain.here, ['Train'],
+      'clicking Train must move the highlight there');
+    assert.match(inTrain.status, /marks, metrics and recording/i,
+      'and the bar must say what Train is: the instrumented screen');
+    assert.ok(inTrain.readoutTop >= inTrain.barBottom,
+      `the metrics panel must sit below the bar, not under it (${inTrain.readoutTop} vs ${inTrain.barBottom})`);
 
     // Train, then Shift+T: the highlight must follow the STATE, not the last click.
     await pgBar.click('#placeTrain');
@@ -465,7 +518,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       status: (document.getElementById('barStatus') || {}).textContent || '',
     }));
     assert.deepStrictEqual(trained.here, ['Train'], 'clicking Train must move the highlight');
-    assert.match(trained.status, /recording on/i, 'and say what changed');
+    assert.match(trained.status, /marks, metrics and recording/i, 'and say what changed');
 
     await pgBar.keyboard.press('Shift+T');
     await pgBar.waitForTimeout(400);
@@ -2947,7 +3000,13 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       }
       const arrowKinds = markerLog.list().map((m) => m.kind);
 
-      // Shift+T is Training; plain T must NOT toggle it, since T is now a tap.
+      /* Shift+T is Training; plain T must NOT toggle it, since T is now a tap.
+         Started from OFF explicitly. The suite's page now sits in Train — that is where the
+         instrumentation being tested lives — so a test that assumed training began off was asserting
+         the suite's setup rather than the app's default. What matters here is that Shift+T flips it and
+         plain T does not, which needs a known starting point, not a particular one. */
+      setTrainingMode(false);
+      await new Promise((r) => setTimeout(r, 60));
       const trainBefore = trainingMode;
       await press({ key: 'T', shiftKey: true });
       const afterShift = trainingMode;
@@ -2974,7 +3033,11 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const stored = id ? await Recorder.listNotes(recDb, id) : [];
       await stopRecording({ summary: false });
       if (id) await Recorder.deleteSession(recDb, id);
-      markerLog.clear(); setTrainingMode(false);
+      /* BACK INTO TRAIN, not off. Every test after this one is about the instrumentation — panel
+         dragging, the live feed, the mark bar — and Meditate deliberately does not draw any of it, so
+         leaving the page in Meditate silently made the rest of the suite measure hidden elements. It
+         showed up as a drag that moved the panel 0px. */
+      markerLog.clear(); setTrainingMode(true);
       document.getElementById('summary').classList.remove('show');
       selfRating = null; lastRecSession = null;
 
@@ -3697,6 +3760,20 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   {
     const out = await page.evaluate(async () => {
       const el = document.getElementById('dataPanel');
+      /* THE PANEL HAS TO BE ON SCREEN TO BE DRAGGED. Meditate hides it outright with display:none, and
+         a display:none element's rect is all zeros — so this measured a 0px drag and reported the drag
+         as broken when it was the panel that was absent. Asserted rather than assumed, because a silent
+         zero is exactly how that reads as a bug in the wrong place. */
+      setTrainingMode(true);
+      feedOpen = true;
+      updatePanelVisibility();
+      /* 450ms, past the panel's own 350ms show transition. Opening it animates transform from
+         translateY(10px) to none, so a reference position captured mid-transition is up to 10px away
+         from where the panel actually settles — which then reads as the double-click failing to put it
+         back. Waiting for the animation is the difference between measuring the panel and measuring the
+         animation. */
+      await new Promise((r) => setTimeout(r, 450));
+      if (getComputedStyle(el).display === 'none') return { hidden: true };
       const grip = el.querySelector(':scope > .panelGrip');
       if (!grip) return { noGrip: true };
       const from = el.getBoundingClientRect();
@@ -3751,6 +3828,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       };
     });
 
+    assert.ok(!out.hidden, 'the live feed panel must be on screen before it can be dragged');
     assert.ok(!out.noGrip, 'every draggable panel must carry a grip to drag it by');
     /*
      * WITHIN A PIXEL, not exactly. A panel's starting position comes from the stylesheet and is
