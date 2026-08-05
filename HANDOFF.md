@@ -73,6 +73,7 @@ No framework, no bundler. Load order matters (see the `<script>` tags in
 | `public/viz-core.js` | 407 | **Pure** visual logic: mode list, event detection, blooms, breath patterns, `SweepRing`, `expand`/`expandSoft`, `smoothSeries`. No canvas, no DOM. |
 | `public/visual.js` | ~2140 | The renderer. 17 modes. Thin over `viz-core`. |
 | `public/metrics.js` | 160 | The honesty registry (see §2). |
+| `public/breath.js` | 454 | Chest-wall breath rate + shape, with a MANDATORY cross-check against heart-derived breathing. **Loaded by `lab.html` only** — it needs minutes of accelerometer history and the RSA rate to check against, so it is a whole-sit measurement rather than a live one. It was loaded by nothing at all until recently, which is worth knowing if you go looking for its numbers in old exports: they are not there. |
 | `public/summary.js` | 355 | Session stats + the markdown report. |
 | `public/markers.js` | 132 | Mid-sit marks and before/after context. |
 | `public/cues.js` | 98 | Rate-limited in-the-moment cues. |
@@ -102,7 +103,28 @@ it, so a strap-only session showed a permanently frozen message and no heart dat
 
 ---
 
-## 4. Tests — 24 suites, all must pass
+## 3a. Two places, and they are different screens
+
+`trainingMode` used to be a flag that armed recording and showed the mark bar while every panel and
+number stayed put — two names for one screen, and it was reported as such. It now switches the chrome:
+
+- **Meditate** is the visual and as close to nothing else as is safe. `body.meditating` hides the metrics
+  panel, the live feed, the mark bar and the pattern bar, and `visual.setLegend(false)` takes the key off
+  the canvas — that last one cannot be done with CSS because it is painted into the canvas.
+- **Train** is the instrument.
+
+**The trap, and it caught me twice.** The metrics panel is also where a fresh page says "No headband
+connected — press Connect", and the control bar contains the Connect button. Hiding either
+unconditionally recreates a defect that was already reported ("i dont see any panels. do i need to
+connect in order to see the metrics?"). `body.preflight` keeps both visible until something is streaming,
+and it is maintained ABOVE the tick's early return, because the transition it exists to catch is the
+moment `result` is still null.
+
+Anything in `test-ui.js` that measures a panel must therefore be in Train. The suite's main page clicks
+`#placeTrain` on load for exactly this reason; a hidden element's rect is all zeros, which reads as a
+layout bug rather than an absent panel.
+
+## 4. Tests — 26 suites, all must pass
 
 ```bash
 for t in test.js test-dsp.js test-viz.js test-visual-smoke.js test-chart.js \
@@ -110,7 +132,8 @@ for t in test.js test-dsp.js test-viz.js test-visual-smoke.js test-chart.js \
          test-export.js test-import.js test-labels.js test-trials.js \
          test-probes.js test-analysis.js test-lab.js test-findings.js \
          test-panels.js test-polar.js test-clockcheck.js test-selfcheck.js \
-         test-movement.js test-simdevice.js test-ui.js; do node $t || break; done
+         test-movement.js test-simdevice.js test-explore.js test-breath.js \
+         test-ui.js; do node $t || break; done
 ```
 
 `test-ui.js` now serves `public/` over **HTTP on an ephemeral port** rather than loading
@@ -261,6 +284,34 @@ distinguish is worse than an absent one, because you conclude the metric is brok
 electrode colours are **derived** from `VizCore.CHANNEL_COLORS` rather than
 hand-copied — they had drifted, so a ribbon in the visual and its own line on the
 graph were different colours.
+
+**A test that measures by POSITION breaks when the layout changes, and it breaks silently in the
+worst case.** Three tests read readout rows with `slice(0, 4)` on the assumption that sensor rows led the
+panel; grouping the panel into MIND / BODY / SIGNAL moved the electrodes under Signal and the assertions
+started failing in places that had nothing to do with the change. Two lab tests read table cells by hard
+index and a new checkbox column shifted every one of them. Find rows by their label and columns by their
+header. Related and worse: a test that grows a panel by writing into `#readoutRows` is racing the 250ms
+tick, which rebuilds that element — it passed for a while by having its own fixture wiped before the
+check, which made it a test of nothing.
+
+**A panel drag measured in exact pixels is measuring the animation.** A panel's start position comes from
+the stylesheet and is routinely fractional (412.5 in one case) while `Panels.place` writes whole pixels, so
+an 80px drag legitimately lands 79.5px away. Asserting `=== -80` passed by luck and then failed when a
+one-line caption changed a panel's height by a pixel. Assert the property with a pixel of tolerance; a
+broken drag misses by tens.
+
+**Clamping must round INWARD.** `Math.round(clamp(...))` rounds a value pinned to a bound back across it:
+vh 800 with a panel 287.5 tall gives a maximum y of 512.5, rounded to 513, bottom edge one pixel outside.
+It had been wrong the whole time and nothing had landed exactly on the boundary until a caption grew a
+panel by a pixel.
+
+**Rendering every pane on every tab switch became a second of dead page**, and the note that said "if it
+ever does become slow, the fix is a measurement first" was right to ask for one. With 8 analysed sits of
+25 minutes a full render was 981ms, of which `renderClips` was 814ms — drawing an epoch canvas per mark
+into a pane nobody was looking at. Data changes still render every pane (that is what stops a dropped
+archive vanishing until you click the right tab); a tab switch renders only the pane it shows, and
+`renderClips` returns early when its pane is hidden. A canvas drawn into a hidden zero-width box was
+measured wrong anyway, so drawing it on the way in is strictly better than drawing it twice.
 
 **A test that asserts the wrong thing is worse than no test.** One was pinning a false
 claim about "sharp returns"; another compared two `AdaptiveNormalizer`s, which is

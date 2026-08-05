@@ -671,8 +671,19 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     const grown = await pagePos.evaluate(async () => {
       const el = document.getElementById('readout');
       Panels.place(el, 40, innerHeight - 120);      // near the bottom, while it is short
-      document.getElementById('readoutRows').innerHTML =
-        Array.from({ length: 22 }, () => '<div class="rRow">x</div>').join('');
+      /* GROWN BY min-height, not by injecting rows.
+       *
+       * It used to fill #readoutRows with 22 divs — which the 250ms tick rebuilds from scratch, so
+       * whether the panel had actually grown by the time this was measured depended on the race. It
+       * passed for a while because the rows were being wiped before the check, which made it a test of
+       * nothing, and then failed once they survived.
+       *
+       * min-height is on the panel itself and nothing rewrites it, so the box genuinely grows and stays
+       * grown. That is the invariant that matters: a panel whose CONTENT grows — three lines before a
+       * connection, a dozen rows after — must be pulled back inside the viewport, because nothing else
+       * re-checks it. 500px against a panel placed 120px from the bottom is unambiguously too tall.
+       */
+      el.style.minHeight = '500px';
       /* POLLED, NOT SLEPT. A fixed 400ms passed locally and failed once under load — a ResizeObserver
          fires on the browser's own schedule, and a machine busy running three browser suites does not
          keep to it. A flaky test is worse than no test, because it teaches you to re-run instead of to
@@ -683,10 +694,16 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
         await new Promise((r) => setTimeout(r, 50));
       }
       const r = el.getBoundingClientRect();
-      return { bottom: Math.round(r.bottom), vh: innerHeight, h: Math.round(r.height) };
+      const out = { bottom: Math.round(r.bottom), vh: innerHeight, h: Math.round(r.height),
+        top: Math.round(r.top) };
+      el.style.minHeight = '';                       // leave the page as it was found
+      return out;
     });
+    assert.ok(grown.h >= 400,
+      `the panel must actually have grown before this means anything (height ${grown.h})`);
     assert.ok(grown.bottom <= grown.vh + 1,
-      `a panel that grows must be pulled back in, bottom ${grown.bottom} of ${grown.vh}`);
+      `a panel that grows must be pulled back in, bottom ${grown.bottom} of ${grown.vh}`
+      + ` (top ${grown.top}, height ${grown.h})`);
 
     /* THE CONNECT RING. Asserted on computed style, because a class name proves only that the code
        ran — and the first attempt at this DID run, in a browser with no navigator.bluetooth, where

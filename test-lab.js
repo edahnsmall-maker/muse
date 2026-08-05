@@ -822,6 +822,13 @@ async function showTab(page, tab) {
     for (let i = 0; i < 4; i++) files.push(makeMarkArchive({ id: `clip${i}`, seedOffset: 400 + i }));
     await drop(page, files);
 
+    /* OPEN THE PANE FIRST, which is also what a person does. The clip library no longer draws while its
+       pane is hidden — it was 814ms of a 981ms full render, all of it spent on a canvas nobody could see,
+       and a canvas drawn into a hidden zero-width box was measured wrong anyway. showPane re-renders the
+       pane it shows, so opening it is what puts the canvas on screen at its real size. */
+    await page.click('.tab[data-tab="signals"]');
+    await page.waitForSelector('#clipCanvas', { timeout: 10000 });
+
     const out = await page.evaluate(() => {
       const host = document.getElementById('clips');
       const canvas = document.getElementById('clipCanvas');

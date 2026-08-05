@@ -909,14 +909,50 @@ function sessionsWithoutSpectra() {
  * a question rather than the sixth-most-important table.
  */
 let pane = 'sessions';
+
+/*
+ * WHICH RENDERERS BELONG TO WHICH PANE.
+ *
+ * Every pane is still rendered on every DATA change — see the note on render() — so a dropped archive
+ * leaves a trace whether or not you are looking at the pane that acknowledges it. This table is only
+ * used on a TAB SWITCH, where rendering the other six panes is work nobody asked for.
+ *
+ * MEASURED, because the note on render() said "if it ever does become slow, the fix is a measurement
+ * first". With 8 analysed sits of 25 minutes, one full render is 1049ms and a tab switch cost all of it:
+ *
+ *     renderClips  814ms      <- the clip library, drawing an epoch canvas per mark
+ *     renderExplore 30ms
+ *     renderSearch  29ms
+ *     everything else, together, under 10ms
+ *
+ * So a second of dead page to move between tabs, growing with every sit recorded, almost all of it spent
+ * redrawing a canvas in a pane that is hidden.
+ *
+ * THE RE-RENDER ON SWITCH IS STILL NEEDED and is why this is a table rather than a deletion: "a pane
+ * that was hidden when its data arrived may have been drawn into a zero-width box, and canvases in
+ * particular measure wrong there." That reasoning is correct and unchanged — the pane being SHOWN is
+ * re-rendered, which is the one that could have been measured wrong. The six that stay hidden are the
+ * ones that were pure cost.
+ */
+const PANE_RENDERERS = {
+  sessions: () => { renderLoaded(); renderTimelines(); renderTrials(); },
+  studies: () => { renderStudies(); },
+  compare: () => { renderStudyCompare(); renderWhole(); renderSearch(); renderSaved(); },
+  export: () => { renderExportPane(); },
+  explore: () => { renderExplore(); },
+  signals: () => { renderAlpha(); renderClips(); },
+  learn: () => { renderLearn(); },
+};
+
 function showPane(next) {
   pane = next;
   for (const el of document.querySelectorAll('.pane')) el.hidden = el.dataset.pane !== next;
   for (const el of document.querySelectorAll('.tab')) el.classList.toggle('active', el.dataset.tab === next);
-  /* Still re-renders on switch: a pane that was hidden when its data arrived may have been drawn into a
-     zero-width box, and canvases in particular measure wrong there. Cheap, and it removes a whole class
-     of "the chart is blank until I resize" bug. */
-  render();
+  /* Only the pane now on screen. It still re-renders, for the zero-width-canvas reason above; the
+     difference is that the hidden ones do not. An unknown pane name falls back to a full render rather
+     than to a blank screen. */
+  const only = PANE_RENDERERS[next];
+  if (only) only(); else render();
 }
 for (const el of document.querySelectorAll('.tab')) {
   el.addEventListener('click', () => showPane(el.dataset.tab));
@@ -1220,6 +1256,11 @@ function renderLearn() {
  *
  * This page handled a retreat's worth of archives on one scroll before the tabs existed. If it ever
  * does become slow, the fix is a measurement first.
+ *
+ * IT DID BECOME SLOW, and the measurement is recorded on PANE_RENDERERS above: one full render is about
+ * a second with 8 analysed sits, 814ms of it renderClips. So this still runs on every DATA change — that
+ * is what keeps a dropped archive from vanishing until you happen to click the right tab, and what six
+ * tests were right to insist on — while a TAB SWITCH now renders only the pane it is showing.
  */
 /* ==========================================================================
  * STUDIES — arbitrary named lists of sits
@@ -1845,6 +1886,21 @@ function clipCategories() {
 function renderClips() {
   const host = document.getElementById('clips');
   if (!host) return;
+  /*
+   * NOT DRAWN WHILE ITS PANE IS HIDDEN, and this one is worth the guard on its own.
+   *
+   * It draws an epoch canvas per mark category and is by far the most expensive renderer here: measured
+   * with 8 analysed sits of 25 minutes it was 814ms of a 981ms full render, and a full render happens on
+   * every data change and on boot. All of that was spent on a canvas nobody could see.
+   *
+   * SAFE because showPane re-renders the pane it is showing, which is exactly the case the original
+   * "render every pane" rule was protecting: "a pane that was hidden when its data arrived may have been
+   * drawn into a zero-width box, and canvases in particular measure wrong there." A canvas drawn while
+   * hidden was measured wrong anyway — skipping it and drawing it on the way in is strictly better than
+   * drawing it twice, once wrongly.
+   */
+  const own = host.closest('.pane');
+  if (own && own.hidden) return;
   const cats = clipCategories();
   const catKeys = Object.keys(cats).sort();
   if (!catKeys.length) { host.innerHTML = ''; return; }
