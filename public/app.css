@@ -764,20 +764,62 @@
   /* NAME THE SIT. Quiet until touched — it is on screen for the whole sit, so it must not compete
      with the visual. `margin-left: auto` puts it after the places and before the status, and it is
      the only flexible item in the bar so it takes the slack. */
-  #sitLabelWrap { margin-left: auto; display: flex; align-items: center; gap: 8px;
-    flex: 0 1 340px; min-width: 0; }
-  #sitLabel { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 12.5px; padding: 5px 10px;
-    border-radius: 9px; color: rgba(255,255,255,.88);
-    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10);
+  /* ---- NAMING THE SIT: ITS OWN ROW UNDER THE BAR --------------------------------------------------
+     Reported as "the noting area at the top doesn't look nice", and it was a 340px input squeezed into a
+     44px bar between the places and the status, holding a thing that is a sentence. It has the full width
+     now, directly under the bar, and recedes until touched — a full-width field that is quiet is less
+     present than a small field that is fighting for room. */
+  #sitNoteBar { position: fixed; top: 44px; left: 0; right: 0; z-index: 19;
+    display: flex; align-items: center; gap: 10px; padding: 0 16px 8px;
+    pointer-events: none; }
+  #sitNoteBar > * { pointer-events: auto; }
+  #sitLabel { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; padding: 7px 12px;
+    border-radius: 10px; color: rgba(255,255,255,.9);
+    background: rgba(255,255,255,.035); border: 1px solid rgba(255,255,255,.07);
     transition: background .18s, border-color .18s; }
-  #sitLabel::placeholder { color: rgba(255,255,255,.34); }
-  #sitLabel:hover { background: rgba(255,255,255,.08); }
-  #sitLabel:focus { outline: none; background: rgba(255,255,255,.11);
+  #sitLabel::placeholder { color: rgba(255,255,255,.30); }
+  #sitLabel:hover { background: rgba(255,255,255,.06); border-color: rgba(255,255,255,.12); }
+  #sitLabel:focus { outline: none; background: rgba(255,255,255,.10);
     border-color: rgba(125,211,252,.45); }
-  #sitLabelState { font-size: 10.5px; flex: 0 0 auto; white-space: nowrap; }
-  /* The bar is 44px and the name is the first thing to give up room on a phone, where the visual
-     matters more and the summary's textarea is still there for it. */
-  @media (max-width: 720px) { #sitLabelWrap { display: none; } }
+  #sitLabelState { font-size: 10.5px; flex: 0 0 auto; white-space: nowrap;
+    color: rgba(255,255,255,.5); }
+  /* Meditate is the mirror: no text on screen at all beyond the bar. */
+  body.meditating #sitNoteBar { display: none; }
+
+  /* ---- THE BAR'S OWN CONTROLS --------------------------------------------------------------------
+     From the mockup: a live-session dot beside the wordmark, the visual modes named in the bar with the
+     current one lit, and Response beside them. All three are decisions about the sit rather than readings
+     from it, which is what distinguishes the bar from the panels. */
+  #liveDot, #barModes, #barResponse { pointer-events: auto; }
+  #liveDot { display: flex; align-items: center; gap: 7px; font-size: 11.5px;
+    color: rgba(255,255,255,.45); white-space: nowrap; }
+  #liveDot i { width: 7px; height: 7px; border-radius: 50%; background: rgba(255,255,255,.22);
+    transition: background .3s, box-shadow .3s; }
+  /* Green and glowing only while something is actually being kept. */
+  #liveDot.on { color: rgba(190,240,205,.92); }
+  #liveDot.on i { background: #6ee7a0; box-shadow: 0 0 9px rgba(110,231,160,.75); }
+
+  #barModes { display: flex; align-items: center; gap: 9px; margin-left: auto; min-width: 0; }
+  .barModesLabel { font-size: 11px; color: rgba(255,255,255,.38); white-space: nowrap; }
+  #barModeList { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; }
+  #barModeList::-webkit-scrollbar { display: none; }
+  .barMode { font: inherit; font-size: 12.5px; padding: 4px 11px; border-radius: 8px; cursor: pointer;
+    background: none; border: 1px solid transparent; color: rgba(255,255,255,.55);
+    white-space: nowrap; }
+  .barMode:hover { background: rgba(255,255,255,.06); color: rgba(255,255,255,.85); }
+  .barMode.on { background: rgba(125,211,252,.14); color: #cbe9ff;
+    border-color: rgba(125,211,252,.32); }
+  #barResponse { flex: 0 0 auto; font-size: 12px; }
+  /* On a phone the bar cannot hold seven mode names and a wordmark. The modes stay reachable through the
+     Visuals pill in the controls, which is where they were. */
+  @media (max-width: 900px) { #barModes, #barResponse { display: none; } }
+
+  /* The panels start below the note row rather than under the bar, so nothing sits on top of it. */
+  body.training #gl,
+  body.training #armedBar:not([data-dragged]),
+  body.training #readout:not([data-dragged]) { top: 82px; }
+  body.training #gl { height: calc(100vh - 82px - var(--edge)); }
+  body.training.feedOpen #gl { height: calc(100vh - 82px - var(--edge) - var(--feedH) - 10px); }
   /* The arrow-key assignment, now inside the mark bar. Its own line under the categories, separated,
      because it is a setting rather than one of the things you press. */
   /* The arrow-key assignment, now inside the mark rail. Its own block under the categories, separated,

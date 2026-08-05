@@ -524,11 +524,48 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
   assert.ok(dead.worst < 0.05,
     `nor jump it: worst ${dead.worst.toFixed(3)}% of the band`);
 
-  /* But a REAL excursion must still take the axis with it, eased rather than instantly.
-     If this ever reads zero the axis has stopped adapting, which is the opposite bug. */
-  const spike = follow(40, (p) => (p < 2 ? { level: 1.0, fresh: true } : undefined));
-  assert.ok(spike.net > 0.2,
-    `a real excursion must still rescale the axis (net ${spike.net.toFixed(2)}% of the band)`);
+  /*
+   * A REAL EXCURSION MUST NOT MOVE THE AXIS — which is the reverse of what this asserted, and the reversal
+   * is the point.
+   *
+   * It used to require that an excursion took the axis with it, eased rather than instantly, on the
+   * argument that an axis which stops adapting is the opposite bug. Three rounds of easing later the
+   * report was still "the lines still wildly jump in flow visuals for sensors... i think it's bc the range
+   * is recent", and it was right: an axis that adapts at all moves the whole drawn history, because the
+   * same axis is applied to every sample on screen.
+   *
+   * These series do not need to adapt. A channel's value is alpha's share of alpha+beta — a bounded ratio
+   * already on a fixed scale — so the axis is a constant 0-0.75, which is better than merely still: it is
+   * the same axis in every sit, so two sits' traces are comparable by eye.
+   *
+   * What the old assertion was really protecting is that the excursion still REGISTERS, and that is
+   * checked directly below instead of via the axis.
+   */
+  const spike = follow(40, (p) => (p < 2 ? { level: 0.7, fresh: true } : undefined));
+  assert.ok(spike.net < 0.5,
+    `an excursion must not drag the recorded past with it (net ${spike.net.toFixed(2)}% of the band)`);
+  assert.ok(spike.worst < 0.05,
+    `nor jump it (worst ${spike.worst.toFixed(3)}% of the band)`);
+
+  /* AND THE EXCURSION ITSELF MUST BE VISIBLE. A fixed axis that swallowed the excursion would be still and
+     useless — the failure mode a constant axis could plausibly have. Fed a level near the top of the window
+     against one near the bottom, the newest drawn sample has to move a long way up the band. */
+  {
+    /* Read the NEWEST drawn sample after settling at a level: flowTrace records the y of every sample
+       during a render, so the last index is where the line currently is. */
+    const headAt = (level) => {
+      for (let p = 0; p < 12; p++) push(2000 + p, { level, fresh: true });
+      const ys = v.flowTrace(0);
+      return ys[ys.length - 1];
+    };
+    const low = headAt(0.15);
+    const high = headAt(0.70);
+    assert.ok(low != null && high != null, 'precondition: the head is drawn at both levels');
+    const moved = 100 * Math.abs(low - high) / BAND;
+    assert.ok(moved > 40,
+      'a change from 0.15 to 0.70 must move the line most of the band rather than being clipped away —'
+      + ` a fixed axis that swallowed the signal would be still and useless (moved ${moved.toFixed(1)}%)`);
+  }
   assert.ok(spike.worst < 1,
     `but must ease into it, not jump (worst single push ${spike.worst.toFixed(2)}% of the band)`);
 

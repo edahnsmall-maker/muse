@@ -984,6 +984,11 @@ function createZenVisual(canvas) {
    * smoothing is still shorter than any state worth seeing and takes most of that out.
    */
   const FLOW_SMOOTH_SENSORS = 21;   // ~5.2s at 4Hz
+  /* The fixed axis for the per-channel traces. See the note in renderFlow: alpha's share of alpha+beta is
+     a bounded ratio, so it needs no derived scale, and 0..0.6 keeps a beta-dominant sit (~0.2) a third of
+     the way up the band rather than pinned to the floor. Frozen object: it is handed out to four callers
+     per frame and must not be mutable by any of them. */
+  const SENSOR_RANGE = Object.freeze({ min: 0, max: 0.75, span: 0.75 });
 
   /*
    * THE SMOOTHING IS CAUSAL AND CACHED PER SAMPLE, and that is the fix for the tick.
@@ -1099,14 +1104,40 @@ function createZenVisual(canvas) {
        line rise and sink — the past appearing to move, which is exactly what was
        reported. settleRange widens at once (never clip a real excursion) and narrows a
        few percent per second (nothing is lost by a range that is briefly too wide). */
-    /* AND IT HOLDS AFTER 90 SECONDS. See the long note on VizCore.settleRange: easing the range makes
-       the drift slower, not absent, and slow drift across a three-minute trace is exactly what reads as
-       the line sinking. Once held, a sample moves on screen only if the sample moved. */
-    const ranges = series.map((sr, k) => {
-      flowRanges[k] = VizCore.settleRange(flowRanges[k], VizCore.autoRange(sr), flowDt,
-        { holdAfterSec: VizCore.RANGE_HOLD_SEC });
-      return flowRanges[k];
-    });
+    /*
+     * THE PER-CHANNEL TRACES GET A FIXED AXIS. No auto-range, no settling, no hold — a constant.
+     *
+     * Reported as "the lines still wildly jump in flow visuals for sensors", and the reason it was still
+     * true of sensors after the axis was made to hold is that holding only stops the drift AFTER the
+     * warm-up, and an axis derived from a narrow, noisy series moves most while it is still learning.
+     *
+     * But these series do not need an axis derived from anything. A channel's value here is alpha's share
+     * of alpha+beta — a BOUNDED RATIO, already on a fixed scale, where 0.5 means equal alpha and beta for
+     * every person on every day. Auto-ranging a quantity that already has a natural scale is what created
+     * the movement: it re-derived a scale that was never in question.
+     *
+     * The reason auto-ranging was added in the first place is still real and is handled by the choice of
+     * window rather than by adapting: "on a beta-dominant sit that ratio sits near 0.2 on every electrode,
+     * so every trace pinned to the floor of the band". 0..0.75 puts 0.2 a quarter of the way up and 0.5 —
+     * the balance point, and the top of the range measured across real sits — at two thirds.
+     *
+     * The window is 0.75 rather than 0.6 because a fixed axis clips instead of adapting, and a clipped
+     * excursion is drawn flat against the edge, which HANDOFF §6 names as reading like a confident detection
+     * rather than an out-of-range one. Real sits measured 0.24-0.38, so 0.75 leaves twice the observed
+     * range in headroom; anything above it is rarer than the drift was frequent.
+     *
+     * The upshot is better than a still axis: this one is the same axis in every sit, so two sits' traces
+     * are comparable by eye. An auto-ranged trace never was.
+     */
+    const ranges = composites
+      ? series.map((sr, k) => {
+        /* Composites keep the learn-then-hold. They are adaptively normalised, so they have no natural
+           scale to fix — see the long note on VizCore.settleRange. */
+        flowRanges[k] = VizCore.settleRange(flowRanges[k], VizCore.autoRange(sr), flowDt,
+          { holdAfterSec: VizCore.RANGE_HOLD_SEC });
+        return flowRanges[k];
+      })
+      : series.map(() => SENSOR_RANGE);
     const yOf = (i, k) => {
       const v = series[k][i];
       if (v == null) return null;
@@ -1261,8 +1292,9 @@ function createZenVisual(canvas) {
     // Out of the clip: the head glow is a disc centred ON nowX, so half of it falls to
     // the right of the edge the trace is cut at.
     c.restore();
-    // Back to additive for the head glow, which IS a wash and should sum.
-    c.globalCompositeOperation = 'lighter';
+    /* STILL source-over. The head used to be an additive white-cored glow; it is a solid dot in the
+       line's colour now, and additive blending would put the whitening straight back wherever two heads
+       or a head and a trace overlap. */
 
     /* THE LIVE HEAD, at nowX, with its height interpolated between the last two samples
      * by the same phase the trace scrolls by. In its own pass over the channels so that
@@ -1280,14 +1312,19 @@ function createZenVisual(canvas) {
       if (yNew == null) continue;
       const yPrev = n >= 2 ? yOf(n - 2, ch) : yNew;
       const hy = yPrev == null ? yNew : yPrev + (yNew - yPrev) * phase;
-      const hr = Math.max(1.5, baseW * 2.6);
+      /*
+       * A SOLID DOT, in the channel's own colour.
+       *
+       * This was a radial gradient whose centre stop was the colour mixed 55% toward WHITE, drawn under
+       * `lighter` — so it summed with whatever was behind it and read as a white glow at the head of every
+       * line. Asked for twice: "not solid color", "still have the white glow which i asked you to remove".
+       * The mockup has a plain round endpoint in the line's own colour, which is also the only version
+       * that says something true — the head is where the line is now, not an event.
+       */
+      const hr = Math.max(2, baseW * 2.6);
       const headFresh = freshAt(n - 1, ch);
-      const hg = c.createRadialGradient(nowX, hy, 0, nowX, hy, hr * 3);
-      hg.addColorStop(0, rgba(mixColor(col, [255, 255, 255], 0.55), headFresh ? 0.95 : 0.28));
-      hg.addColorStop(0.35, rgba(col, headFresh ? 0.35 : 0.10));
-      hg.addColorStop(1, rgba(col, 0));
-      c.fillStyle = hg;
-      c.beginPath(); c.arc(nowX, hy, hr * 3, 0, Math.PI * 2); c.fill();
+      c.fillStyle = rgba(col, headFresh ? 1 : 0.35);
+      c.beginPath(); c.arc(nowX, hy, hr, 0, Math.PI * 2); c.fill();
     }
 
     // Spikes: small marks left where they happened, fading with the trace
@@ -1301,13 +1338,14 @@ function createZenVisual(canvas) {
         if (sp < 0.5) continue;
         const y = yOf(i, ch);
         if (y == null) continue;
+        const col = colors[ch] || [200, 210, 255];
         const x = xOf(i);
         const r = Math.max(2, H * 0.012) * (1 + 1.6 * (1 - vis));
-        const g = c.createRadialGradient(x, y, 0, x, y, r);
-        g.addColorStop(0, `rgba(255,255,255,${0.34 * sp * vis})`);
-        g.addColorStop(1, 'rgba(255,255,255,0)');
-        c.fillStyle = g;
-        c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+        /* IN THE CHANNEL'S COLOUR, not white. A white halo on the line was the other half of the glow —
+           and it also said the wrong thing, since a spike belongs to one electrode and a white mark
+           belongs to none of them. */
+        c.fillStyle = rgba(col, 0.30 * sp * vis);
+        c.beginPath(); c.arc(x, y, Math.max(1.5, r * 0.45), 0, Math.PI * 2); c.fill();
       }
     }
     c.globalCompositeOperation = 'source-over';
@@ -2559,6 +2597,13 @@ function createZenVisual(canvas) {
       return VizCore.MODES[modeIndex];
     },
     cycleMode(dir = 1) { return this.setMode(VizCore.nextMode(modeIndex, dir)); },
+    /* By KEY, for the bar's mode pills. Index would work and would be the wrong thing to expose: a
+       mode's index is its identity in stored preferences, so a caller holding indexes breaks the moment
+       a hidden mode is added. */
+    setModeByKey(key) {
+      const i = VizCore.MODES.findIndex((m) => m.key === key);
+      return i < 0 ? VizCore.MODES[modeIndex] : this.setMode(i);
+    },
     currentMode() { return VizCore.MODES[modeIndex]; },
     // Follows the data panel's Sensors/Composites switch — see seriesMode.
     setSeries(which) {

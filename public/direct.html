@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Muse Zen Spike — Direct Bluetooth</title>
-<link rel="stylesheet" href="app.css?v=2026-08-05b">
+<link rel="stylesheet" href="app.css?v=2026-08-05c">
 </head>
 <body>
 <!--
@@ -34,13 +34,30 @@
     a decision. One line here, and the longer reflection still has its textarea on the summary; both
     write ONE note, so the lab has one candidate name for the sit rather than two. See saveSitNoteFrom.
   -->
-  <label id="sitLabelWrap" title="What is true of this whole sit? This is what names it in the lab.">
-    <input id="sitLabel" placeholder="name this sit — how is it going?" maxlength="200"
-      autocomplete="off" />
-    <span id="sitLabelState" class="dim"></span>
-  </label>
+  <!-- WHETHER THIS IS BEING RECORDED, as a dot rather than a sentence. From the mockup, where it reads
+       "Live session" beside the wordmark: the one piece of state worth knowing at a glance the whole time
+       is whether what you are doing is being kept. -->
+  <div id="liveDot" title="Whether this sit is being recorded"><i></i><span>Not recording</span></div>
+  <!-- THE VISUAL PICKER LIVES IN THE BAR. It was behind a "Visuals" toggle in the controls, two clicks
+       from a decision you make once a sit; the mockup puts the seven modes in the bar, named, with the
+       current one lit. -->
+  <div id="barModes"><span class="barModesLabel">Visual</span><span id="barModeList"></span></div>
+  <span class="pill" id="barResponse" title="How fast the visual follows the signal">Response: sensitive</span>
   <div id="barStatus" class="dim"></div>
 </header>
+<!--
+  NAMING THE SIT, GIVEN ITS OWN ROW.
+
+  It was an input squeezed into the app bar between the places and the status, which is why it "doesn't
+  look nice" — a 340px box fighting for a 44px bar with five other things, and the thing it holds is a
+  sentence. It gets the full width under the bar now, quiet until touched, with what it is for said in
+  the placeholder rather than in a label taking more space.
+-->
+<div id="sitNoteBar">
+  <input id="sitLabel" placeholder="Name this sit — what is true of the whole of it?" maxlength="200"
+    autocomplete="off" />
+  <span id="sitLabelState" class="dim"></span>
+</div>
 <canvas id="gl"></canvas>
 <div id="modeBar"></div>
 <div id="patternBar"></div>
@@ -92,12 +109,9 @@
      different nodes and fired no click event at all. Only #readoutRows is
      regenerated now. -->
 <div id="readout">
-  <div id="readoutHead"><div id="readoutTitle">Metrics</div>
-    <span class="pill" id="responseToggle" title="How fast the visual follows the signal">sensitive</span></div>
-  <div id="viewSwitch">
-    <span class="pill active" data-view="sensors">Sensors</span>
-    <span class="pill" data-view="composites">Composites</span>
-  </div>
+  <!-- Response moved to the app bar, where the mockup has it and where the other decisions about the
+       sit already are. The panel's job is readings. -->
+  <div id="readoutHead"><div id="readoutTitle">Live metrics</div></div>
   <!-- What the numbers are averaged over. Static, because it belongs to the panel rather than to any
        row, and because #readoutRows is rebuilt four times a second. It exists because 16-second
        averaging is a real limitation as well as a fix: a score that lags its cause by a quarter of a
@@ -131,6 +145,14 @@
   </div>
   <div id="dataPanel" class="panelClosed">
     <div id="dataToggle">Live feed</div>
+    <!-- MOVED HERE FROM THE METRICS PANEL. It never divided the metrics — MIND / BODY / SIGNAL does that,
+         and better — but it does decide which lines this chart plots, which is a real job. Reported as
+         "i dont think the sensors and composites makes sense with the content on it... calm is on sensors
+         (it's a composite)". -->
+    <div id="viewSwitch">
+      <span class="pill active" data-view="sensors">Sensors</span>
+      <span class="pill" data-view="composites">Composites</span>
+    </div>
     <div id="dataBody">
       <canvas id="chartCanvas" width="320" height="140"></canvas>
       <div id="legend"></div>
@@ -232,7 +254,7 @@
    * shows an old date here while the version string still reads new — which is exactly the mismatch
    * that has been the root cause twice.
    */
-  var BUILD = '2026-08-05b';
+  var BUILD = '2026-08-05c';
   window.__BUILD = BUILD;
   try {
     var stamp = document.createElement('div');
@@ -269,28 +291,28 @@
   });
 }());
 </script>
-<script src="dsp.js?v=2026-08-05b"></script>
+<script src="dsp.js?v=2026-08-05c"></script>
 <!-- A fake headband, only when the URL asks for it (?sim=1). See simdevice.js: it exists so
      "the panels do not open" can be told apart from "the headband is not streaming". -->
-<script src="simdevice.js?v=2026-08-05b"></script>
-<script src="clockcheck.js?v=2026-08-05b"></script>
-<script src="selfcheck.js?v=2026-08-05b"></script>
-<script src="viz-core.js?v=2026-08-05b"></script>
-<script src="visual.js?v=2026-08-05b"></script>
-<script src="chart.js?v=2026-08-05b"></script>
-<script src="summary.js?v=2026-08-05b"></script>
-<script src="cues.js?v=2026-08-05b"></script>
-<script src="metrics.js?v=2026-08-05b"></script>
-<script src="markers.js?v=2026-08-05b"></script>
-<script src="polar.js?v=2026-08-05b"></script>
-<script src="record.js?v=2026-08-05b"></script>
-<script src="export.js?v=2026-08-05b"></script>
-<script src="labels.js?v=2026-08-05b"></script>
-<script src="trials.js?v=2026-08-05b"></script>
-<script src="probes.js?v=2026-08-05b"></script>
-<script src="panels.js?v=2026-08-05b"></script>
+<script src="simdevice.js?v=2026-08-05c"></script>
+<script src="clockcheck.js?v=2026-08-05c"></script>
+<script src="selfcheck.js?v=2026-08-05c"></script>
+<script src="viz-core.js?v=2026-08-05c"></script>
+<script src="visual.js?v=2026-08-05c"></script>
+<script src="chart.js?v=2026-08-05c"></script>
+<script src="summary.js?v=2026-08-05c"></script>
+<script src="cues.js?v=2026-08-05c"></script>
+<script src="metrics.js?v=2026-08-05c"></script>
+<script src="markers.js?v=2026-08-05c"></script>
+<script src="polar.js?v=2026-08-05c"></script>
+<script src="record.js?v=2026-08-05c"></script>
+<script src="export.js?v=2026-08-05c"></script>
+<script src="labels.js?v=2026-08-05c"></script>
+<script src="trials.js?v=2026-08-05c"></script>
+<script src="probes.js?v=2026-08-05c"></script>
+<script src="panels.js?v=2026-08-05c"></script>
 <!-- Only for handing a finished sit to the lab's inbox; the app never reads lab data. -->
-<script src="labstore.js?v=2026-08-05b"></script>
-<script src="app.js?v=2026-08-05b"></script>
+<script src="labstore.js?v=2026-08-05c"></script>
+<script src="app.js?v=2026-08-05c"></script>
 </body>
 </html>

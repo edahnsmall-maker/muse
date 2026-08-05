@@ -1357,6 +1357,48 @@ document.getElementById('trainToggle').addEventListener('click', () => setTraini
  * The bar's highlight is driven from `trainingMode` rather than from which button was last pressed, so
  * the Training pill, Shift+T and these two buttons can never disagree about which place you are in.
  */
+/*
+ * THE BAR: which visual, whether it is recording, how fast it follows.
+ *
+ * From the mockup, which puts the seven visual modes in the bar with the current one lit, a "Live
+ * session" dot beside the wordmark, and Response beside them. All three were reachable before — the
+ * modes behind a Visuals toggle, Response inside the metrics panel — and all three are decisions made
+ * about the sit rather than readings from it, which is what the bar is for.
+ */
+function renderBarModes() {
+  const host = document.getElementById('barModeList');
+  if (!host) return;
+  const cur = visual.currentMode();
+  const modes = VizCore.visibleModes();
+  const want = modes.map((m) => m.key).join(',');
+  // Rebuilt only when the SET changes, not on every tick: these are hoverable targets, and destroying
+  // them four times a second is what made the two view pills unclickable once before.
+  if (host.dataset.modes !== want) {
+    host.dataset.modes = want;
+    host.innerHTML = modes.map((m) =>
+      `<button class="barMode" data-mode="${m.key}">${escapeHtml(m.label)}</button>`).join('');
+    host.querySelectorAll('[data-mode]').forEach((b) => {
+      b.addEventListener('click', () => {
+        visual.setModeByKey(b.dataset.mode);
+        renderBarModes();
+        renderModeBar();
+      });
+    });
+  }
+  host.querySelectorAll('[data-mode]').forEach((b) => {
+    b.classList.toggle('on', !!cur && b.dataset.mode === cur.key);
+  });
+}
+
+function renderLiveDot() {
+  const el = document.getElementById('liveDot');
+  if (!el) return;
+  const on = !!recArmed;
+  el.classList.toggle('on', on);
+  const label = el.querySelector('span');
+  if (label) label.textContent = on ? 'Live session' : 'Not recording';
+}
+
 function renderPlaces() {
   const med = document.getElementById('placeMeditate');
   const tr = document.getElementById('placeTrain');
@@ -1387,16 +1429,22 @@ function renderPlaces() {
 // prompts for M, and F needs no pill. Both keys still work — see the keydown
 // handler — so nothing was removed except two pills from a crowded bar.
 const cueToggleEl = document.getElementById('cueToggle');
-const responseToggleEl = document.getElementById('responseToggle');
+/* RESPONSE LIVES IN THE APP BAR NOW, as in the mockup. Guarded rather than assumed: the old pill inside
+   the metrics panel is gone from the markup, and a hard reference to a removed node is how one line takes
+   the whole app down — twice, historically. */
+const responseToggleEl = document.getElementById('barResponse')
+  || document.getElementById('responseToggle');
 function renderResponseToggle() {
-  responseToggleEl.textContent = `Response: ${visual.currentResponsiveness().label}`;
+  if (responseToggleEl) responseToggleEl.textContent = `Response: ${visual.currentResponsiveness().label}`;
 }
-responseToggleEl.addEventListener('click', () => {
-  const mode = visual.cycleResponsiveness();
-  renderResponseToggle();
-  setStatus(`visual response: ${mode.label}`);
-  statusLockUntil = Date.now() + 1600;
-});
+if (responseToggleEl) {
+  responseToggleEl.addEventListener('click', () => {
+    const mode = visual.cycleResponsiveness();
+    renderResponseToggle();
+    setStatus(`visual response: ${mode.label}`);
+    statusLockUntil = Date.now() + 1600;
+  });
+}
 renderResponseToggle();
 cueToggleEl.addEventListener('click', () => {
   const on = cueEngine.setEnabled(!cueEngine.enabled);
@@ -1908,6 +1956,8 @@ document.addEventListener('click', (e) => {
  * Meditate and back does not cost the arrangement someone set up for a sit.
  */
 let panelsBeforeMeditate = null;
+/* Whether the last applyPlaceChrome ran in Train, so entering it can be told from being in it. */
+let wasTraining = null;
 
 /*
  * AUSTERITY APPLIES TO A WORKING SIT, NOT TO AN UNCONFIGURED APP.
@@ -1962,6 +2012,27 @@ function applyPlaceChrome() {
    * In Train it stays. Naming what is drawn is exactly right when the screen is an instrument, and
    * VizCore.legendFor exists so a mode can never draw a key that disagrees with what it plotted.
    */
+  /*
+   * TRAIN OPENS ON FLOW. Asked for: "for the training the visual should open on flow."
+   *
+   * It is the right default for the place: Flow is the only visual that plots the four electrodes and the
+   * composites AS LINES OVER TIME, which is what an instrumented screen is for. The others are washes that
+   * say how it is going now, which is what Meditate is for. Done once per entry into Train rather than on
+   * every render, so choosing a different visual while in Train sticks.
+   */
+  if (trainingMode && !wasTraining && typeof visual !== 'undefined' && visual.setModeByKey) {
+    visual.setModeByKey('flow');
+    /* AND ON THE COMPOSITES, which is what the mockup's centre chart plots — its key reads Calm, Focus,
+       Thinking, Drowsy, Breath. The per-sensor traces are what the live feed below is for, so the two
+       charts show different things instead of the same thing twice. */
+    viewMode = 'composites';
+    visual.setSeries(viewMode);
+    renderViewSwitch();
+    renderLegend();
+    renderChart();
+    renderBarModes();
+  }
+  wasTraining = trainingMode;
   if (typeof visual !== 'undefined' && visual.setLegend) {
     visual.setLegend(trainingMode);
     /* And keep it clear of the mark rail, which occupies the left edge in Train. Measured from the
@@ -4817,6 +4888,8 @@ setInterval(() => {
   // return that required Muse data, which meant a strap-only session showed a
   // permanently stuck status message and never displayed a single heart row.
   renderDevices();
+  renderLiveDot();
+  renderBarModes();
   /* ABOVE the early return, deliberately — see the note below and HANDOFF §3. This tracks whether
      Meditate should be bare, and the transition it exists to catch (nothing connected -> streaming) is
      exactly the moment `result` is still null. Below the return it would only fire once a headband was
@@ -4956,7 +5029,22 @@ setInterval(() => {
     return 'mind';
   };
 
-  if (viewMode === 'sensors') {
+  /*
+   * NO SENSORS/COMPOSITES SWITCH ANY MORE. Reported: "i dont think the sensors and composites makes
+   * sense with the content on it. i like the division but calm is on sensors (it's a composite) and all
+   * the stuff on body and signal are raw data."
+   *
+   * Exactly right, and the two controls were fighting each other. MIND / BODY / SIGNAL already IS the
+   * sensors-versus-composites distinction, drawn more usefully: MIND is the interpreted scores, BODY and
+   * SIGNAL are raw measurements. Putting a Sensors/Composites toggle above that grouping means each
+   * group's contents change meaning depending on a switch that claims to divide them the same way —
+   * hence a composite appearing under "Sensors", and BODY and SIGNAL holding raw data under both.
+   *
+   * So the panel now shows everything, once, in the three groups. The switch is not gone from the app —
+   * it still chooses which lines the CHART plots, which is a real and different job — it has moved to
+   * the live feed where that is what it does.
+   */
+  {
     /* PER-CHANNEL CONTACT IS SIGNAL. Four electrodes' fit is a measurement-quality fact, and it used
        to head the same undifferentiated list as Calm — which is exactly how a floating electrode gets
        read as a state of mind. */
@@ -4988,7 +5076,8 @@ setInterval(() => {
             + ' under it.';
       into('signal', row(name, pct, { text, color: `rgb(${c[0]},${c[1]},${c[2]})`, title: fix }));
     });
-  } else {
+    // And every composite, in whichever group it belongs to. Both at once: they are different kinds of
+    // reading about the same moment, not two views of one thing.
     for (const k of activeComposites) {
       const m = Metrics.get(k);
       const v = Metrics.compute(k, features);
@@ -5006,10 +5095,10 @@ setInterval(() => {
   const session = [];
   session.push(row('Visual', null, { text: visual.currentMode().label }));
 
-  if (viewMode !== 'composites') {
-    into('mind', row('Calm', result.calm, { tier: 'moderate', color: COMPOSITE_COLORS.calm }));
-    into('mind', row('Brainwaves', null, { text: brainLabel }));
-  }
+  /* Brainwaves — which band is dominant right now — belongs with the interpreted readings. Calm is NOT
+     added here any more: it is a composite, it comes through activeComposites above like every other
+     one, and adding it separately is how it ended up listed under "Sensors". */
+  into('mind', row('Brainwaves', null, { text: brainLabel }));
   // One row for breath, always, whenever any breath source exists. The strap's
   // RSA estimate takes precedence over the Muse's PPG: ECG-grade beat timing at
   // the chest is far cleaner than an optical pulse read through a temple.
@@ -5220,6 +5309,8 @@ addEventListener('resize', () => {
    declared halfway down this file — and anything above that declaration reads it inside its temporal
    dead zone and throws. Two of this project's three total outages were exactly that. */
 renderPlaces();
+renderBarModes();
+renderLiveDot();
 /* And the chrome that goes with the place. The app opens on Meditate, so without this the first screen
    is the fully instrumented one wearing the Meditate highlight — the exact confusion this fixes. */
 applyPlaceChrome();

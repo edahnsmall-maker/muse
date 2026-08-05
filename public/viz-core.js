@@ -758,7 +758,13 @@
        The note is not optional: each line is scaled to its OWN recent range (see
        autoRange), so vertical position shows change rather than level. Without saying
        so, two lines crossing looks like two values becoming equal, which it is not. */
-    flow: { follows: true, notes: ['height is each line’s own recent range, not a level'] },
+    /* The note has to match what the axis actually does, and it changed. Per-channel traces are drawn on a
+       FIXED 0-0.6 axis now — alpha's share of alpha+beta is a bounded ratio and needs no derived scale —
+       so "its own recent range" was describing the behaviour that made the lines wander. Composites keep a
+       within-sit scale because they are adaptively normalised and have none of their own. */
+    flow: { follows: true, notes: ['sensors: alpha share, 0 to 0.6 — the same scale every sit'] },
+    flowComposites: { follows: true,
+      notes: ['height is each line’s range in this sit, fixed after the first two minutes'] },
     // No colour key: Breath draws one form and is explicitly "nothing to read".
     // The two lines are still worth having — which direction is the in-breath is
     // the one thing about it that is not self-evident.
@@ -778,7 +784,11 @@
   function legendFor(modeKey, {
     composites = false, breath = false, depositSec = null, omitSeries = null, driver = null,
   } = {}) {
-    const spec = LEGENDS[modeKey];
+    /* FLOW HAS TWO CAPTIONS because it has two axes: a fixed 0-0.6 scale for the per-channel traces and a
+       within-sit one for the composites. One note for both would be wrong for one of them, and a caption
+       that misdescribes the axis is what taught the reader to distrust the axis in the first place. */
+    const spec = (modeKey === 'flow' && composites && LEGENDS.flowComposites)
+      ? LEGENDS.flowComposites : LEGENDS[modeKey];
     if (!spec) return [];                      // hidden/experimental modes: no key yet
     /* `omitSeries` drops lines that are not being drawn — an electrode with no contact
        is absent from the picture, and a key naming it is a small lie of its own: the

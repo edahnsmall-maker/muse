@@ -1305,7 +1305,13 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       // Reset the histories, then feed 30 seconds in which TP10 NEVER reports and TP9
       // reports, drops out for a stretch, and comes back.
       for (const k of Object.keys(histories)) histories[k] = new Chart.History(HISTORY_LEN);
-      seriesMode = 'sensors';
+      /* `viewMode`, which is the variable the chart actually reads. This said `seriesMode = 'sensors'`,
+         which is not a variable in app.js — it silently created a global that nothing consulted, and the
+         test passed only because viewMode happened to default to sensors. Train now opens on composites
+         (the mockup's centre chart plots those), so the per-channel series this test is about were not
+         being drawn at all and it read as a gap-bridging bug. */
+      viewMode = 'sensors';
+      visual.setSeries(viewMode);
       for (let t = 0; t < 30; t++) {
         const chans = DSP.CHANNEL_NAMES.map((name, i) => {
           if (name === 'TP10') return { name, label: 'Noisy', pct: null, artifact: true };
@@ -2717,7 +2723,17 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
 
     // THE REPRODUCTION: a real mouse press with a tick deliberately in the middle.
     // This is what a slow human click looks like, and it is what used to fail.
-    await page.evaluate(() => { viewMode = 'sensors'; renderViewSwitch(); });
+    /* THE SWITCH LIVES IN THE LIVE FEED NOW, so the feed has to be open to click it. It moved out of the
+       metrics panel because it never divided the metrics — MIND / BODY / SIGNAL does that — but it does
+       decide which lines this chart plots, which is a real job and belongs beside the chart. */
+    await page.evaluate(() => {
+      feedOpen = true;
+      updatePanelVisibility();
+      viewMode = 'sensors';
+      visual.setSeries(viewMode);
+      renderViewSwitch();
+    });
+    await page.waitForTimeout(450);        // past the panel's own show transition
     const box = await page.evaluate(() => {
       const r = document.querySelector('#viewSwitch [data-view="composites"]').getBoundingClientRect();
       return { x: r.x + r.width / 2, y: r.y + r.height / 2, w: r.width, h: r.height };
@@ -3619,20 +3635,23 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     // The arrangement asked for: settings live with what they affect, and Connect sits
     // with the session controls rather than in a group of its own.
     assert.ok(groups[0].pills.some((p) => /^Cues/.test(p)), 'Cues belongs with the view controls');
-    /* Response is NOT in the bar any more. It moved into the Metrics panel, both
-       because it was asked for ("maybe the sensitivity button can kinda go in the
-       metrics") and because it had to: fourteen pills across three labelled groups
-       needed ~1770px, a 1920px window offers 1728 after padding, and the bar wrapped
-       Session onto its own row at anything narrower. */
+    /* Response is not in the CONTROLS bar. It went into the Metrics panel first, because it was asked for
+       ("maybe the sensitivity button can kinda go in the metrics") and because fourteen pills across three
+       labelled groups did not fit; it is now in the APP bar, which is where the mockup has it and where the
+       other decisions about the sit already live — which visual, whether it is recording. The panel's job
+       is readings.
+
+       What still matters, and is what this originally protected: the control must EXIST somewhere findable.
+       A control that vanishes in a reorganisation is worse than a crowded bar. */
     assert.ok(!groups.some((g) => g.pills.some((p) => /^Response/.test(p))),
-      'Response belongs in the Metrics panel, not in the bar');
+      'Response does not belong in the controls bar');
     const resp = await page.evaluate(() => {
-      const el = document.getElementById('responseToggle');
-      return el ? { inReadout: !!el.closest('#readout'), text: el.textContent } : null;
+      const el = document.getElementById('barResponse') || document.getElementById('responseToggle');
+      return el ? { inAppBar: !!el.closest('#appBar'), text: el.textContent } : null;
     });
-    assert.ok(resp && resp.inReadout,
-      'but it must still exist, inside the Metrics panel — a control that vanishes in a'
-      + ' reorganisation is worse than a crowded bar');
+    assert.ok(resp, 'Response must still exist somewhere — see above');
+    assert.ok(resp.inAppBar, `and it lives in the app bar now (text "${resp.text}")`);
+    assert.match(resp.text, /^Response:/, 'labelled, so it is not a bare adjective in a bar');
     assert.ok(groups[1].pills.some((p) => /^Trials$/.test(p)), 'Trials belongs with Practice');
     assert.ok(groups[1].pills.some((p) => /^Timer/.test(p)), 'and Timer');
     assert.ok(groups[2].pills.some((p) => /^Connect$/.test(p)), 'Connect belongs with Session');

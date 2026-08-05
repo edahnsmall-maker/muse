@@ -764,10 +764,18 @@ const VizCore = require('./public/viz-core.js');
   const some = VizCore.legendFor('flow', { composites: false, omitSeries: ['TP9', 'TP10'] });
   assert.deepStrictEqual(some.filter((e) => e.label).map((e) => e.label), ['AF7', 'AF8'],
     'an electrode with no contact must be absent from the key, not merely dimmed');
-  // The relative-scale caption has to be there, because vertical position no longer
-  // means a level: two lines crossing is not two values becoming equal.
-  assert.ok(some.some((e) => e.text && /own recent range/.test(e.text)),
-    'and the key must say the height is relative');
+  /* THE CAPTION MUST DESCRIBE THE AXIS THAT IS ACTUALLY DRAWN, and Flow now has two of them.
+     Per-channel traces are on a FIXED 0-0.6 scale — alpha's share of alpha+beta is a bounded ratio, so
+     there is nothing to derive — while composites keep a within-sit scale because they are adaptively
+     normalised and have none of their own. "its own recent range" was describing the behaviour that made
+     the lines wander, so a caption still saying it would be teaching the reader the old, wrong thing. */
+  assert.ok(some.some((e) => e.text && /0 to 0\.6|same scale every sit/.test(e.text)),
+    `the sensor key must say the scale is fixed, got ${JSON.stringify(some.filter((e) => e.text))}`);
+  const comp = VizCore.legendFor('flow', { composites: true });
+  assert.ok(comp.some((e) => e.text && /range in this sit/.test(e.text)),
+    `the composite key must say the scale is per-sit, got ${JSON.stringify(comp.filter((e) => e.text))}`);
+  assert.ok(comp.some((e) => e.text && /fixed after/.test(e.text)),
+    'and that it stops moving, which is the whole point of the hold');
   const none = VizCore.legendFor('flow',
     { composites: false, omitSeries: ['TP9', 'AF7', 'AF8', 'TP10'] });
   assert.deepStrictEqual(none, [],
