@@ -3822,7 +3822,13 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       const dockedStore = JSON.parse(localStorage.getItem('zenbio.panel.dataPanel') || 'null');
 
       grip.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }));
-      await new Promise((r) => setTimeout(r, 30));
+      /* 450ms, past the panel's 350ms transform transition — not the 30ms this used to wait.
+         Releasing a panel now hands `transform` back to the stylesheet, and in Train the stylesheet's
+         default for the live feed IS a transform (translateX(-50%), centred between the two docked
+         columns). So the release animates, and 30ms measured the first frame of that animation: the
+         panel read as 200px off, at exactly its un-transformed position. Before the docked layout the
+         default had no transform, clearing the inline one was a no-op, and 30ms was enough. */
+      await new Promise((r) => setTimeout(r, 450));
       const reset = el.getBoundingClientRect();
       const clearedStore = localStorage.getItem('zenbio.panel.dataPanel');
       const stillDocked = el.dataset.docked || null;

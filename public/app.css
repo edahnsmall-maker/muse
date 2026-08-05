@@ -305,6 +305,11 @@
     background: rgba(8,10,20,.72); border: 1px solid rgba(255,255,255,.09);
     backdrop-filter: blur(9px); -webkit-backdrop-filter: blur(9px); }
   #armedBar[hidden] { display: none; }
+  /* NOTHING IN THE RAIL SHRINKS. It is a flex column with a bounded height once docked, and flex items
+     shrink before a container scrolls — so the ten category rows were being squeezed to a few unreadable
+     pixels each and the arrow editor pushed out of the bottom, rather than the rail scrolling as it was
+     told to. Every child keeps its natural height and #armedBar's own overflow-y does the work. */
+  #armedBar > * { flex-shrink: 0; }
   /* Transparent against the rail rather than each carrying its own dark box — ten stacked translucent
      boxes over a translucent panel is what made these read as stripes over the visual. */
   #armedBar .a { padding: 5px 9px; border-radius: 7px; border: 1px solid transparent;
@@ -615,6 +620,47 @@
 
      THE CONTROL BAR STAYS, faded almost out and legible again on hover or keyboard focus. Hiding it
      would leave a screen with no way back, which is a worse failure than an austere one. */
+  /* ---- TRAIN IS A LAYOUT, NOT A PILE OF FLOATING PANELS -----------------------------------------
+     Asked for: "I liked the permanently docked panels idea in the train mode rather than floating."
+     Right, and floating was the wrong default for the screen that is an instrument: the metrics panel
+     and the markers rail are both read for the whole sit, so having to arrange them first is work in
+     front of the work. They now come up docked against the edges, between the app bar and the controls
+     — the mockup's shape.
+
+     `:not([data-dragged])` is what keeps this honest. Panels.place writes inline left/top and stamps
+     data-dragged on any panel the practitioner has moved themselves, and an inline style beats the
+     stylesheet — so a deliberate drag still wins, and double-clicking the grip to release a panel puts
+     it back to this docked default rather than to a floating position nobody chose.
+
+     Meditate is unaffected: it hides both panels outright. */
+  body.training #readout:not([data-dragged]) {
+    top: 44px; right: 0; bottom: calc(var(--controlsH, 104px) + 5vmin + 14px);
+    max-height: none; height: auto;
+    border-top-right-radius: 0; border-bottom-right-radius: 0; border-right-color: transparent;
+    background: rgba(9,12,24,.90); }
+  body.training #armedBar:not([data-dragged]) {
+    top: 44px; left: 0; bottom: calc(var(--controlsH, 104px) + 5vmin + 14px); transform: none;
+    max-height: none; height: auto;
+    border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-color: transparent;
+    background: rgba(9,12,24,.90); }
+  /* THE LIVE FEED STAYS FLOATING, as in the mockup — but not on top of the rail it now shares an edge
+     with. Its default corner was bottom-left, which was empty before the rail was docked there and is
+     not now. Centred over the middle instead, clear of both columns, and a drag still overrides. */
+  body.training #dataPanel:not([data-dragged]) {
+    left: 50%; right: auto; transform: translateX(-50%);
+    bottom: calc(var(--controlsH, 104px) + 5vmin + 14px); }
+  body.training #dataPanel:not([data-dragged]).panelClosed {
+    transform: translateX(-50%) translateY(10px); }
+
+  /* Narrow screens keep the floating behaviour: two docked columns on a phone leave nothing in the
+     middle for the visual, which is the thing they are there to sit beside. */
+  @media (max-width: 900px) {
+    body.training #readout:not([data-dragged]),
+    body.training #armedBar:not([data-dragged]) {
+      top: 11vmin; bottom: auto; height: auto; max-height: 62vh; border-radius: 18px; }
+    body.training #armedBar:not([data-dragged]) { top: 50%; transform: translateY(-50%); }
+  }
+
   body.meditating #readout,
   body.meditating #dataPanel,
   body.meditating #armedBar,
@@ -661,6 +707,28 @@
   /* The arrow-key assignment, now inside the mark rail. Its own block under the categories, separated,
      because it is a setting rather than one of the things you press. `min-width: 0` so its long legend
      wraps inside the rail instead of widening it — see the note on #armedBar's fixed width. */
+  /* THIS SIT'S MARKS, in the rail. A row per mark: when, what, a note field and a delete. The note field
+     is on its own line because a 272px rail cannot hold a time, a label, a button and a text box across,
+     and truncating the label would defeat the point of showing what the mark was. */
+  #markList { flex: 0 0 auto; min-width: 0; margin-top: 10px; padding-top: 10px;
+    border-top: 1px solid rgba(255,255,255,.09); max-height: 34vh; overflow-y: auto; }
+  .markListEmpty { font-size: 11px; line-height: 1.5; color: rgba(255,255,255,.4); }
+  .markRow { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 8px;
+    align-items: center; padding: 5px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+  .markRow:last-child { border-bottom: none; }
+  .markWhen { font: 11px ui-monospace, monospace; color: rgba(255,255,255,.5);
+    font-variant-numeric: tabular-nums; }
+  .markKind { font-size: 11.5px; color: rgba(255,255,255,.78); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; }
+  .markX { grid-column: 3; background: none; border: none; cursor: pointer; padding: 0 4px;
+    font-size: 14px; line-height: 1; color: rgba(255,255,255,.35); }
+  .markX:hover { color: #ff8f8f; }
+  .markNote { grid-column: 1 / -1; width: 100%; font: inherit; font-size: 11.5px;
+    padding: 4px 7px; border-radius: 6px; color: rgba(255,255,255,.88);
+    background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.10); }
+  .markNote::placeholder { color: rgba(255,255,255,.3); }
+  .markNote:focus { outline: none; border-color: rgba(125,211,252,.45);
+    background: rgba(255,255,255,.10); }
   .arrowEditor { flex: 0 0 auto; min-width: 0; margin-top: 10px; padding-top: 10px;
     border-top: 1px solid rgba(255,255,255,.09); }
   .arrowEditor input { background: rgba(255,255,255,.07); color: rgba(255,255,255,.9);

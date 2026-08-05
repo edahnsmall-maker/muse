@@ -1083,9 +1083,11 @@ function wireMarkerEditor() {
     };
     note.addEventListener('input', save);
     dur.addEventListener('input', save);
-    row.querySelector('[data-role="del"]').addEventListener('click', () => {
-      markerLog.remove(id);
-      renderMarkCount();
+    row.querySelector('[data-role="del"]').addEventListener('click', async () => {
+      /* THROUGH deleteMark, which removes the stored note too. This used to call markerLog.remove
+         alone, so a mark deleted here left its note in notes.csv — the file the lab reads — and the
+         analysis would have counted a mark the practitioner had explicitly removed. */
+      await deleteMark(id);
       const stats = Summary.summarize(sessionLog);
       showSummaryStats(stats);
     });
@@ -1744,7 +1746,112 @@ markDurEl.addEventListener('keydown', (e) => {
  * two would have overlapped. It belongs next to "press M to mark" anyway: the hint and
  * the count are one sentence about the same thing.
  */
+/*
+ * DELETE A MARK — from the screen AND from the file, in one place.
+ *
+ * There were two delete paths and only one of them was right. The Notes panel deletes the stored note
+ * and then calls markerLog.removeByNoteId, with the reason recorded: "a deleted mark vanished from the
+ * archive while the readout still counted it, which is two records of one sit disagreeing." The summary's
+ * marker editor called markerLog.remove alone — so a mark deleted there disappeared from the screen and
+ * stayed in notes.csv, which is the file the lab actually reads. The count the analysis is built on would
+ * have been wrong, and nothing on screen would have said so.
+ *
+ * So there is one function now and both callers use it. Order matters: the note goes first, because if
+ * that fails the mark must stay on screen rather than the two records parting company the other way.
+ */
+async function deleteMark(id) {
+  const mk = markerLog.list().find((x) => x.id === id);
+  if (!mk) return false;
+  if (mk.noteId != null && recDb) {
+    try {
+      await Recorder.deleteNote(recDb, mk.noteId);
+    } catch (err) {
+      setStatus(`could not delete that mark: ${(err && err.message) || 'unknown'}`);
+      statusLockUntil = Date.now() + 2600;
+      return false;
+    }
+  }
+  markerLog.remove(id);
+  renderMarkCount();
+  renderMarkList();
+  renderChart();
+  return true;
+}
+
+/*
+ * THIS SIT'S MARKS, in the mark rail, newest first.
+ *
+ * Asked for: "What about the marks showing up in the timeline? So i see them and can edit or delete?"
+ * During a sit there was only a COUNT — the list of what you had actually marked lived on the end-of-sit
+ * summary, which is the one moment you can no longer remember what the third one was about.
+ *
+ * IN THE RAIL rather than only on the chart. The ticks on the chart (see renderChart) say WHEN, which is
+ * what a timeline is for; but 180 seconds across a 320px canvas is under two pixels a second, so a tick
+ * is not a thing you can click. The rail is open all sit in Train and is the panel about marks, so the
+ * editable copy belongs here.
+ */
+function renderMarkList() {
+  const host = document.getElementById('markList');
+  if (!host) return;
+  /* NEVER REBUILD UNDER A CARET. If one of this list's own note fields has focus, the practitioner is
+     mid-sentence about a mark, and replacing the innerHTML would take the box and the caret with it. The
+     list is refreshed again on the next mark or delete, so nothing is lost by waiting. */
+  if (host.contains(document.activeElement) && document.activeElement.tagName === 'INPUT') return;
+  const marks = markerLog.list().slice().sort((a, b) => b.tSec - a.tSec);
+  if (!marks.length) {
+    host.innerHTML = '<div class="markListEmpty">Marks you make will appear here, with the'
+      + ' newest first — tap one to say what it was, or × to remove it.</div>';
+    return;
+  }
+  const label = (m) => {
+    const tap = Probes.TAP_BY_KEY[m.kind];
+    if (tap) return tap.label;
+    const kind = Markers.KINDS.find((k) => k.key === m.kind);
+    return (kind && kind.label) || m.kind || 'mark';
+  };
+  host.innerHTML = `<div class="sideHead" style="margin-bottom:6px">This sit · ${marks.length}</div>`
+    + marks.map((m) => `<div class="markRow" data-mark="${m.id}">
+        <span class="markWhen">${Exporter.clock(m.tSec)}</span>
+        <span class="markKind">${escapeHtml(label(m))}</span>
+        <button class="markX" data-del-mark="${m.id}" title="Delete this mark, here and in the file"
+          >×</button>
+        <input class="markNote" data-note-mark="${m.id}" value="${escapeHtml(m.note || '')}"
+          placeholder="what was it?" maxlength="200">
+      </div>`).join('');
+
+  host.querySelectorAll('[data-del-mark]').forEach((b) => {
+    b.addEventListener('click', () => { deleteMark(Number(b.dataset.delMark)); });
+  });
+  host.querySelectorAll('[data-note-mark]').forEach((input) => {
+    // Off the global shortcuts, or typing "t" about a mark would make another one.
+    input.addEventListener('keydown', (e) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') input.blur();
+    });
+    input.addEventListener('change', () => {
+      const id = Number(input.dataset.noteMark);
+      const mk = markerLog.list().find((x) => x.id === id);
+      if (!mk) return;
+      const text = input.value.trim();
+      markerLog.annotate(id, text, mk.durationSec);
+      if (mk.noteId == null || !recDb) return;
+      /* THE COMMENT FIELD FOR A TAP, never `text`. A tap's `text` is its own category label, written the
+         instant the key went down, and overwriting it would turn "Thinking" into whatever was typed —
+         the tap category is what the whole analysis keys off. An M-mark's `text` IS the note, so there
+         it is the same field. Same rule as the summary editor. */
+      const patch = Probes.TAP_BY_KEY[mk.kind]
+        ? { comment: text } : { text, comment: text };
+      Recorder.updateNote(recDb, mk.noteId, patch).catch(() => { /* the screen still has it */ });
+    });
+  });
+}
+
 function renderMarkCount() {
+  /* THE LIST IS REFRESHED HERE TOO. Every place that changes the marks already calls this — a tap, a
+     saved M-mark, a delete from either editor — and none of them is on the 250ms tick, so this is the one
+     hook that cannot go stale. Adding a second call at six sites is how one gets missed, which is
+     exactly what happened first: the count updated after a tap and the list did not. */
+  renderMarkList();
   const el = armedBarEl.querySelector('.armedHint');
   if (!el) return;
   const n = markerLog.length;
@@ -1815,6 +1922,29 @@ let panelsBeforeMeditate = null;
  */
 function meditateIsBare() { return museConnected() || strapConnected(); }
 
+/*
+ * HOW TALL THE CONTROL BAR IS, as a CSS variable.
+ *
+ * The docked columns in Train have to stop above it, and its height is not a constant: it holds three
+ * labelled groups of pills that wrap onto a second row on a narrow window, and docking the columns makes
+ * the middle narrower, which makes it wrap sooner. A hard-coded `bottom` was wrong at one width or the
+ * other — the columns ran under the bar at 1440 and left a gap at 1920.
+ *
+ * Measured and published as --controlsH, so the CSS can subtract the real number.
+ */
+function publishControlsHeight() {
+  const el = document.getElementById('controls');
+  if (!el) return;
+  const h = Math.round(el.getBoundingClientRect().height);
+  if (h > 0) document.documentElement.style.setProperty('--controlsH', `${h}px`);
+}
+/* Re-measured when the bar itself changes shape, not on a timer. A ResizeObserver fires on wrap, on a
+   pill appearing, and on a window resize — all three of which change the number. */
+if (typeof ResizeObserver === 'function') {
+  const ctrl = document.getElementById('controls');
+  if (ctrl) new ResizeObserver(publishControlsHeight).observe(ctrl);
+}
+
 function applyPlaceChrome() {
   document.body.classList.toggle('meditating', !trainingMode);
   document.body.classList.toggle('training', trainingMode);
@@ -1856,6 +1986,7 @@ function applyPlaceChrome() {
     panelsBeforeMeditate = null;
   }
   updatePanelVisibility();
+  publishControlsHeight();
 }
 
 function setTrainingMode(on) {
@@ -2296,6 +2427,42 @@ function renderChart() {
     const y = h * f;
     chartCtx.beginPath(); chartCtx.moveTo(0, y); chartCtx.lineTo(w, y); chartCtx.stroke();
   });
+  /*
+   * MARKS ON THE TIMELINE, drawn before the traces so a line crosses a tick rather than being hidden by
+   * it. Asked for: "What about the marks showing up in the timeline?"
+   *
+   * Placed by AGE, in the same units the series are: the chart holds HISTORY_LEN samples at about one a
+   * second, right-aligned to now, so a mark made `age` seconds ago sits `age` samples left of the head.
+   * That is the same mapping Chart.seriesToPoints uses, which is why a tick lands under the moment it
+   * describes instead of near it.
+   *
+   * A mark older than the window is simply not drawn. It is still in the rail's list and still in the
+   * file — the chart is three minutes of history, not the record.
+   */
+  {
+    const nowSec = sessionTSec();
+    for (const m of markerLog.list()) {
+      const age = nowSec - m.tSec;
+      if (!Number.isFinite(age) || age < 0 || age > HISTORY_LEN - 1) continue;
+      const x = ((HISTORY_LEN - 1 - age) / (HISTORY_LEN - 1)) * w;
+      /* Coloured by kind where the kind has a colour on this chart already, so a Thinking tick and the
+         Thinking line agree — the invariant the electrode colours are derived rather than copied for. */
+      const col = COMPOSITE_COLORS[m.kind === 'lost' ? 'thinking' : m.kind] || 'rgba(255,255,255,.5)';
+      chartCtx.strokeStyle = col;
+      chartCtx.globalAlpha = 0.5;
+      chartCtx.lineWidth = 1;
+      chartCtx.beginPath();
+      chartCtx.moveTo(Math.round(x) + 0.5, 0);
+      chartCtx.lineTo(Math.round(x) + 0.5, h);
+      chartCtx.stroke();
+      // A cap at the top, so a tick is findable against four traces without being a solid bar.
+      chartCtx.globalAlpha = 0.95;
+      chartCtx.fillStyle = col;
+      chartCtx.fillRect(Math.round(x) - 1.5, 0, 4, 3);
+      chartCtx.globalAlpha = 1;
+    }
+  }
+
   for (const s of visibleSeries()) {
     if (!seriesEnabled[s.key]) continue;
     const pts = Chart.seriesToPoints(histories[s.key].values, w, h, HISTORY_LEN);
@@ -3873,9 +4040,10 @@ function renderArmedBar() {
       // The gesture, said where the key is. A double-tap nobody knows about is a feature nobody has.
       + `${dbl ? ` <i style="opacity:.5">×2 = ${escapeHtml(dbl.label.toLowerCase())}</i>` : ''}</span>`;
     }).join('')
+    + '<div id="markList"></div>'
     + renderArrowEditorHtml();
   ensureGrip(armedBarEl);  // innerHTML above just destroyed the previous one
-  renderMarkCount();       // the hint carries the tally, and was just rebuilt with it
+  renderMarkCount();       // the hint carries the tally, and refreshes the list, in the rebuilt markup
   armedBarEl.querySelectorAll('[data-arm]').forEach((el) => {
     el.addEventListener('click', () => { armedTap = el.dataset.arm; renderArmedBar(); });
   });
