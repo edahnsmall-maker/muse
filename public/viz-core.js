@@ -103,6 +103,12 @@
   }
 
   const MODES = [
+    /* FIRST, so it is what a fresh page opens on — `modeIndex` starts at 0. Asked for as "make a new
+       visual and make it the default for meditate", and Meditate is where a fresh page starts.
+       Inserting rather than appending is safe here because the mode index is not persisted anywhere:
+       nothing stored points at position 0 and would silently be repointed. Train still overrides to Flow
+       on entry, which is what an instrumented screen wants. */
+    { key: 'ribbon', label: 'Ribbon', family: 'core', blurb: 'four silks over a breathing bloom: height and thickness are the score' },
     { key: 'eclipse', label: 'Eclipse', family: 'core', blurb: 'stillness grows as a void; thinking flares at its edge' },
     { key: 'iris',    label: 'Iris',    family: 'core', blurb: 'your session laid down as a rose window' },
     { key: 'pulse',  label: 'Pulse',  family: 'core', blurb: 'a clock hand sweeps; each metric bulges where it flared' },
@@ -765,6 +771,22 @@
     flow: { follows: true, notes: ['sensors: alpha share, 0 to 0.6 — the same scale every sit'] },
     flowComposites: { follows: true,
       notes: ['height is each line’s range in this sit, fixed after the first two minutes'] },
+    /*
+     * Ribbon's key has to carry three things, because three qualities of the picture are readings and a
+     * reader who does not know that sees four pretty bands.
+     *
+     * `%BLOOM%` is filled in from what the centre glow is ACTUALLY pulsing on: the measured breath when
+     * the strap or the heart gives one, and a fixed 10-second pacer when nothing does. Substituted rather
+     * than hardcoded for the same reason as Iris's `%DEPOSIT%` — a key that says "follows your breath"
+     * over a glow running on a timer is precisely the unearned claim this file exists to prevent. The
+     * line is dropped entirely if the caller does not say, rather than defaulting to the flattering one.
+     */
+    ribbon: {
+      palette: 'metrics',
+      notes: ['higher and thicker is more of it, 0 to 1 — the same scale every sit',
+        'left edge is a minute ago · ripple at the live end is thinking',
+        'centre glow · width is calm, pulse %BLOOM%'],
+    },
     // No colour key: Breath draws one form and is explicitly "nothing to read".
     // The two lines are still worth having — which direction is the in-breath is
     // the one thing about it that is not self-evident.
@@ -783,6 +805,7 @@
 
   function legendFor(modeKey, {
     composites = false, breath = false, depositSec = null, omitSeries = null, driver = null,
+    bloom = null,
   } = {}) {
     /* FLOW HAS TWO CAPTIONS because it has two axes: a fixed 0-0.6 scale for the per-channel traces and a
        within-sit one for the composites. One note for both would be wrong for one of them, and a caption
@@ -833,9 +856,14 @@
       // rather than print a placeholder or invent a default — a key that says the
       // wrong number is worse than one that says nothing.
       const deposit = depositSec != null && depositSec > 0 ? humanInterval(depositSec) : null;
+      /* Same rule for the bloom: the flattering reading ("follows your breath") is only printed when a
+         breath is actually being measured, and the line is dropped rather than defaulted. */
+      const bloomText = bloom === 'breath' ? 'follows your breath'
+        : bloom === 'pacer' ? 'a steady 10s pacer, not your breath' : null;
       for (const text of spec.notes) {
-        if (!text.includes('%DEPOSIT%')) { out.push({ text }); continue; }
-        if (deposit) out.push({ text: text.replace('%DEPOSIT%', deposit) });
+        if (text.includes('%DEPOSIT%')) { if (deposit) out.push({ text: text.replace('%DEPOSIT%', deposit) }); continue; }
+        if (text.includes('%BLOOM%')) { if (bloomText) out.push({ text: text.replace('%BLOOM%', bloomText) }); continue; }
+        out.push({ text });
       }
     }
     return out;

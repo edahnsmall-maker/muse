@@ -1971,6 +1971,22 @@ function applyPlaceChrome() {
     renderChart();
     renderBarModes();
   }
+  /*
+   * AND MEDITATE OPENS ON RIBBON, the same way and for the opposite reason.
+   *
+   * Asked for: "make a new visual and make it the default for meditate". Ribbon is what a fresh page
+   * already opens on — it is first in VizCore.MODES — but coming BACK from Train would otherwise leave
+   * Flow on screen, and Flow is an instrument: a plotted grid of four lines is the wrong thing to sit in
+   * front of with your eyes closing.
+   *
+   * `wasTraining === true` rather than `!wasTraining`, so this fires only on the way OUT of Train and not
+   * on the first render of the page — which would fight the boot default and, worse, would re-assert
+   * itself on every later render and undo choosing a different visual while meditating.
+   */
+  if (!trainingMode && wasTraining === true && typeof visual !== 'undefined' && visual.setModeByKey) {
+    visual.setModeByKey('ribbon');
+    renderBarModes();
+  }
   wasTraining = trainingMode;
   if (typeof visual !== 'undefined' && visual.setLegend) {
     visual.setLegend(trainingMode);

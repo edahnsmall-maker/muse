@@ -316,10 +316,11 @@ float-precision bugs that only showed up on real hardware. Canvas 2D uses explic
 rgba colours, real blur, and eliminates that entire bug class. It also made the
 renderer testable — see "Testing the untestable" below.
 
-The eight modes, in cycle order:
+The nine modes, in cycle order:
 
 | Mode | What it is | What drives it |
 |---|---|---|
+| **Ribbon** | *The default, and what Meditate opens on.* Four silk ribbons flowing left to right — Calm, Focus, Thinking, Drowsy — over a warm bloom at the centre that breathes. The right-hand end is now; the left edge is a minute ago, dissolving. | Every quality of it is a reading and none of it is decoration. **Height** is the score. **Thickness** is the same score again — that redundancy is why it works as something to sit in front of, because with your eyes half closed you cannot read four positions but you can see which band is broad. **Brightness** is the score a third time. The **shimmer** at the live end is Thinking, and it is fenced to the newest third so the record behind you stays exactly still. The **bloom**'s width is Calm and its slow pulse is your measured breath — or, when nothing is measuring one, a fixed 10-second pacer, and the key says which. Height comes from a **constant** transform of the score (`expandSoft(v, 0.28, 0.82)`), so unlike every auto-ranged trace here two different sits are directly comparable by eye, and drift is not fixed but impossible: there is no state to drift. A metric with no inputs leaves a **gap**, because a ribbon thinning to nothing would read as "calm collapsed" when it means "the headband stopped reading". |
 | **Eclipse** | A black void on a warm light ground, ringed by a solar corona. Stillness *is* the void: it grows as you settle. Thinking flares at its edge. | Void radius = the selected composite (12%→74% of max radius). Corona churn, speed and brightness = the Thinking score. Its own hot palette (magenta/orange/gold/rose), on light — saturated colour added onto near-black just goes pale grey, which was the real reason earlier versions looked colourless. |
 | **Iris** | Your whole session laid down as a rose window — a persistent record that accumulates rather than scrolling away. | Twelve petals, each sensor owning its own quadrant at its real anatomical angle. A live crown scallops with current activity; every 6s that crown is *fossilised* onto a record layer and the radius steps outward, like a growth ring. Nothing is erased, so at the end you're looking at the shape of the entire sit — which minutes were whole and which were broken stay visible. |
 | **Pulse** | A clock hand sweeps a dial once every 24 seconds, resetting at twelve. Each composite metric owns a ring; wherever the hand is now, that ring **bulges** by how much the metric is doing, and the bulge stays and fades as the hand travels on. | So a rising metric reads as a spiral of growth — small at three o'clock, bigger at six, biggest at nine — and a subsiding one reads as the reverse, the whole last revolution legible at a glance. Bulge is mostly *change* against each metric's own slow baseline (flaring is what the eye reads), with a little absolute level mixed back in so sustained calm doesn't look like nothing happening. Calm and Focus grow **inward**, inside the void; Thinking and Drowsy grow **outward** past the rim — so settling reads as the centre filling with light and thinking reads as flaring at the edges. |
@@ -602,7 +603,20 @@ versions issued 4 (Eclipse), ~12 (Field) and ~12 (Flow) per frame. The fix in ea
 is to draw unblurred into a scratch layer and blit it **once** with the filter applied;
 the test now fails any mode averaging more than 2.2 blurred draws per frame, so this
 can't quietly regress. Current: Eclipse 1.00, Iris 1.00, Pulse 0.00, Corona 0.00,
-Flow 0.00, Bloom 0.00, Field 1.00, Breath 0.00.
+Flow 0.00, Bloom 0.00, Field 1.00, Breath 0.00, Ribbon 0.00.
+
+Ribbon spends none of that budget — its softness is gradients and stacked fills, not blur —
+but it is the most per-pixel-expensive mode here, because each ribbon is eleven overlapping
+translucent `lighter` composites and the aura alone covers four times the ribbon's own area.
+So its soft passes render into a **half-resolution layer** (`RIBBON_SCALE`) which is blitted
+up once, and only the two things that must be sharp — the hairline crest along each ribbon's
+lit edge, and the head dots — are drawn onto the output canvas at full resolution. Its curve
+points are also decimated to every third sample (`RIBBON_STRIDE`); 240 samples across 1375px
+is one control point every 5.7px, far finer than a Catmull-Rom curve needs. Neither showed a
+measurable gain in the headless container these are developed in (where a bare rAF loop
+drawing nothing runs at 28fps and Eclipse and Silk measure 19 and 18 against Ribbon's 20), and
+both are kept for the phone, where the pixel count is three times higher and the blending is
+what bites. Neither should be read as a measured speedup.
 
 Knobs, in `public/visual.js` / `public/viz-core.js`:
 - `CHANNEL_COLORS` / `CORONA_COLORS` — the per-electrode hues (channel palette, and
@@ -1090,7 +1104,7 @@ only Close.
 
 ### Every visual says what it means
 
-Each of the seven visuals draws its own key, top-left: a colour swatch per series where
+Each visible visual draws its own key, top-left: a colour swatch per series where
 the colours *are* series, and plain word-lines where they are not. Eclipse's expanding
 void and Iris's outward growth are not colours, and no swatch can explain them.
 

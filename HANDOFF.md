@@ -259,13 +259,27 @@ into the scratch layer and blit **once** with the filter. The smoke test enforce
 
 **Everything renders into a ≤560px buffer that is upscaled ~4×.** Great for soft
 washes, fatal for thin sharp lines — a 1px stroke lands as a 4px smear. `Flow`,
-`Pulse` and `Corona` therefore bypass it and draw at full canvas resolution
-(`DIRECT_MODES` in `visual.js`). They achieve softness in *geometry* — stacked
-strokes of increasing width and decreasing alpha — which also costs zero blur passes.
+`Ribbon`, `Pulse`, `Corona` and `Silk` therefore bypass it and draw at full canvas
+resolution (`DIRECT_MODES` in `visual.js`). They achieve softness in *geometry* —
+stacked strokes of increasing width and decreasing alpha, or stacked translucent fills —
+which also costs zero blur passes. `Ribbon` splits the difference: its soft fills go
+through their own **half-resolution** layer (`RIBBON_SCALE`), because it is the most
+per-pixel-expensive mode here, and only its hairline crest and head dots are drawn at
+full resolution. Softness can be downsampled; a hairline cannot.
 
 **Additive colour at low alpha over near-black desaturates toward grey.** This is why
 several visuals "had no colour". Either draw genuinely bright, or use a light ground
 (`Eclipse` does).
+
+**An axis derived from the data is an axis that moves.** This cost three rounds of
+"the lines still drift and i think it's bc the range is recent". `Flow`'s per-channel
+traces now use a **constant** 0–0.75 window (alpha's share of alpha+beta is a bounded
+ratio and needs no derived scale); its composites learn a range and then **freeze** it
+(`settleRange`, `RANGE_HOLD_SEC`); and `Ribbon` uses a constant transform with no state
+at all, which is why `test-visual-smoke.js` asserts it never calls `autoRange`,
+`settleRange` or `inRange` rather than measuring how far its past moved. Prefer a fixed
+axis whenever the quantity has a natural scale — it also makes two sits comparable by
+eye, which an auto-ranged trace never is.
 
 **Hard clamps peg and stop moving.** A bar frozen at 100 reads as a confident
 detection, not as "this signal is outside the expected range". Saturate with `tanh`.

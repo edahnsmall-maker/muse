@@ -19,11 +19,38 @@ function createZenVisual(canvas) {
   const buf = document.createElement('canvas'); // per-frame compose target
   const lay = document.createElement('canvas'); // scratch layer, drawn unblurred
   const rec = document.createElement('canvas'); // persistent record layer (Iris)
+  /* Ribbon's soft passes, at half the output resolution - see RIBBON_SCALE. Its own canvas rather than
+     the shared `buf` because `buf` is fixed at 560px wide for the wash modes, and half of a 2880px retina
+     canvas is 1440: the ribbons want that, and the washes do not want to pay for it. */
+  const rib = document.createElement('canvas');
   const bctx = buf.getContext('2d');
   const lctx = lay.getContext('2d');
   const rctx = rec.getContext('2d');
+  const ribctx = rib.getContext('2d');
 
   const BUF_MAX_W = 560; // small buffer => soft upscale + cheap blur
+  /*
+   * RIBBON'S SOFT PASSES RENDER AT HALF SCALE, and the reason is measured rather than assumed.
+   *
+   * Each ribbon is eleven overlapping translucent fills - two auras, a body, seven depth fills - and the
+   * aura alone covers four times the ribbon's own area. Four ribbons is 40-odd large `lighter` composites
+   * per frame, which is more per-pixel blending than any other mode here does. Half scale is a quarter of
+   * the pixels.
+   *
+   * What it costs is edge sharpness on the soft passes, which is exactly the thing that does not matter
+   * about them - they are gradients whose whole job is to be soft. The two things that DO need to be
+   * sharp, the hairline crest along each ribbon's lit edge and the head dot, are drawn afterwards straight
+   * onto the output canvas at full resolution.
+   *
+   * WHAT WAS ACTUALLY MEASURED, because the first version of this note claimed a speedup it had not
+   * earned: in the headless container these are developed in, a bare requestAnimationFrame loop drawing
+   * NOTHING runs at 28fps, and the shipped modes measure Flow 39, Breath 28, Eclipse 19, Silk 18, Ribbon
+   * 20. So the container is the ceiling and Ribbon costs about what Eclipse and Silk cost. Neither the
+   * half scale nor the point decimation showed a measurable gain HERE, and both are kept anyway: a phone
+   * at three times this pixel count is where the blending actually bites, and neither costs anything
+   * visible. Nothing in this file should be read as a claim that they were measured to help.
+   */
+  const RIBBON_SCALE = 0.5;
   let BW = 0, BH = 0;
 
   const clamp01 = (v) => Math.max(0, Math.min(1, v == null || Number.isNaN(v) ? 0 : v));
@@ -105,7 +132,10 @@ function createZenVisual(canvas) {
   // Modes that bypass the shared small buffer and draw at full canvas
   // resolution. Both depend on crisp thin strokes, which a ~4x upscale
   // destroys; neither uses a blur filter, so they don't need the small buffer.
-  const DIRECT_MODES = new Set(['flow', 'pulse', 'corona', 'silk']);
+  /* Ribbon is here for the same reason Flow is: the bright hairline along each ribbon's top edge is
+     sub-pixel, and the shared 560px buffer would deliver it upscaled 4x as a smear. It costs nothing
+     extra — this mode uses no blur ops at all, only gradients. */
+  const DIRECT_MODES = new Set(['flow', 'ribbon', 'pulse', 'corona', 'silk']);
 
   // Which series Flow graphs: the four electrodes, or the four composites.
   // Follows the data panel's Sensors/Composites switch, because a main visual
@@ -215,6 +245,8 @@ function createZenVisual(canvas) {
     BW = Math.max(160, Math.round(canvas.width * scale));
     BH = Math.max(90, Math.round(canvas.height * scale));
     for (const c of [buf, lay, rec]) { c.width = BW; c.height = BH; }
+    rib.width = Math.max(2, Math.round(canvas.width * RIBBON_SCALE));
+    rib.height = Math.max(2, Math.round(canvas.height * RIBBON_SCALE));
   }
   addEventListener('resize', resize);
   if (typeof ResizeObserver === 'function' && canvas.getBoundingClientRect) {
@@ -1351,7 +1383,409 @@ function createZenVisual(canvas) {
     c.globalCompositeOperation = 'source-over';
   }
 
+  /* ==== RIBBON =========================================================================================
+   *
+   * WHAT IT IS. Four silk ribbons flowing left to right across the screen — calm, focus, thinking, drowsy
+   * — over a warm bloom at the centre that breathes. The right-hand end is now; the left edge is a minute
+   * ago, dissolving.
+   *
+   * WHY IT EXISTS. Asked for: "look how cool the visual is, vs ours … ours sucks … make a new visual and
+   * make it the default for meditate". The rest of the sentence is the part that decides the design: "the
+   * point is to represent the data for the user that helps them."
+   *
+   * So every quality of the picture is a measurement, and there is nothing in it that is only decoration:
+   *
+   *   - HEIGHT is the score. High is more of that state.
+   *   - THICKNESS is the same score again. That redundancy is the whole reason this works as something to
+   *     meditate in front of: with your eyes half closed you cannot read four positions, but you can see
+   *     which band is broad. Position is for when you look; thickness is for when you don't.
+   *   - BRIGHTNESS is the score a third time, so the dominant state is the one that catches the eye.
+   *   - THE SHIMMER at the live end is thinking. A settled mind draws still ribbons; an agitated one
+   *     ripples. Restricted to the newest third on purpose — see the note on `liveness` below.
+   *   - THE CENTRE BLOOM's width is calm and its slow pulse is the breath, so it can be breathed with.
+   *
+   * WHAT IT DELIBERATELY DOES NOT DO.
+   *
+   *   - NO DERIVED AXIS. Height comes from a CONSTANT transform of the score, `expandSoft(v, .28, .82)`,
+   *     the same in every sit. Flow's composites learn a range and then hold it, which is honest but means
+   *     two sits are not comparable by eye and the first two minutes still move. Here the axis is a
+   *     constant, so nothing can drift — the complaint that took three rounds to fix cannot recur in this
+   *     mode by construction, and last Tuesday's ribbon is directly comparable to today's.
+   *   - NO FABRICATED ZERO. A metric with no inputs leaves a GAP in its ribbon. A ribbon that thins to
+   *     nothing would read as "calm collapsed" when it means "the headband stopped reading".
+   *   - NO BLUR OPS. Softness is gradients and stacked fills, so this mode spends none of the frame's
+   *     blur budget (HANDOFF: <=2.2 per frame) and stays smooth on a phone.
+   *
+   * Rendered at full canvas resolution rather than through the shared 560px buffer: the bright edge along
+   * the top of each ribbon is a hairline, and a hairline upscaled 4x is a smear.
+   */
+  const RIBBON_LO = 0.28;         // the constant axis. See above: a constant, never learned.
+  const RIBBON_HI = 0.82;
+  const RIBBON_NOW_X = 0.955;     // now sits near the right edge; the eye reads leftward into the past
+  const RIBBON_PACER_SEC = 10;    // 6 breaths a minute, when there is no measured breath to follow
+  const RIBBON_STRIDE = 3;        // one curve point every third sample — see the note in the span loop
+
+  /*
+   * Catmull-Rom through the sample points, emitted as beziers.
+   *
+   * A ribbon drawn as a polyline is not silk — at four samples a second over a minute the segments are
+   * short enough to read as faceted rather than smooth, and the eye finds the facets before it finds the
+   * shape. Catmull-Rom passes exactly through every sample (so no value is moved to make the curve
+   * prettier, which would be the picture lying about the data) and only interpolates between them.
+   */
+  /*
+   * `join` continues the current subpath instead of starting a new one, and it is not a nicety.
+   *
+   * A ribbon is ONE closed loop: up the top edge, across, back along the bottom edge, closed. Emitting the
+   * second edge with `moveTo` — which is what this did — starts a fresh subpath, so the fill was two
+   * separate open curves auto-closed independently and combined by the nonzero winding rule. That fills
+   * the LENS between them rather than the band, which is why every ribbon carried a dark wedge tapering
+   * into its head: the wedge was the part of the band the fill had skipped.
+   */
+  function ribbonPath(c, pts, close, join) {
+    if (pts.length < 2) return;
+    if (join) c.lineTo(pts[0].x, pts[0].y); else c.moveTo(pts[0].x, pts[0].y);
+    if (pts.length === 2) { c.lineTo(pts[1].x, pts[1].y); return; }
+    for (let i = 0; i < pts.length - 1; i++) {
+      const p0 = pts[i > 0 ? i - 1 : 0];
+      const p1 = pts[i];
+      const p2 = pts[i + 1];
+      const p3 = pts[i + 2 < pts.length ? i + 2 : pts.length - 1];
+      c.bezierCurveTo(
+        p1.x + (p2.x - p0.x) / 6, p1.y + (p2.y - p0.y) / 6,
+        p2.x - (p3.x - p1.x) / 6, p2.y - (p3.y - p1.y) / 6,
+        p2.x, p2.y,
+      );
+    }
+    if (close) c.closePath();
+  }
+
+  function renderRibbon(out, W, H, tSec) {
+    /*
+     * TWO CONTEXTS, DELIBERATELY.
+     *
+     * `c` is the half-resolution layer that every soft pass goes into, with a 0.5 transform applied so the
+     * code below can keep working in output-canvas coordinates and not think about it. `out` is the real
+     * canvas, and the only things drawn straight onto it are the hairline crest along each ribbon's lit
+     * edge and the head dots — the two things that have to be sharp. See RIBBON_SCALE.
+     */
+    const c = ribctx;
+    const rw = rib.width, rh = rib.height;
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.clearRect(0, 0, rw, rh);
+    c.setTransform(rw / W, 0, 0, rh / H, 0, 0);
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+
+    // Background. Warmer at the bottom than Flow's, so the bloom has something to sit in rather than
+    // being a light source in a vacuum.
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, '#04060f');
+    bg.addColorStop(0.55, '#070915');
+    bg.addColorStop(1, '#0b0713');
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+
+    const nowX = W * RIBBON_NOW_X;
+    const top = H * 0.14;
+    const bottom = H * 0.80;
+    const bandH = bottom - top;
+    const midY = (top + bottom) / 2;
+
+    /* ---- THE CENTRE BLOOM ----------------------------------------------------------------------------
+     *
+     * Two real signals and no invented ones.
+     *
+     * WIDTH is calm: a settled mind opens the glow out across the screen, an agitated one pulls it into a
+     * tight knot. That direction round because the wide, low, warm field is the one that is pleasant to
+     * look at, and the visual should be nicer when the thing it is measuring is going well.
+     *
+     * THE PULSE is the breath. Measured breath when there is one — `smooth.breathAmount` is a real phase
+     * estimate, -1 exhaled to +1 inhaled. When there is none, it falls back to a FIXED 10-second cycle,
+     * and the legend says which of the two it is doing (`driver`), because a pacer presented as your own
+     * breath is exactly the kind of unearned claim this project forbids. A pacer is worth having — six
+     * breaths a minute is a real practice — but only when it is labelled as one.
+     */
+    const measured = smooth.breathAmount != null;
+    const pulse = measured
+      ? clamp01(0.5 + 0.5 * smooth.breathAmount)
+      : 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / RIBBON_PACER_SEC);
+    const bloomW = W * (0.34 + 0.44 * calm) * (0.93 + 0.12 * pulse);
+    const bloomH = bandH * (0.50 + 0.34 * calm) * (0.90 + 0.16 * pulse);
+    // Warm when calm, cooler and more violet when busy. Never white: a white core reads as a blown
+    // highlight rather than as light, and it is what made the old modes look bleached.
+    const warm = mixColor([132, 122, 205], [255, 172, 108], Math.pow(calm, 0.8));
+    const glowA = 0.20 + 0.26 * calm + 0.08 * pulse;
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    c.translate(W * 0.46, midY);
+    c.scale(1, bloomH / bloomW);
+    const bloom = c.createRadialGradient(0, 0, 0, 0, 0, bloomW);
+    bloom.addColorStop(0, rgba(warm, glowA));
+    bloom.addColorStop(0.22, rgba(warm, glowA * 0.74));
+    bloom.addColorStop(0.46, rgba(mixColor(warm, [196, 118, 208], 0.42), glowA * 0.40));
+    bloom.addColorStop(0.74, rgba([84, 104, 205], glowA * 0.16));
+    bloom.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = bloom;
+    c.beginPath(); c.arc(0, 0, bloomW, 0, Math.PI * 2); c.fill();
+    /* A TIGHTER CORE on top of the wide field. One gradient cannot be both a soft hall of light and a
+       thing with a centre — the falloff that reads as atmosphere at the edge has no core left in the
+       middle, which is why the first version looked like haze rather than a bloom. */
+    const core = c.createRadialGradient(0, 0, 0, 0, 0, bloomW * 0.30);
+    core.addColorStop(0, rgba(mixColor(warm, [255, 226, 190], 0.30), glowA * 0.62));
+    core.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = core;
+    c.beginPath(); c.arc(0, 0, bloomW * 0.30, 0, Math.PI * 2); c.fill();
+    c.restore();
+
+    /* THE LAYER STILL HAS TO REACH THE SCREEN when there is not enough history to draw a ribbon — the
+       background and the bloom are already in it, and returning here without blitting left the canvas
+       blank for the first second of every sit. */
+    const blit = () => {
+      out.clearRect(0, 0, W, H);
+      out.imageSmoothingEnabled = true;
+      out.imageSmoothingQuality = 'high';
+      out.drawImage(rib, 0, 0, rw, rh, 0, 0, W, H);
+    };
+    if (history.length < 3) { blit(); return; }
+
+    const n = history.length;
+    const step = nowX / (FLOW_MAX - 1);
+    /* The same sub-sample scroll Flow uses, and for the same reason: without it the newest sample pops
+       into existence four times a second and the whole picture ticks. See flowPhase. */
+    const phase = flowPhase();
+    const xOf = (i) => nowX - ((n - 1 - i) + phase - 1) * step;
+
+    const heads = [];
+    /* The crest paths, kept for the sharp pass below rather than stroked now. `style` is a THUNK, not a
+       gradient: a CanvasGradient belongs to the context that made it, and one made on the half-res layer
+       is not usable on the output canvas. */
+    const crests = [];
+    /* NO CLIP AT THE HEAD, and a POINTED TIP instead — which is the fix for the hard vertical edge the
+     * first version cut across all four ribbons.
+     *
+     * Flow clips at nowX because it has to: its newest sample is drawn one step to the RIGHT of that edge
+     * and revealed a fraction at a time, so that a new sample slides in rather than popping into
+     * existence. A line disappearing into a clip looks like a line continuing. A filled ribbon does not —
+     * it looks like a ribbon that has been guillotined, and with a head dot sitting on the cut it read as
+     * four ribbons plugged into four balls.
+     *
+     * So the ribbon TAPERS TO A POINT at its newest sample and there is no clip. A point has no blunt end
+     * to pop, and the <=6px of sub-sample glide that the clip existed to hide is, on a taper, a tip
+     * gliding smoothly — which is what it actually is. See `tip` below for the cost.
+     */
+    c.globalCompositeOperation = 'lighter';
+
+    for (let k = 0; k < 4; k++) {
+      const spec = VizCore.PULSE_METRICS[k];
+      const col = spec.color;
+      /* THE LANE. Each ribbon owns a horizontal slice of the band, so which lane a ribbon is in is fixed
+         and you learn where to look for calm. Within its lane it still moves by its value, which is what
+         carries the reading.
+         The swing is DELIBERATELY WIDER THAN THE LANE SPACING, so neighbouring ribbons cross and
+         interweave when their values pull apart. Silk that never touches is four stripes; the braiding is
+         where the material comes from, and under additive blending a crossing lights up — which happens
+         to put the light exactly where two states are trading off, the most interesting thing on screen. */
+      const laneMid = top + bandH * (0.19 + 0.205 * k);
+      const laneSwing = bandH * 0.185;
+
+      const upper = [];
+      const lower = [];
+      let head = null;
+      for (let i = 0; i < n; i++) {
+        const raw = history[i].sMetrics ? history[i].sMetrics[k] : null;
+        if (raw == null || !Number.isFinite(raw)) {
+          // A gap: a null in both edges, split into separate filled spans below.
+          upper.push(null); lower.push(null);
+          continue;
+        }
+        const v = clamp01(raw);
+        const e = VizCore.expandSoft(v, RIBBON_LO, RIBBON_HI);
+        const x = xOf(i);
+        /*
+         * LIVENESS: how much this sample is allowed to shimmer. 1 at the head, 0 by the time it is a
+         * third of the way back.
+         *
+         * This is the one piece of motion in the picture that is not a value, and it is fenced in for a
+         * reason that took three rounds to learn: a past that moves is indistinguishable from a
+         * measurement that drifts, and drift is what made the old traces untrustworthy. So the record
+         * behind you is exactly still, and only the live end — where you are actually looking — breathes.
+         * The amplitude is thinking, and it is capped at 2.5% of the band, small enough to read as
+         * texture on the ribbon rather than as the ribbon moving.
+         */
+        const age = (n - 1 - i) / Math.max(1, n - 1);
+        const liveness = smoothstep(0.34, 0.0, age);
+        const shimmer = bandH * 0.025 * thinking * liveness
+          * Math.sin(x * 0.055 + tSec * 1.5 + k * 2.1);
+        const y = laneMid + laneSwing * (0.5 - e) * 2 + shimmer;
+        /* THICKNESS IS THE VALUE AGAIN. The floor is not zero: a ribbon must stay visible at its lowest,
+           or "calm is low" and "calm is not being measured" look the same, and only one of those is a
+           thing the picture is allowed to say. The gap above is what says the other. */
+        const full = bandH * (0.010 + 0.075 * Math.pow(e, 1.2));
+        /* THE TAPER, and its cost stated plainly: over the newest ~1.5 seconds the thickness is not the
+           value. Everywhere else it is. That is the trade for a tip instead of a cut, and it is a good one
+           because the head dot is sized from the same `e` — the reading is not lost at the head, it moves
+           into the dot, which is where the eye is anyway. */
+        const tip = 0.14 + 0.86 * smoothstep(0, 0.026, age);
+        const halfW = full * tip;
+        upper.push({ x, y: y - halfW, w: halfW, tip });
+        lower.push({ x, y: y + halfW, w: halfW, tip });
+        head = { x, y, e, halfW: full };
+      }
+
+      // Split at the gaps. Each surviving stretch is filled on its own, so a dropout is a hole in the
+      // ribbon rather than a straight line drawn across the missing minute.
+      const spans = [];
+      let s = -1;
+      for (let i = 0; i <= n; i++) {
+        const ok = i < n && upper[i] != null;
+        if (ok && s < 0) s = i;
+        if (!ok && s >= 0) { if (i - s > 2) spans.push([s, i]); s = -1; }
+      }
+      if (!spans.length) continue;
+
+      /* AGE FADE, as ONE gradient across the whole width rather than by drawing the ribbon in bands. Three
+         fills and three gradients per ribbon regardless of how soft it looks, so the cost of this mode
+         does not grow with its softness the way a stack of blurred passes would. */
+      const bright = 0.42 + 0.48 * (head ? head.e : 0.5) + 0.10 * focus;
+      const rampOn = (target, a0, a1, a2, tint) => {
+        const g = target.createLinearGradient(0, 0, nowX, 0);
+        const cc = tint ? mixColor(col, [255, 255, 255], tint) : col;
+        g.addColorStop(0, rgba(cc, 0));
+        g.addColorStop(0.26, rgba(cc, a0 * bright));
+        g.addColorStop(0.74, rgba(cc, a1 * bright));
+        g.addColorStop(1, rgba(cc, a2 * bright));
+        return g;
+      };
+      const ramp = (a0, a1, a2, tint) => rampOn(c, a0, a1, a2, tint);
+      /* THREE PASSES, WIDEST FIRST — and this is where the silk comes from rather than from any blur.
+       * An aura two and a half times the ribbon's width at a tenth of its alpha, the body at full alpha,
+       * and a hairline along the lit edge. Stacked additively they give a soft-shouldered band with a
+       * bright crest, which is what a lit fold of cloth looks like. The first version drew only the body,
+       * at a fifth of this alpha, and read as smoke. */
+      const aura = ramp(0.014, 0.028, 0.044, 0.05);
+      const body = ramp(0.10, 0.25, 0.38, 0);
+      const crest = () => rampOn(out, 0.12, 0.40, 0.78, 0.34);
+      /*
+       * THE LIGHT ACROSS THE RIBBON'S THICKNESS, AS A STACK OF NESTED FILLS.
+       *
+       * The ribbon needs to be brightest near its top edge and fall off toward its bottom, so it reads as
+       * a lit surface rather than a flat strip. A gradient cannot do it: the ribbon's centre line moves up
+       * and down across the screen, and a canvas gradient is fixed in page space, so a vertical ramp would
+       * slide across the ribbon instead of following it.
+       *
+       * So the falloff is built out of fills that each start at the top edge and stop at a different depth.
+       * Where seven of them overlap the light is seven deep, where one does it is one deep, and the sum is
+       * a ramp. This replaces two such fills, which is the same idea at a resolution where it does not work:
+       * two overlapping bands are two HARD EDGES across every ribbon, and at a 45px-thick calm ribbon they
+       * read as a pair of dark diagonal seams running the width of the screen rather than as shading.
+       *
+       * Seven because the step is then about a seventh of the total, which at these alphas is under the
+       * threshold where an edge is visible.
+       */
+      const SHEEN_STEPS = 7;
+      const sheen = ramp(0.038, 0.095, 0.160, 0.26);
+
+      for (const [a, b] of spans) {
+        /*
+         * DECIMATED: one curve point every third sample.
+         *
+         * The history is 240 samples across ~1375px — one control point every 5.7px. A Catmull-Rom curve
+         * through points that close together is indistinguishable from one through every third point, and
+         * every one of them is paid for eleven times over: two aura fills, a body, seven sheen fills and a
+         * stroke, four ribbons deep. See RIBBON_SCALE for what was and was not measured about this.
+         *
+         * The newest point is always kept whatever the stride lands on, because that is where the head dot
+         * goes and a head that snapped between every third sample would tick visibly.
+         */
+        const idx = [];
+        for (let i = a; i < b; i += RIBBON_STRIDE) idx.push(i);
+        if (idx[idx.length - 1] !== b - 1) idx.push(b - 1);
+        const up = idx.map((i) => upper[i]);
+        const dn = idx.map((i) => lower[i]).reverse();
+        /* `grow` is a MULTIPLE OF EACH POINT'S OWN HALF-WIDTH, not a constant number of pixels. A constant
+           would keep the aura full width where the ribbon has tapered to a point, putting a blunt 18px
+           shoulder exactly where the taper exists to avoid one. */
+        const band = (topOf, botOf, style) => {
+          c.fillStyle = style;
+          c.beginPath();
+          ribbonPath(c, up.map(topOf), false);
+          ribbonPath(c, dn.map(botOf), true, true);
+          c.fill();
+        };
+        const same = (q) => q;
+        band((q) => ({ x: q.x, y: q.y - q.w * 2.0 }), (q) => ({ x: q.x, y: q.y + q.w * 2.0 }), aura);
+        band((q) => ({ x: q.x, y: q.y - q.w * 0.9 }), (q) => ({ x: q.x, y: q.y + q.w * 0.9 }), aura);
+        band(same, same, body);
+        /* THE LIT SIDE. A second fill over the TOP HALF of the band only, so the light has a direction and
+           the ribbon reads as a surface rather than a tube — that is the whole difference between a ribbon
+           and a pipe.
+           It is a fill and not a dark stroke along the bottom, which is what the first attempt used: under
+           `lighter` nothing can be darkened, so a "shadow" colour was simply added and appeared as a
+           second dim ribbon running under the real one. Additive blending only lights; shade has to be the
+           ABSENCE of a highlight. */
+        c.globalAlpha = 1 / SHEEN_STEPS;
+        for (let j = 1; j <= SHEEN_STEPS; j++) {
+          /* Depth of this fill below the top edge, as a fraction of the full thickness. Squared, so the
+             fills crowd near the top: that puts most of the light in the first third of the band, which is
+             where a highlight sits on a real fold, and leaves the bottom third unlit. */
+          const f = 0.88 * Math.pow(j / SHEEN_STEPS, 1.7);
+          /* `q` here is a point on the BOTTOM edge, at y_c + w — so the top edge is q.y - 2w, and a depth
+             of f through the thickness is q.y - 2w + 2wf. Getting this wrong by one w (using q.y - w, the
+             centre line) sent every fill up to 76% BELOW the ribbon's own bottom edge: the stack lit the
+             empty space under each ribbon and left a dark seam along the edge itself. */
+          band(same, (q) => ({ x: q.x, y: q.y - q.w * 2 + q.w * 2 * f }), sheen);
+        }
+        c.globalAlpha = 1;
+        // The crest is NOT stroked here: a hairline through a half-resolution layer arrives on screen
+        // two pixels wide and soft, which is the one thing about this picture that has to be neither.
+        crests.push({ pts: up, style: crest });
+      }
+
+      if (head) heads.push({ head, col });
+    }
+
+    /* THE LAYER, UP TO SIZE. `imageSmoothingQuality: high` because this is a 2x upscale of gradients, and
+       the cheap filter puts visible steps in a slow ramp — the exact artefact the soft passes exist to
+       avoid. */
+    blit();
+
+    // ---- THE SHARP PASS, straight onto the output canvas ----
+    out.save();
+    out.globalCompositeOperation = 'lighter';
+    out.lineJoin = 'round';
+    out.lineWidth = Math.max(1, H * 0.0026);
+    for (const { pts, style } of crests) {
+      out.strokeStyle = style();
+      out.beginPath(); ribbonPath(out, pts, false); out.stroke();
+    }
+
+    /* THE HEADS, LAST. Where each ribbon is right now, as a dot in the metric's own colour, sized from the
+     * same value that sets the ribbon's thickness — so the reading the taper gives up over the last second
+     * and a half is carried here instead of lost.
+     * Solid colour, not mixed toward white: "the lines … still have the white glow which i asked you to
+     * remove" is a rule about every mode, not only the one it was reported against.
+     */
+    for (const { head, col } of heads) {
+      const r = Math.max(2, Math.min(bandH * 0.020, head.halfW * 0.62));
+      const halo = out.createRadialGradient(head.x, head.y, 0, head.x, head.y, r * 4.5);
+      halo.addColorStop(0, rgba(col, 0.26));
+      halo.addColorStop(1, rgba(col, 0));
+      out.fillStyle = halo;
+      out.beginPath(); out.arc(head.x, head.y, r * 4.5, 0, Math.PI * 2); out.fill();
+      out.fillStyle = rgba(col, 0.62 + 0.28 * head.e);
+      out.beginPath(); out.arc(head.x, head.y, r, 0, Math.PI * 2); out.fill();
+    }
+    out.restore();
+  }
+
+  /* Which of the two things the centre bloom is doing, so the key can say so rather than implying the
+     nicer of the two. Read by app.js when it asks for a legend. */
+  function ribbonBreathDriver() { return smooth.breathAmount != null ? 'breath' : 'pacer'; }
+
   // ---- Pulse: a clock hand sweeping a ring per metric --------------------
+
   // One revolution every PULSE_REV_SEC, resetting at twelve o'clock. Where the
   // hand is now, each metric's ring bulges by how much that metric is doing;
   // the bulge stays and fades as the hand moves on, so you see the shape of the
@@ -2431,6 +2865,7 @@ function createZenVisual(canvas) {
       // upscale from the shared small buffer.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (mode === 'flow') renderFlow(ctx, canvas.width, canvas.height);
+      else if (mode === 'ribbon') renderRibbon(ctx, canvas.width, canvas.height, tSec);
       else if (mode === 'silk') renderSilk(ctx, canvas.width, canvas.height, tSec);
       else if (mode === 'corona') renderCoronaDiffuse(ctx, canvas.width, canvas.height, tSec);
       else renderPulse(ctx, canvas.width, canvas.height, tSec);
@@ -2472,6 +2907,10 @@ function createZenVisual(canvas) {
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
         depositSec: irisDepositSec(),
+        /* What the centre glow is really pulsing on. See LEGENDS.ribbon: this is the difference between
+           "follows your breath" and "a steady 10s pacer, not your breath", and only one of them is true
+           at any moment. */
+        bloom: mode === 'ribbon' ? ribbonBreathDriver() : null,
         omitSeries: VizCore.CHANNEL_LABELS.filter((_, i) => !everFresh[i]),
       }));
     }
@@ -2658,6 +3097,7 @@ function createZenVisual(canvas) {
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
         depositSec: irisDepositSec(),
+        bloom: VizCore.MODES[modeIndex].key === 'ribbon' ? ribbonBreathDriver() : null,
         omitSeries: VizCore.CHANNEL_LABELS.filter((_, i) => !everFresh[i]),
       });
     },

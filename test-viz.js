@@ -820,4 +820,50 @@ const VizCore = require('./public/viz-core.js');
   console.log('✓ the key names which composite is driving the image, and changes when it changes');
 }
 
+/* ---- RIBBON: the default visual, and what its key is allowed to claim -------------
+ *
+ * Asked for as "make a new visual and make it the default for meditate", so it has to BE the default: a
+ * fresh page starts at mode index 0, which is where it sits.
+ *
+ * Three qualities of that picture are readings — height, thickness, and the centre bloom — and a reader
+ * who is not told that sees four pretty bands. So the key has to carry all three. One of them, the bloom's
+ * pulse, is only sometimes a reading: it follows the measured breath when a strap or the heart gives one
+ * and falls back to a fixed 10-second pacer when nothing does. "Follows your breath" printed over a glow
+ * running on a timer is precisely the unearned claim this project forbids, so the substitution is checked
+ * in both directions and for the case where the caller does not say.
+ */
+{
+  assert.strictEqual(VizCore.MODES[0].key, 'ribbon',
+    'Ribbon must be mode 0 — that is what makes it the default a fresh page opens on');
+  assert.ok(!VizCore.MODES[0].hidden, 'and it must be reachable from the picker and by cycling');
+
+  const key = VizCore.legendFor('ribbon', {});
+  const labels = key.filter((e) => e.label).map((e) => e.label);
+  assert.deepStrictEqual(labels, ['Calm', 'Focus', 'Thinking', 'Drowsy'],
+    `the key must name all four ribbons in the palette they are drawn in, got ${JSON.stringify(labels)}`);
+  const notes = key.filter((e) => e.text).map((e) => e.text).join(' | ');
+  assert.match(notes, /higher and thicker/,
+    'and must say that BOTH height and thickness are the score — thickness is what carries it when your'
+    + ' eyes are half closed, and an unexplained encoding is not an encoding');
+  assert.match(notes, /the same scale every sit/,
+    'and that the scale is fixed, which is the difference between this and every auto-ranged trace');
+  assert.match(notes, /minute ago/, 'and which end of the screen is now');
+
+  // The bloom, in all three cases.
+  assert.ok(!/pulse/.test(notes),
+    `with no bloom driver supplied the key must say nothing about the pulse, got "${notes}"`);
+  const breathed = VizCore.legendFor('ribbon', { bloom: 'breath' })
+    .filter((e) => e.text).map((e) => e.text).join(' | ');
+  assert.match(breathed, /follows your breath/, 'a measured breath is named as one');
+  const paced = VizCore.legendFor('ribbon', { bloom: 'pacer' })
+    .filter((e) => e.text).map((e) => e.text).join(' | ');
+  assert.match(paced, /not your breath/,
+    `a fallback pacer must SAY it is not your breath, got "${paced}"`);
+  assert.ok(!/follows your breath/.test(paced),
+    'and must not also claim it follows it');
+  assert.ok(!/%BLOOM%/.test(breathed + paced + notes), 'and the placeholder must never reach the screen');
+  console.log('✓ Ribbon is mode 0 and its key names all four ribbons, both encodings, and says'
+    + ' honestly whether the bloom is following your breath or running on a timer');
+}
+
 console.log('\nAll viz-core tests passed.');

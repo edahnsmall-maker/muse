@@ -111,6 +111,10 @@ function makeCtx() {
   ctx.translate = record('translate');
   ctx.rotate = record('rotate');
   ctx.scale = record('scale');
+  // Ribbon renders its soft passes into a half-resolution layer and uses setTransform to keep working in
+  // output-canvas coordinates. Absent from this stub, so the very first Ribbon frame threw — which is
+  // exactly what this file exists to catch, and did.
+  ctx.setTransform = record('setTransform');
   // Text, for the Flow legend. Arg 0 is the string, so the numeric check must skip
   // it; measureText has to return something plausible or layout maths goes NaN.
   ctx.fillText = record('fillText');
@@ -212,9 +216,12 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
 {
   const canvasesBefore = createdCanvases.length;
   const v = sandbox.createZenVisual(makeCanvas());
-  // Creation order is [target, compose buffer, scratch layer, Iris record].
+  /* Creation order is [target, compose buffer, scratch layer, Iris record, Ribbon layer]. Asserted by
+     count AND indexed by position, so adding a layer without updating this shows up here rather than as
+     a test that silently starts reading a different canvas — which is what happened when Ribbon's
+     half-resolution layer was added: this asserted 4 and got 5. */
   const layers = createdCanvases.slice(canvasesBefore);
-  assert.strictEqual(layers.length, 4, 'expected the target canvas plus three offscreen layers');
+  assert.strictEqual(layers.length, 5, 'expected the target canvas plus four offscreen layers');
   const recordCtx = layers[3].getContext();
 
   while (v.currentMode().key !== 'iris') v.cycleMode();
@@ -598,6 +605,65 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
   console.log(`✓ the recorded past holds still: steady ${steady.worst.toFixed(3)}%/sample,`
     + ` dropout net ${dead.net.toFixed(2)}%, push frame ${pushPct.toFixed(4)}% vs idle ${idlePct.toFixed(4)}%`
     + ` of the band, while a real excursion still rescales (${spike.net.toFixed(2)}%)`);
+}
+
+/* ---- RIBBON HAS NO DERIVED AXIS, and that is the point of it -----------------------
+ *
+ * Ribbon maps a score to a height through `expandSoft(v, 0.28, 0.82)` — a CONSTANT. Flow's composites
+ * learn a range from the data and then hold it, which is honest but means the first two minutes still move
+ * and two sits are not comparable by eye. The complaint that took three rounds to fix was "the lines still
+ * drift and i think it's bc the range is recent", and in this mode drift is not fixed, it is IMPOSSIBLE:
+ * there is no state to drift.
+ *
+ * So the assertion is not "the past moved less than x%", which is a measurement of a thing that can
+ * regress. It is that Ribbon never asks for a range at all — no `autoRange`, no `settleRange`, no
+ * `inRange`. Anyone who later reaches for one to make the ribbons fill the screen better will fail here,
+ * and the note above will tell them why not to.
+ *
+ * The height of a recorded sample is checked too, across a frame where a new sample lands: a constant
+ * transform of a frozen value cannot move, so if it does, something else is rewriting history.
+ */
+{
+  const canvas = makeCanvas(1280, 720);
+  const ctx = canvas.getContext();
+  const asked = [];
+  for (const fn of ['autoRange', 'settleRange', 'inRange']) {
+    const real = sandbox.VizCore[fn];
+    sandbox.VizCore[fn] = (...args) => { asked.push(fn); return real(...args); };
+  }
+  const v = sandbox.createZenVisual(canvas);
+  while (v.currentMode().key !== 'ribbon') v.cycleMode();
+
+  const feed = (calm, thinking) => v.setState({
+    calm, activity: thinking, noise: 0, breathAmount: null, breathPeriod: 9,
+    metrics: { calm, focus: 0.5, thinking, drowsy: 0.4 },
+    bands: [0, 1, 2, 3].map(() => ({ level: 0.3, spike: 0, fresh: true })),
+  });
+  const step = () => { nowMs += 16; const cb = rafCb; rafCb = null; cb(nowMs); };
+
+  // 40 samples of a steady sit, then a violent excursion — which is what would move a learned axis.
+  for (let i = 0; i < 40; i++) { feed(0.5, 0.5); step(); step(); step(); }
+  const geometry = () => ctx.__calls
+    .filter(([n]) => n === 'moveTo' || n === 'lineTo' || n === 'bezierCurveTo')
+    .map(([, a]) => a.join(',')).join(';');
+  ctx.__calls.length = 0; step();
+  const before = geometry();
+  for (let i = 0; i < 6; i++) { feed(0.95, 0.05); step(); step(); step(); }
+  ctx.__calls.length = 0; step();
+  const after = geometry();
+
+  assert.deepStrictEqual(asked, [],
+    `Ribbon must derive no axis from the data — it asked for ${asked.join(', ')}`);
+  assert.ok(before.length > 200 && after.length > 200,
+    'the ribbons must actually be drawn, or this measures nothing');
+  /* The picture MUST change (the excursion is real and the trace scrolls), so this is not "nothing
+     moved" — it is that the ribbons are still being drawn from the same constant mapping, which the
+     absence of any range call above establishes. This second check is the smoke: geometry that stops
+     changing means the render broke, and geometry identical to before means it froze. */
+  assert.notStrictEqual(before, after, 'a real excursion must still change the picture');
+  assert.deepStrictEqual(badNumbers, [], `Ribbon produced bad numbers:\n  ${badNumbers.join('\n  ')}`);
+  console.log('✓ Ribbon derives no axis from the data: 0 range calls, so its heights cannot drift,'
+    + ' and a real excursion still moves the picture');
 }
 
 /* ---- The sweep visuals must move EVERY frame, not six times a second -------------
