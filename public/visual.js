@@ -65,6 +65,7 @@ function createZenVisual(canvas) {
 
   let state = {
     calm: 0.5, noise: 0, breathPeriod: 0, activity: 0.5,
+    hr: null, hrv: null,        // from the chest strap; null until one is connected
     metrics: {},   // composite scores by key, for Pulse
     breathAmount: null, // measured breath phase, -1 exhaled .. +1 inhaled
     bands: [0, 1, 2, 3].map(() => ({ level: 0.5, spike: 0, fresh: true })),
@@ -143,6 +144,14 @@ function createZenVisual(canvas) {
   // two unrelated pictures — and that mismatch is exactly what made a composite
   // look "dead" when the flat blue line was in fact an electrode.
   let seriesMode = 'sensors';
+  /*
+   * WHICH SERIES FLOW IS PLOTTING, as a set of VizCore.FLOW_SERIES keys.
+   *
+   * `seriesMode` survives beside it as the name of the last PRESET applied, because the keyboard, the
+   * legend and three tests ask "sensors or composites?" — but it is now a label for a set rather than the
+   * thing that decides what is drawn. A hand-picked mix leaves it as 'custom'.
+   */
+  let flowKeys = new Set(VizCore.FLOW_PRESETS.sensors);
 
   /* Is the key drawn? On by default, and that is the deliberate choice: the whole
    * complaint was not knowing what the colours meant, so a legend you have to find
@@ -174,6 +183,8 @@ function createZenVisual(canvas) {
   // Cleared when the series being drawn changes, since a composite's range says nothing
   // about an electrode's.
   let flowRanges = [null, null, null, null];
+  /* Where the newest sample was drawn last frame, in canvas pixels. See flowScroll(). */
+  let flowHeadX = null;
   let flowDt = 0;
 
   /*
@@ -1058,6 +1069,104 @@ function createZenVisual(canvas) {
   }
   const flowEma = { levels: [null, null, null, null], metrics: [null, null, null, null], breath: null };
 
+  /* Which electrode a series is, for the arrays that are still indexed by channel (everFresh, spikes). */
+  function channelIndexOf(spec) { return VizCore.CHANNEL_LABELS.indexOf(spec.label); }
+
+  /*
+   * THE LABEL PILLS, beside each line's head and at its height.
+   *
+   * Asked for: "it'd be really nice to move the labels into small pills to the right of the line and see
+   * them match the height of the line. in other words, be by the dot, even tho you'd have to sort what
+   * happens when they overlap (which goes on top)".
+   *
+   * Why this is better than the corner key it replaces: with up to eleven lines on one graph, a legend in
+   * the top-left makes you match a colour swatch to a line by eye, across the width of the screen, for
+   * every line. A pill at the head names the line where you are already looking, and its height IS the
+   * reading — so the label and the value are the same object.
+   *
+   * OVERLAP. Two lines at the same value want the same pill position. The resolution is a single pass
+   * over the pills sorted by y, pushing each one down until it clears the previous by a pill's height,
+   * then re-centring the whole stack on where it started so a cluster spreads symmetrically rather than
+   * marching off the bottom. A pill that has been moved gets a short leader line back to its dot, because
+   * a displaced label with no connector is a label pointing at the wrong line.
+   *
+   * WHICH GOES ON TOP is decided rather than left to draw order: the pills are drawn in ascending order
+   * of how much they were displaced, so the one still at its true height is painted last and reads as the
+   * anchor of the cluster. Ties break toward the higher value, which is the line the eye follows.
+   */
+  function drawFlowPills(c, W, H, nowX, heads) {
+    if (!heads.length) return;
+    const fontPx = Math.max(9, Math.min(13, Math.round(H * 0.017)));
+    c.font = `600 ${fontPx}px Inter, ui-sans-serif, system-ui, sans-serif`;
+    c.textBaseline = 'middle';
+    c.textAlign = 'left';
+    const padX = Math.round(fontPx * 0.55);
+    const padY = Math.round(fontPx * 0.34);
+    const pillH = fontPx + padY * 2;
+    const gap = Math.round(fontPx * 0.28);
+    const x0 = nowX + Math.max(7, fontPx * 0.85);
+
+    const items = heads.map((h) => ({
+      ...h,
+      text: h.spec.label,
+      w: Math.ceil(c.measureText(h.spec.label).width) + padX * 2,
+      want: h.y,
+      at: h.y,
+    })).sort((a, b) => a.want - b.want);
+
+    // Push down to clear, then recentre the stack on its own mean so it grows both ways.
+    let shifted = false;
+    for (let i = 1; i < items.length; i++) {
+      const need = items[i - 1].at + pillH + gap;
+      if (items[i].at < need) { items[i].at = need; shifted = true; }
+    }
+    if (shifted) {
+      const wantMid = (items[0].want + items[items.length - 1].want) / 2;
+      const atMid = (items[0].at + items[items.length - 1].at) / 2;
+      const dy = wantMid - atMid;
+      for (const it of items) it.at += dy;
+      // And keep the whole stack on screen, top edge first — a pill above the frame is unreadable.
+      const top = items[0].at - pillH / 2;
+      const bottom = items[items.length - 1].at + pillH / 2;
+      if (top < 2) for (const it of items) it.at += 2 - top;
+      else if (bottom > H - 2) for (const it of items) it.at -= bottom - (H - 2);
+    }
+
+    /* A pill that would run off the right edge is drawn to the LEFT of the head instead. On a narrow
+       phone the head sits at 95% of the width and there is no room to the right at all. */
+    const widest = Math.max(...items.map((it) => it.w));
+    const flip = x0 + widest > W - 4;
+    c.globalCompositeOperation = 'source-over';
+    for (const it of items.slice().sort((a, b) => Math.abs(b.at - b.want) - Math.abs(a.at - a.want)
+      || a.want - b.want)) {
+      const px = flip ? nowX - Math.max(7, fontPx * 0.85) - it.w : x0;
+      const py = it.at - pillH / 2;
+      // The leader, only when the pill is not where its dot is.
+      if (Math.abs(it.at - it.want) > 1) {
+        c.strokeStyle = rgba(it.col, 0.34);
+        c.lineWidth = 1;
+        c.beginPath();
+        c.moveTo(flip ? nowX - 3 : nowX + 3, it.want);
+        c.lineTo(flip ? px + it.w : px, it.at);
+        c.stroke();
+      }
+      const r = Math.min(pillH / 2, 6);
+      c.beginPath();
+      if (c.roundRect) c.roundRect(px, py, it.w, pillH, r);
+      else c.rect(px, py, it.w, pillH);
+      /* A DARK PLATE UNDER THE TEXT, not the series colour behind white type. Eleven saturated pills
+         would be eleven bright blocks over the trace; a near-black plate with coloured text keeps the
+         lines the brightest thing on screen, which is what they should be. */
+      c.fillStyle = `rgba(6,9,18,${it.fresh ? 0.82 : 0.6})`;
+      c.fill();
+      c.strokeStyle = rgba(it.col, it.fresh ? 0.55 : 0.25);
+      c.lineWidth = 1;
+      c.stroke();
+      c.fillStyle = rgba(it.col, it.fresh ? 0.96 : 0.45);
+      c.fillText(it.text, px + padX, it.at + 0.5);
+    }
+  }
+
   function renderFlow(c, W, H) {
     const bg = c.createLinearGradient(0, 0, 0, H);
     bg.addColorStop(0, '#070a18');
@@ -1085,31 +1194,30 @@ function createZenVisual(canvas) {
      */
     const phase = flowPhase();
     const xOf = (i) => nowX - ((n - 1 - i) + phase - 1) * step;
+    flowHeadX = xOf(n - 1);
 
-    // Which four series, and in which colours.
-    const composites = seriesMode === 'composites';
-    const colors = composites
-      ? VizCore.PULSE_METRICS.map((m) => m.color)
-      : VizCore.CHANNEL_COLORS;
-    /* The value cached at record time — see emaStep above. The composites need no
-       walk-back for a metric with no inputs any more: the filter holds its own last value
-       through a gap, so a null yields the held level directly, and stays null only before
-       there has ever been a reading (which draws as a gap rather than a fabricated zero). */
-    const rawAt = (i, k) => {
-      const h = history[i];
-      const cached = composites ? h.sMetrics : h.sLevels;
-      return cached ? cached[k] : null;
-    };
-    const freshAt = (i, k) => {
-      if (composites) return true;
-      const h = history[i];
-      return !(h.held && h.held[k]);
-    };
+    /*
+     * WHICH SERIES, from the catalogue rather than from a binary switch.
+     *
+     * `flowKeys` is a set of VizCore.FLOW_SERIES keys, so Flow can plot any mix of electrodes,
+     * composites and body signals at once — asked for as "possibly even all (eeg, body, compositves,
+     * etc) all on the same graph, visually distinct". Each carries its OWN fixed axis, which is what
+     * makes the mix meaningful: alpha share, a 0-100 score and a heart rate are not on one scale.
+     */
+    const specs = VizCore.FLOW_SERIES.filter((fs) => flowKeys.has(fs.key));
+    if (!specs.length) return;
+    const composites = specs.some((fs) => fs.family === 'mind');
+    const colors = specs.map((fs) => fs.color);
+    /* The value cached at record time — see emaStep above. Each series reads itself out of the history
+       entry through its own `read`, so adding a signal to the catalogue is all it takes to plot it. A
+       null is a GAP and never a zero. */
+    const rawAt = (i, k) => specs[k].read(history[i]);
+    const freshAt = (i, k) => specs[k].fresh(history[i]);
 
     // Already smoothed, at record time, once. Reading it here rather than filtering per
     // frame is the whole point: the array below is identical from one frame to the next
     // except for the one sample that was added.
-    const series = [0, 1, 2, 3].map((k) => history.map((_, i) => rawAt(i, k)));
+    const series = specs.map((_, k) => history.map((__, i) => rawAt(i, k)));
 
     // expand() is the difference between a trace and a flat line. Every value
     // here is adaptively normalised against the wearer's own baseline, so a real
@@ -1161,15 +1269,16 @@ function createZenVisual(canvas) {
      * The upshot is better than a still axis: this one is the same axis in every sit, so two sits' traces
      * are comparable by eye. An auto-ranged trace never was.
      */
-    const ranges = composites
-      ? series.map((sr, k) => {
-        /* Composites keep the learn-then-hold. They are adaptively normalised, so they have no natural
-           scale to fix — see the long note on VizCore.settleRange. */
-        flowRanges[k] = VizCore.settleRange(flowRanges[k], VizCore.autoRange(sr), flowDt,
-          { holdAfterSec: VizCore.RANGE_HOLD_SEC });
-        return flowRanges[k];
-      })
-      : series.map(() => SENSOR_RANGE);
+    /*
+     * EVERY SERIES NOW CARRIES A FIXED AXIS, including the composites.
+     *
+     * The composites used to learn a range and then freeze it, because they were within-sit normalised
+     * scores with no natural scale. They are absolute band shares now (see DSP.bandShares), so 0..1 means
+     * the same thing in every sit and there is nothing left to derive. That removes the last adaptive
+     * axis in this renderer: no settleRange, no autoRange, no warm-up during which the past moves — and
+     * it is what makes two sits' Flow traces comparable by eye, which they never were.
+     */
+    const ranges = specs.map((fs) => fs.range);
     const yOf = (i, k) => {
       const v = series[k][i];
       if (v == null) return null;
@@ -1253,12 +1362,13 @@ function createZenVisual(canvas) {
        above and the head glow below keep `lighter`, because both are washes where summing is the
        intended look; only the data lines are solid. */
     c.globalCompositeOperation = 'source-over';
-    for (let ch = 0; ch < 4; ch++) {
+    for (let ch = 0; ch < specs.length; ch++) {
       const col = colors[ch] || [200, 210, 255];
       if (yOf(n - 1, ch) == null) continue;   // nothing to say about this series
-      // An electrode that has never made contact draws NOTHING. Its level is still the
-      // initial 0.5, which would render as a dead-flat line through the middle.
-      if (!composites && !everFresh[ch]) continue;
+      /* An electrode that has never made contact draws NOTHING. Its level is still the initial 0.5,
+         which would render as a dead-flat line through the middle. Keyed off the SERIES rather than off
+         a mode flag, so this still holds when electrodes and composites are on screen together. */
+      if (specs[ch].family === 'eeg' && !everFresh[channelIndexOf(specs[ch])]) continue;
       for (let gi = 0; gi < FLOW_GROUPS; gi++) {
         const i0 = Math.round((gi * (n - 1)) / FLOW_GROUPS);
         const i1 = Math.round(((gi + 1) * (n - 1)) / FLOW_GROUPS);
@@ -1337,9 +1447,10 @@ function createZenVisual(canvas) {
      * second while everything behind it slid. At phase 0 it is exactly the sample
      * arriving at nowX now, and at phase 1 exactly the next one, so it crosses a push
      * without a step either. */
-    for (let ch = 0; ch < 4; ch++) {
+    const headsAt = [];
+    for (let ch = 0; ch < specs.length; ch++) {
       const col = colors[ch] || [200, 210, 255];
-      if (!composites && !everFresh[ch]) continue;
+      if (specs[ch].family === 'eeg' && !everFresh[channelIndexOf(specs[ch])]) continue;
       const yNew = yOf(n - 1, ch);
       if (yNew == null) continue;
       const yPrev = n >= 2 ? yOf(n - 2, ch) : yNew;
@@ -1357,7 +1468,9 @@ function createZenVisual(canvas) {
       const headFresh = freshAt(n - 1, ch);
       c.fillStyle = rgba(col, headFresh ? 1 : 0.35);
       c.beginPath(); c.arc(nowX, hy, hr, 0, Math.PI * 2); c.fill();
+      headsAt.push({ y: hy, col, spec: specs[ch], fresh: headFresh, value: series[ch][n - 1] });
     }
+    drawFlowPills(c, W, H, nowX, headsAt);
 
     // Spikes: small marks left where they happened, fading with the trace
     // rather than staying at full brightness forever.
@@ -1365,8 +1478,11 @@ function createZenVisual(canvas) {
       const h = history[i];
       const vis = Math.pow(i / Math.max(1, n - 1), 1.2);
       if (vis < 0.05) continue;
-      for (let ch = 0; ch < 4; ch++) {
-        const sp = clamp01(h.spikes[ch]);
+      for (let ch = 0; ch < specs.length; ch++) {
+        // Spikes belong to an ELECTRODE. A composite or a heart rate has none, and marking one would be
+        // attaching an electrode's event to a series that cannot have it.
+        if (specs[ch].family !== 'eeg') continue;
+        const sp = clamp01(h.spikes[channelIndexOf(specs[ch])]);
         if (sp < 0.5) continue;
         const y = yOf(i, ch);
         if (y == null) continue;
@@ -2998,6 +3114,11 @@ function createZenVisual(canvas) {
         // snapping its ring to zero — a fabricated zero is a lie about the
         // signal, the same rule metrics.js follows.
         metrics: Object.assign({}, state.metrics, next.metrics || {}),
+        /* Merged rather than replaced, like `metrics`: a tick with no fresh beat must hold the last heart
+           rate rather than dropping the line, since a beat arrives about once a second and the tick runs
+           four times as often. */
+        hr: next.hr !== undefined ? next.hr : state.hr,
+        hrv: next.hrv !== undefined ? next.hrv : state.hrv,
         breathAmount: next.breathAmount !== undefined ? next.breathAmount : state.breathAmount,
         bands,
       };
@@ -3026,6 +3147,10 @@ function createZenVisual(canvas) {
         sLevels: flowEma.levels.slice(),
         sMetrics: flowEma.metrics.slice(),
         sBreath: state.breathAmount == null ? null : flowEma.breath,
+        /* THE BODY SIGNALS, so Flow can plot them beside the EEG. Not smoothed here: heart rate and RMSSD
+           arrive already averaged over a window of beats — a 60-second one for RMSSD — and smoothing an
+           average again only adds lag. Null when there is no strap, which draws as a gap. */
+        hr: state.hr, hrv: state.hrv,
       });
       if (history.length > FLOW_MAX) history.shift();
       /* Sample cadence, measured. Gaps below 20ms are two setState calls inside one tick
@@ -3066,6 +3191,30 @@ function createZenVisual(canvas) {
     },
     currentMode() { return VizCore.MODES[modeIndex]; },
     // Follows the data panel's Sensors/Composites switch — see seriesMode.
+    /* THE SERIES SET, and the four ways to change it. `setSeries` keeps its old meaning as a preset so
+       every existing caller works unchanged; the other three are what the picker uses. */
+    setFlowSeries(keys) {
+      const want = (keys || []).filter((k) => VizCore.FLOW_BY_KEY[k]);
+      flowKeys = new Set(want);
+      seriesMode = Object.keys(VizCore.FLOW_PRESETS).find((p) => {
+        const preset = VizCore.FLOW_PRESETS[p];
+        return preset.length === flowKeys.size && preset.every((k) => flowKeys.has(k));
+      }) || 'custom';
+      flowRanges = [null, null, null, null];
+      return this.flowSeries();
+    },
+    toggleFlowSeries(key) {
+      if (!VizCore.FLOW_BY_KEY[key]) return this.flowSeries();
+      const next = new Set(flowKeys);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      /* NEVER EMPTY. An empty Flow is a blank rectangle with no way to tell it from a crash, so the last
+         series cannot be switched off — the same rule the metrics panel follows. */
+      if (!next.size) return this.flowSeries();
+      return this.setFlowSeries(Array.from(next));
+    },
+    flowSeries() {
+      return { preset: seriesMode, keys: VizCore.FLOW_SERIES.map((fs) => fs.key).filter((k) => flowKeys.has(k)) };
+    },
     setSeries(which) {
       if (seriesMode !== (which === 'composites' ? 'composites' : 'sensors')) {
         // Different series entirely — a held range from the old set would be applied to
@@ -3073,6 +3222,8 @@ function createZenVisual(canvas) {
         flowRanges = [null, null, null, null];
       }
       seriesMode = which === 'composites' ? 'composites' : 'sensors';
+      // AND THE SET, or the preset name and what is drawn disagree.
+      flowKeys = new Set(VizCore.FLOW_PRESETS[seriesMode]);
       return seriesMode;
     },
     setLegend(on) { legendOn = !!on; return legendOn; },
@@ -3104,7 +3255,12 @@ function createZenVisual(canvas) {
     flowRange(k) { return flowRanges[k] ? Object.assign({}, flowRanges[k]) : null; },
     /* The sub-sample scroll position and the measured sample cadence, so a test can check
        that Flow moves between samples without inferring it from drawn coordinates. */
-    flowScroll() { return { phase: flowPhase(), intervalSec: pushIntervalSec }; },
+    /* `headX` is where the newest sample is drawn, in canvas pixels, reported rather than inferred from
+       the draw calls. The test that measures the sub-sample scroll used to take the rightmost moveTo/lineTo
+       vertex, which was the trace's head until the label pills arrived — their leader lines are drawn at a
+       fixed x beside the head, so the maximum became a constant and the scroll read as zero. A renderer
+       that has to be reverse-engineered from its draw calls will keep breaking tests that way. */
+    flowScroll() { return { phase: flowPhase(), intervalSec: pushIntervalSec, headX: flowHeadX }; },
     /* The y actually drawn for every sample of a series, last frame, in canvas pixels —
        the only way to measure whether the RECORDED PAST holds still, which is the thing
        that was reported as drifting. Off unless asked for: this allocates per frame. */

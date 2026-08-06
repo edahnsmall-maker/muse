@@ -259,12 +259,33 @@ const DSP = require('./public/dsp.js');
       + ` (got ${by['thinking pulling me a lot']}, was 52.9)`);
     assert.ok(by['working, not meditating'] < 40,
       `and a working session must read clearly below the meditative ones (got ${by['working, not meditating']})`);
-    assert.ok(by['85% Zen mind, attentive, calm'] >= 75,
+    assert.ok(by['85% Zen mind, attentive, calm'] >= 60,
       `the sit the practitioner called 85% Zen mind must read high`
       + ` (got ${by['85% Zen mind, attentive, calm']}, was 47)`);
+    /*
+     * AND MUST NOT PIN. Reported after the first widening: "the calm line is flatlining and hitting a
+     * ceiling." That sit's share runs to p90 0.519 and max 0.539, and the window's top was 0.50 — so its
+     * whole upper half sat in the tanh's saturating tail, where a large change in share moves the score
+     * barely at all. 6% of the sit read 95 or higher.
+     *
+     * The window must therefore span the observed RANGE, not its middle 90%: the sits at the top of the
+     * distribution are exactly the ones worth resolving. Asserted at the observed extremes rather than as
+     * a mean, because a mean can look healthy while the top of every good sit is flat.
+     */
+    const atMax = Math.round(100 * DSP.calmFromShares({ alphaOfFast: 0.539 }));
+    const atP90 = Math.round(100 * DSP.calmFromShares({ alphaOfFast: 0.519 }));
+    assert.ok(atMax <= 92,
+      `the highest share yet recorded (0.539) must leave headroom, not sit against the ceiling`
+      + ` (got ${atMax}); a pinned score cannot show a better sit as better`);
+    assert.ok(atMax - atP90 >= 2,
+      `and the top of a good sit must still RESOLVE: p90 (0.519) and max (0.539) must differ by more`
+      + ` than rounding (${atP90} vs ${atMax})`);
+    // The all-time observed maximum across every recording must still be inside the scale.
+    assert.ok(Math.round(100 * DSP.calmFromShares({ alphaOfFast: 0.676 })) < 100,
+      'and the largest share ever recorded must not read as a literal 100');
     assert.ok(by['85% Zen mind, attentive, calm'] > by['Zen mind, sneezed, sensors out'],
       'and above the sit that was interrupted and lost its sensors');
-    assert.ok(by['relaxed, mind settling naturally'] > by['working, not meditating'] + 30,
+    assert.ok(by['relaxed, mind settling naturally'] > by['working, not meditating'] + 25,
       'the gap between meditating and working must be large, not the 4 points the old score gave');
     /*
      * THE NON-ZEN SESSION MUST NOT SCORE AS A GOOD SIT. This is the assertion the first version of this
@@ -273,7 +294,7 @@ const DSP = require('./public/dsp.js');
      * late-night TV session from a calm sit — their frontal alpha power was within 3% — so what is
      * pinned is the margin below the peak sit, not an absolute band.
      */
-    assert.ok(by['NON-ZEN: TV, mouse, music'] < by['85% Zen mind, attentive, calm'] - 25,
+    assert.ok(by['NON-ZEN: TV, mouse, music'] < by['85% Zen mind, attentive, calm'] - 20,
       `a 26-minute session with the TV on and a mouse in hand must fall well below a peak sit`
       + ` (non-Zen ${by['NON-ZEN: TV, mouse, music']}, peak ${by['85% Zen mind, attentive, calm']}).`
       + ' The first window shipped scored it 72 against the peak sit\'s 91.');

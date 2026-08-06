@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
 <title>Muse Zen Spike — Direct Bluetooth</title>
-<link rel="stylesheet" href="app.css?v=2026-08-06a">
+<link rel="stylesheet" href="app.css?v=2026-08-06b">
 </head>
 <body>
 <!--
@@ -169,10 +169,11 @@
          and better — but it does decide which lines this chart plots, which is a real job. Reported as
          "i dont think the sensors and composites makes sense with the content on it... calm is on sensors
          (it's a composite)". -->
-    <div id="viewSwitch">
-      <span class="pill active" data-view="sensors">Sensors</span>
-      <span class="pill" data-view="composites">Composites</span>
-    </div>
+    <!-- THE SERIES PICKER. Presets on the first row, then one toggle per signal grouped by family, so
+         any mix of electrodes, composites and body signals can be on the graph at once — asked for as
+         "be able to choose which metrics to show, and possibly even all ... on the same graph". The old
+         two-pill Sensors/Composites switch is the first two presets. Rendered by renderViewSwitch(). -->
+    <div id="viewSwitch"></div>
     <div id="dataBody">
       <canvas id="chartCanvas" width="320" height="140"></canvas>
       <div id="legend"></div>
@@ -274,7 +275,7 @@
    * shows an old date here while the version string still reads new — which is exactly the mismatch
    * that has been the root cause twice.
    */
-  var BUILD = '2026-08-06a';
+  var BUILD = '2026-08-06b';
   window.__BUILD = BUILD;
   try {
     var stamp = document.createElement('div');
@@ -311,28 +312,28 @@
   });
 }());
 </script>
-<script src="dsp.js?v=2026-08-06a"></script>
+<script src="dsp.js?v=2026-08-06b"></script>
 <!-- A fake headband, only when the URL asks for it (?sim=1). See simdevice.js: it exists so
      "the panels do not open" can be told apart from "the headband is not streaming". -->
-<script src="simdevice.js?v=2026-08-06a"></script>
-<script src="clockcheck.js?v=2026-08-06a"></script>
-<script src="selfcheck.js?v=2026-08-06a"></script>
-<script src="viz-core.js?v=2026-08-06a"></script>
-<script src="visual.js?v=2026-08-06a"></script>
-<script src="chart.js?v=2026-08-06a"></script>
-<script src="summary.js?v=2026-08-06a"></script>
-<script src="cues.js?v=2026-08-06a"></script>
-<script src="metrics.js?v=2026-08-06a"></script>
-<script src="markers.js?v=2026-08-06a"></script>
-<script src="polar.js?v=2026-08-06a"></script>
-<script src="record.js?v=2026-08-06a"></script>
-<script src="export.js?v=2026-08-06a"></script>
-<script src="labels.js?v=2026-08-06a"></script>
-<script src="trials.js?v=2026-08-06a"></script>
-<script src="probes.js?v=2026-08-06a"></script>
-<script src="panels.js?v=2026-08-06a"></script>
+<script src="simdevice.js?v=2026-08-06b"></script>
+<script src="clockcheck.js?v=2026-08-06b"></script>
+<script src="selfcheck.js?v=2026-08-06b"></script>
+<script src="viz-core.js?v=2026-08-06b"></script>
+<script src="visual.js?v=2026-08-06b"></script>
+<script src="chart.js?v=2026-08-06b"></script>
+<script src="summary.js?v=2026-08-06b"></script>
+<script src="cues.js?v=2026-08-06b"></script>
+<script src="metrics.js?v=2026-08-06b"></script>
+<script src="markers.js?v=2026-08-06b"></script>
+<script src="polar.js?v=2026-08-06b"></script>
+<script src="record.js?v=2026-08-06b"></script>
+<script src="export.js?v=2026-08-06b"></script>
+<script src="labels.js?v=2026-08-06b"></script>
+<script src="trials.js?v=2026-08-06b"></script>
+<script src="probes.js?v=2026-08-06b"></script>
+<script src="panels.js?v=2026-08-06b"></script>
 <!-- Only for handing a finished sit to the lab's inbox; the app never reads lab data. -->
-<script src="labstore.js?v=2026-08-06a"></script>
-<script src="app.js?v=2026-08-06a"></script>
+<script src="labstore.js?v=2026-08-06b"></script>
+<script src="app.js?v=2026-08-06b"></script>
 </body>
 </html>

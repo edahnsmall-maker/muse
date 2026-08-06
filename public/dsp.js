@@ -1102,13 +1102,13 @@
    * Zen sit outscores a random second of the non-Zen session. 0.5 is a coin toss.
    *
    *   sit                                                  share    old Calm   new Calm    AUC vs non-Zen
-   *   "thinking pulling me a lot"                          0.224     42-53         5
-   *   "working, not meditating"                            0.268     42-53        11
-   *   "very calm, not a lot of effort"                      0.349     42-53        38
-   *   NON-ZEN: 26min, TV on, moving the mouse, music        0.373       50         49        (reference)
-   *   "Zen mind, but I sneezed and the sensors went out"    0.356       20         41            0.41
-   *   "relaxed, mind settling naturally"                    0.395     42-53        60
-   *   "85% Zen mind. attentive, calm, slow breathing."      0.445       47         80            0.78
+   *   "thinking pulling me a lot"                          0.224     42-53         9
+   *   "working, not meditating"                            0.268     42-53        15
+   *   "very calm, not a lot of effort"                      0.349     42-53        34
+   *   "Zen mind, but I sneezed and the sensors went out"    0.356       20         36            0.41
+   *   NON-ZEN: 26min, TV on, moving the mouse, music        0.373       50         41        (reference)
+   *   "relaxed, mind settling naturally"                    0.395     42-53        48
+   *   "85% Zen mind. attentive, calm, slow breathing."      0.445       47         65            0.78
    *
    * So: the peak sit is now clearly separated from a working session and from an agitated one, which is
    * what the score could not do at all before — it spanned 42-53 across all of them with a rank
@@ -1132,8 +1132,27 @@
    *
    * `expandSoft` rather than a clamp: a hard clamp draws every excursion past the window as a dead flat
    * line pressed against the edge, which reads as a confident detection rather than an out-of-range one.
+   *
+   * SECOND CORRECTION, and it is the same lesson as the first from the other end. The window was set to
+   * [0.25, 0.50] from the pooled p5 and p95, and reported straight back: "the calm line is flatlining and
+   * hitting a ceiling."
+   *
+   * Measured on the sit it was reported against: that sit's share runs p10 0.367, median 0.457, p90 0.519,
+   * max 0.539 — so its whole upper half sat ABOVE the window's top. Past the top the tanh is in its
+   * saturating tail, where a large change in share produces almost no change in score, and 6% of the sit
+   * read 95 or higher. A window taken from the middle 90% of the pooled distribution is by construction
+   * too narrow for the sits at the top of it, which are exactly the sits worth resolving.
+   *
+   * So the window spans the observed RANGE now (pooled p1 0.220, p99 0.589, max 0.676) rather than its
+   * middle. This is the same rule the Flow sensor axis already follows and says so in renderFlow: a fixed
+   * axis clips instead of adapting, so it must carry headroom above anything real.
+   *
+   * The cost is stated because it is unavoidable: the peak sit reads 65 rather than 79. A score cannot
+   * both put a peak sit at 90 and leave room above a peak sit, and a pinned score is the very complaint
+   * being fixed. What matters more is what the sit's own variation now occupies — 44 points between its
+   * p10 and p90, against a display that had 6% of it flat against the top.
    */
-  const CALM_WINDOW = Object.freeze({ lo: 0.25, hi: 0.50 });
+  const CALM_WINDOW = Object.freeze({ lo: 0.22, hi: 0.58 });
 
   function calmFromShares(shares) {
     if (!shares || !Number.isFinite(shares.alphaOfFast)) return null;

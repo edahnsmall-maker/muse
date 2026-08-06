@@ -412,6 +412,11 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
    * vertex SET changes underneath the average. That read as 1.85x the true drift. The
    * rightmost vertex is always present (a channel is skipped entirely when its newest
    * sample has no y) and is exactly nowX + (1 - phase) * step. */
+  /* REPORTED BY THE RENDERER, not inferred from its draw calls. This used to take the rightmost
+     moveTo/lineTo vertex, which was the trace's head right up until Flow grew label pills at each head —
+     their leader lines are drawn at a fixed x beside the head, so the maximum became a constant and a
+     perfectly good scroll measured as exactly zero on every frame. `flowScroll().headX` is xOf(n-1),
+     which is the quantity this test is actually about. */
   const headX = () => {
     ctx.__calls.length = 0;
     nowMs += 16;
@@ -419,7 +424,9 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
     cb(nowMs);
     const xs = ctx.__calls.filter(([n]) => n === 'moveTo' || n === 'lineTo').map(([, a]) => a[0]);
     assert.ok(xs.length > 50, `Flow should be drawing a trace to measure (${xs.length} vertices)`);
-    return Math.max(...xs);
+    const at = v.flowScroll().headX;
+    assert.ok(at != null, 'the renderer must report where it drew the newest sample');
+    return at;
   };
 
   // No setState inside this loop: every change in x is time, not data.
@@ -605,6 +612,87 @@ console.log('✓ no NaN, Infinity, or negative radii reached any draw call');
   console.log(`✓ the recorded past holds still: steady ${steady.worst.toFixed(3)}%/sample,`
     + ` dropout net ${dead.net.toFixed(2)}%, push frame ${pushPct.toFixed(4)}% vs idle ${idlePct.toFixed(4)}%`
     + ` of the band, while a real excursion still rescales (${spike.net.toFixed(2)}%)`);
+}
+
+/* ---- FLOW PLOTS ANY MIX, AND NAMES EACH LINE AT ITS HEAD ---------------------------
+ *
+ * Asked for: "for flow and all the visuals i should be able to toggle things on and off ... possibly even
+ * all (eeg, body, compositves, etc) all on the same graph, visually distinct", and "move the labels into
+ * small pills to the right of the line and see them match the height of the line ... be by the dot, even
+ * tho you'd have to sort what happens when they overlap (which goes on top)".
+ */
+{
+  const canvas = makeCanvas(1280, 720);
+  const ctx = canvas.getContext();
+  const v = sandbox.createZenVisual(canvas);
+  while (v.currentMode().key !== 'flow') v.cycleMode();
+
+  const feed = (o) => v.setState(Object.assign({
+    calm: 0.6, activity: 0.4, noise: 0, breathAmount: 0.2, breathPeriod: 8,
+    metrics: { calm: 0.6, focus: 0.5, thinking: 0.4, drowsy: 0.3 },
+    hr: 64, hrv: 70,
+    bands: [0, 1, 2, 3].map((k) => ({ level: 0.3 + 0.05 * k, spike: 0, fresh: true })),
+  }, o));
+  const step = () => { nowMs += 16; const cb = rafCb; rafCb = null; cb(nowMs); };
+  for (let i = 0; i < 30; i++) { feed({}); step(); step(); }
+
+  // THE PRESETS still mean what they meant, because the app and the keyboard call setSeries by name.
+  assert.strictEqual(v.setSeries('composites'), 'composites', 'setSeries keeps its old contract');
+  assert.strictEqual(v.flowSeries().preset, 'composites', 'and the set follows the preset name');
+  /* JOINED, not deepStrictEqual: the array comes back from the sandboxed VM context, so its prototype is
+     the sandbox's Array and a strict deep-equal fails on prototype identity with identical contents. */
+  assert.strictEqual(v.flowSeries().keys.join(','), 'calm,focus,thinking,drowsy',
+    'the composites preset is the four composite scores');
+
+  /* A HAND-PICKED MIX ACROSS ALL THREE FAMILIES — one electrode, one composite, one body signal. This is
+     the thing the old binary switch made impossible. */
+  v.setFlowSeries(['ch1', 'calm', 'heart']);
+  assert.strictEqual(v.flowSeries().preset, 'custom', 'a mix is not one of the presets');
+  assert.strictEqual(v.flowSeries().keys.join(','), 'ch1,calm,heart',
+    'and it keeps exactly what was asked for, in catalogue order');
+  for (let i = 0; i < 6; i++) { feed({}); step(); }
+  step();
+  ctx.__calls.length = 0; step();
+  /* fillText(text, x, y) — and the corner key draws text too, so the PILLS are the ones drawn to the
+     right of where the newest sample was plotted. That filter is also the geometry assertion: a pill that
+     is not beside the head is over the trace, which is the layout this replaced. */
+  const head = v.flowScroll().headX;
+  const pills = ctx.__calls.filter(([n, a]) => n === 'fillText' && a[1] > head);
+  const drawn = pills.map(([, a]) => a[0]);
+  for (const want of ['AF7', 'Calm', 'Heart']) {
+    assert.ok(drawn.includes(want), `every plotted series must name itself at its head (missing ${want}`
+      + ` from ${JSON.stringify(drawn)})`);
+  }
+  assert.strictEqual(drawn.length, 3,
+    `and nothing that is switched off may be labelled (${JSON.stringify(drawn)})`);
+
+  /* OVERLAP. Three series driven to the SAME value want the same pill position; they must be pushed apart
+     rather than stacked into one illegible blot, and the stack must stay on screen. */
+  v.setFlowSeries(['calm', 'focus', 'thinking', 'drowsy']);
+  for (let i = 0; i < 40; i++) {
+    feed({ metrics: { calm: 0.5, focus: 0.5, thinking: 0.5, drowsy: 0.5 } });
+    step();
+  }
+  ctx.__calls.length = 0; step();
+  const headNow = v.flowScroll().headX;
+  const ys = ctx.__calls.filter(([n, a]) => n === 'fillText' && a[1] > headNow)
+    .map(([, a]) => a[2]).sort((a, b) => a - b);
+  assert.strictEqual(ys.length, 4, `four identical series must still produce four labels (${ys.length})`);
+  for (let i = 1; i < ys.length; i++) {
+    assert.ok(ys[i] - ys[i - 1] > 6,
+      `labels at the same value must be pushed apart, not stacked (${ys.join(', ')})`);
+  }
+  assert.ok(ys[0] > 0 && ys[ys.length - 1] < 720,
+    `and the whole stack must stay on screen (${ys.join(', ')})`);
+
+  // The last series cannot be switched off: an empty Flow is indistinguishable from a crash.
+  v.setFlowSeries(['calm']);
+  v.toggleFlowSeries('calm');
+  assert.strictEqual(v.flowSeries().keys.join(','), 'calm', 'the last series must survive being toggled off');
+
+  assert.deepStrictEqual(badNumbers, [], `Flow's series picker produced bad numbers:\n  ${badNumbers.join('\n  ')}`);
+  console.log('✓ Flow plots any mix of sensors, composites and body signals, names each line at its head,'
+    + ' and pushes overlapping labels apart without leaving the frame');
 }
 
 /* ---- RIBBON HAS NO DERIVED AXIS, and that is the point of it -----------------------

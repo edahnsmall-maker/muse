@@ -497,12 +497,28 @@ const VizCore = require('./public/viz-core.js');
     && iris.some((e) => eq(e.color, VizCore.IRIS_MOOD.calmHi)),
     'and it must name the warm/cool ends that irisMindColor actually mixes');
 
-  // Flow still follows the Sensors/Composites switch: its key has to change with it,
-  // or flipping the switch silently relabels four lines.
-  const flowSensors = VizCore.legendFor('flow', { composites: false });
-  const flowComps = VizCore.legendFor('flow', { composites: true });
-  assert.notDeepStrictEqual(flowSensors.map((e) => e.label), flowComps.map((e) => e.label),
-    'Flow is the one mode that switches series, so its key must switch too');
+  /*
+   * FLOW'S KEY HAS NO SWATCHES, because Flow labels its lines at their heads instead — see drawFlowPills.
+   *
+   * This used to assert that the key CHANGED when the Sensors/Composites switch flipped, which was the
+   * right assertion while a corner key was the only thing naming four lines. Flow now plots any mix of up
+   * to eleven series, and a corner key for that is the same list twice plus a colour-matching exercise
+   * across the width of the screen. Asked for: "move the labels into small pills to the right of the line
+   * ... be by the dot".
+   *
+   * So the assertion inverts: no swatch may appear in Flow's key at all, and what remains must be the one
+   * thing a pill cannot say — that each line carries its own scale.
+   */
+  const flowKey = VizCore.legendFor('flow', {});
+  assert.ok(flowKey.length, 'Flow must still carry a key');
+  assert.ok(flowKey.every((e) => e.text && !e.label),
+    `Flow's key must be words only now that its lines name themselves: ${JSON.stringify(flowKey)}`);
+  assert.ok(flowKey.some((e) => /own fixed scale|own scale/.test(e.text)),
+    'and it must say that each line has its own scale — mixing an alpha share with a heart rate in one'
+    + ' picture is unreadable if the reader assumes a shared axis');
+  // The same key whichever series are on, because the series name themselves.
+  assert.strictEqual(JSON.stringify(VizCore.legendFor('flow', { composites: true })),
+    JSON.stringify(flowKey), 'and it no longer depends on which series are showing');
 
   // A mode with no colour key still gets its words. Breath draws one form and is
   // explicitly "nothing to read" \u2014 but which direction is the in-breath is not
@@ -758,29 +774,34 @@ const VizCore = require('./public/viz-core.js');
  * that was never there and concluding it was flat.
  */
 {
-  const all = VizCore.legendFor('flow', { composites: false });
-  assert.ok(all.some((e) => e.label === 'TP9') && all.some((e) => e.label === 'TP10'),
-    'precondition: all four electrodes are keyed when all four are reading');
-  const some = VizCore.legendFor('flow', { composites: false, omitSeries: ['TP9', 'TP10'] });
-  assert.deepStrictEqual(some.filter((e) => e.label).map((e) => e.label), ['AF7', 'AF8'],
-    'an electrode with no contact must be absent from the key, not merely dimmed');
-  /* THE CAPTION MUST DESCRIBE THE AXIS THAT IS ACTUALLY DRAWN, and Flow now has two of them.
-     Per-channel traces are on a FIXED 0-0.6 scale — alpha's share of alpha+beta is a bounded ratio, so
-     there is nothing to derive — while composites keep a within-sit scale because they are adaptively
-     normalised and have none of their own. "its own recent range" was describing the behaviour that made
-     the lines wander, so a caption still saying it would be teaching the reader the old, wrong thing. */
-  assert.ok(some.some((e) => e.text && /0 to 0\.6|same scale every sit/.test(e.text)),
-    `the sensor key must say the scale is fixed, got ${JSON.stringify(some.filter((e) => e.text))}`);
-  const comp = VizCore.legendFor('flow', { composites: true });
-  assert.ok(comp.some((e) => e.text && /range in this sit/.test(e.text)),
-    `the composite key must say the scale is per-sit, got ${JSON.stringify(comp.filter((e) => e.text))}`);
-  assert.ok(comp.some((e) => e.text && /fixed after/.test(e.text)),
-    'and that it stops moving, which is the whole point of the hold');
-  const none = VizCore.legendFor('flow',
-    { composites: false, omitSeries: ['TP9', 'AF7', 'AF8', 'TP10'] });
+  /*
+   * THE FLOW CASE MOVED. Flow's key no longer names lines at all — each line names itself in a pill at
+   * its own head — so "an electrode with no contact must be absent from the key" is now a statement about
+   * the pills, and it is asserted where they are drawn (test-visual-smoke.js: "nothing that is switched
+   * off may be labelled", plus renderFlow skipping any electrode that never made contact so no pill is
+   * produced for it in the first place).
+   *
+   * What is still tested here is `omitSeries` itself, on the modes that DO carry swatches. The rule is the
+   * same one and the reason has not changed: a key naming a line that was never drawn sends the reader
+   * looking for it and concluding it was flat.
+   */
+  const all = VizCore.legendFor('pulse', {});
+  assert.ok(all.some((e) => e.label === 'Calm') && all.some((e) => e.label === 'Drowsy'),
+    'precondition: a swatch-bearing key names all of its series');
+  const some = VizCore.legendFor('pulse', { omitSeries: ['Calm', 'Drowsy'] });
+  assert.deepStrictEqual(some.filter((e) => e.label).map((e) => e.label), ['Focus', 'Thinking'],
+    'a series that is not drawn must be absent from the key, not merely dimmed');
+  const none = VizCore.legendFor('pulse',
+    { omitSeries: ['Calm', 'Focus', 'Thinking', 'Drowsy'] });
   assert.deepStrictEqual(none, [],
     'with nothing drawn there is no key at all — not a lone caption describing nothing');
-  console.log('✓ the key names only what is on screen, and says the height is relative');
+
+  /* And an electrode key, since that is the case it was reported against: "the two flat lines" was TP9
+     and TP10 artifact-flagged for a whole sit and drawn as dead-straight horizontals. */
+  const chans = VizCore.legendFor('eclipse', { omitSeries: ['TP9', 'TP10'] });
+  assert.ok(!chans.some((e) => e.label === 'TP9' || e.label === 'TP10'),
+    'an electrode with no contact must be absent from a per-channel key too');
+  console.log('✓ the key names only what is on screen, on every mode that keys its series by colour');
 }
 
 /* ---- THE KEY MUST NAME WHAT IS DRIVING THE IMAGE ---------------------------------

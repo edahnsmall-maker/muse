@@ -280,6 +280,14 @@ moved between 0.55 and 0.66 across a whole retreat sit. A band ratio is ALREADY 
 normalising each side first removes the only information it carried. The composites are
 absolute band shares now (`DSP.bandShares` and the four functions beside it).
 
+**A fixed axis needs headroom above anything real, or the good sits are the ones it
+cannot resolve.** Calm's window was then set to the pooled p5..p95, and the reply was "the
+calm line is flatlining and hitting a ceiling" — measured, that sit's whole upper half sat
+above the window's top, in the tanh's saturating tail, with 6% of it reading 95+. A window
+taken from the middle of a distribution is by construction too narrow for the sits at the top
+of it. It spans the observed RANGE now. The peak sit reads 65 rather than 79 as a result: a
+score cannot both put a peak sit at 90 and leave room above one.
+
 **Fitting a display window to labels you like will produce a window that flatters.**
 Calm's window was first set to [0.20, 0.42] by fitting four sits with written descriptions,
 and it scored the peak retreat sit 91 — which looked like success until a deliberately

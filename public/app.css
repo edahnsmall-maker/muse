@@ -436,6 +436,27 @@
   .noteBar button { font: inherit; font-size: 12px; padding: 6px 14px; border-radius: 9px;
     cursor: pointer; color: #cbe9ff; background: rgba(125,211,252,.16);
     border: 1px solid rgba(125,211,252,.4); }
+  /* ---- THE SERIES PICKER ---------------------------------------------------------------------------
+     Four presets, then one small toggle per signal grouped by family. Colour comes from the series
+     itself (`--c`, set inline from VizCore.FLOW_SERIES) so the swatch on the toggle and the line on the
+     graph cannot disagree — the same rule the legend follows. */
+  .sPresets { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 5px; }
+  .sRow { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin-bottom: 2px; }
+  .sFam { font-size: 9px; letter-spacing: .1em; text-transform: uppercase; font-weight: 600;
+    color: rgba(255,255,255,.32); margin-left: 4px; }
+  .sFam:first-child { margin-left: 0; }
+  .sMore { font-family: ui-monospace, monospace; letter-spacing: 0; padding-left: 8px; padding-right: 8px; }
+  #viewSwitch .sRow[hidden] { display: none; }
+  .sPick { font-size: 11px; line-height: 1; padding: 4px 7px 4px 16px; border-radius: 7px; cursor: pointer;
+    position: relative; user-select: none; color: rgba(255,255,255,.5);
+    background: rgba(255,255,255,.04); border: 1px solid transparent; }
+  /* The swatch, as a dot inside the padding rather than a separate element — one node per toggle. */
+  .sPick::before { content: ''; position: absolute; left: 6px; top: 50%; width: 6px; height: 6px;
+    margin-top: -3px; border-radius: 50%; background: var(--c, #888); opacity: .35; }
+  .sPick:hover { background: rgba(255,255,255,.09); color: rgba(255,255,255,.8); }
+  .sPick.on { color: rgba(255,255,255,.94); background: rgba(255,255,255,.10);
+    border-color: color-mix(in srgb, var(--c, #888) 45%, transparent); }
+  .sPick.on::before { opacity: 1; box-shadow: 0 0 6px var(--c, #888); }
   #dataPanel.show { opacity: 1; }
   #dataPanel.panelClosed { opacity: 0; transform: translateY(10px); pointer-events: none; visibility: hidden; }
   #dataToggle { cursor: pointer; user-select: none; letter-spacing: .16em; margin-bottom: 10px;

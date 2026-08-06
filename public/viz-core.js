@@ -674,6 +674,82 @@
     { key: 'drowsy', label: 'Drowsy', color: [155, 140, 255], base: 0.78, out: 1 },
   ];
 
+  /*
+   * ==========================================================================
+   * WHAT FLOW CAN PLOT
+   * ==========================================================================
+   *
+   * Asked for: "for flow and all the visuals i should be able to toggle things on and off. i think maybe
+   * a better way to do it for flow is to be able to choose which metrics to show, and possibly even all
+   * (eeg, body, compositves, etc) all on the same graph, visually distinct."
+   *
+   * Flow used to be a binary switch — four electrodes OR four composites, never a mix — so the two
+   * questions a reader actually has ("is my calm rising while my breath slows?", "which electrode is
+   * carrying this?") could not be asked in one picture.
+   *
+   * EVERY SERIES CARRIES ITS OWN FIXED AXIS, which is what makes mixing them legitimate. Alpha share, a
+   * composite score and a breath phase are three different quantities in three different units; plotting
+   * them on one shared auto-range would be meaningless. Each `range` here is a constant — never derived
+   * from the data, so nothing drifts and two sits stay comparable — and the axis is stated in `unit` so
+   * the key can say what the height means for each line rather than implying one scale for all of them.
+   *
+   * `read(h)` takes a history entry and returns the raw value or null. Null draws a GAP: a series with no
+   * input must be absent, never a fabricated zero.
+   */
+  const FLOW_FAMILIES = [
+    { key: 'eeg', label: 'Sensors' },
+    { key: 'mind', label: 'Mind' },
+    { key: 'body', label: 'Body' },
+  ];
+
+  /* Alpha's share of alpha+beta per electrode. 0..0.75 rather than 0..1 — a bounded ratio that on real
+     sits measures 0.24-0.38, so the window leaves twice the observed range in headroom. See renderFlow. */
+  const SHARE_RANGE = Object.freeze({ min: 0, max: 0.75, span: 0.75 });
+  const UNIT_RANGE = Object.freeze({ min: 0, max: 1, span: 1 });
+
+  const FLOW_SERIES = [
+    ...CHANNEL_LABELS.map((label, i) => ({
+      key: 'ch' + i, label, family: 'eeg', color: CHANNEL_COLORS[i], range: SHARE_RANGE,
+      unit: 'alpha share, 0 to 0.75',
+      read: (h) => (h.sLevels ? h.sLevels[i] : null),
+      // A channel that is not reading must not contribute a floor — see the `held` flags.
+      fresh: (h) => !(h.held && h.held[i]),
+    })),
+    ...PULSE_METRICS.map((m, i) => ({
+      key: m.key, label: m.label, family: 'mind', color: m.color, range: UNIT_RANGE,
+      unit: '0 to 100, the same scale every sit',
+      read: (h) => (h.sMetrics ? h.sMetrics[i] : null),
+      fresh: () => true,
+    })),
+    /* BODY. Breath phase is -1 (fully exhaled) to +1 (fully inhaled), mapped so 0.5 is the turnaround —
+       the same mapping metrics.js uses, so the line and the panel row agree.
+       Heart rate and HRV carry generous fixed windows rather than adapting: 40-110bpm covers a resting
+       human with room, and 0-140ms covers RMSSD from tense to deeply parasympathetic. Both are wide
+       enough that a real value never sits against an edge, which is the point of a fixed axis. */
+    { key: 'breath', label: 'Breath', family: 'body', color: [150, 220, 200], range: UNIT_RANGE,
+      unit: 'above the middle is breathing in',
+      read: (h) => (h.sBreath == null ? null : 0.5 + 0.5 * h.sBreath), fresh: () => true },
+    { key: 'heart', label: 'Heart', family: 'body', color: [255, 138, 128],
+      range: Object.freeze({ min: 40, max: 110, span: 70 }), unit: 'beats per minute, 40 to 110',
+      read: (h) => (h.hr == null ? null : h.hr), fresh: () => true },
+    { key: 'hrv', label: 'HRV', family: 'body', color: [186, 160, 255],
+      range: Object.freeze({ min: 0, max: 140, span: 140 }), unit: 'RMSSD in ms, 0 to 140',
+      read: (h) => (h.hrv == null ? null : h.hrv), fresh: () => true },
+  ];
+
+  const FLOW_BY_KEY = {};
+  for (const fs of FLOW_SERIES) FLOW_BY_KEY[fs.key] = fs;
+
+  /* The two old presets, kept by name because `setSeries('sensors'|'composites')` is what the app, the
+     keyboard and three tests already call. They are now just named sets. */
+  const FLOW_PRESETS = {
+    sensors: CHANNEL_LABELS.map((_, i) => 'ch' + i),
+    composites: PULSE_METRICS.map((m) => m.key),
+    /* "possibly even all (eeg, body, compositves, etc) all on the same graph" — this is that, and it is
+       a preset rather than the default because eleven lines is a lot to read at once. */
+    everything: FLOW_SERIES.map((fs) => fs.key),
+  };
+
   // What a visual is currently showing, as label/colour pairs — so a legend is
   // generated from the same source the renderer draws from and cannot drift out
   // of sync with it. That drift is not hypothetical: the chart's electrode
@@ -768,9 +844,19 @@
        FIXED 0-0.6 axis now — alpha's share of alpha+beta is a bounded ratio and needs no derived scale —
        so "its own recent range" was describing the behaviour that made the lines wander. Composites keep a
        within-sit scale because they are adaptively normalised and have none of their own. */
-    flow: { follows: true, notes: ['sensors: alpha share, 0 to 0.6 — the same scale every sit'] },
-    flowComposites: { follows: true,
-      notes: ['height is each line’s range in this sit, fixed after the first two minutes'] },
+    /*
+     * FLOW NAMES ITS LINES AT THEIR HEADS NOW, so its key carries no swatches — see drawFlowPills.
+     *
+     * Asked for: "move the labels into small pills to the right of the line ... be by the dot". A corner
+     * key and a pill per line is the same list twice, and with up to eleven series the corner key was also
+     * the version that made you match a colour across the width of the screen.
+     *
+     * What is left is the part a pill cannot say: that every line has its OWN fixed axis. That is the
+     * whole basis of mixing an alpha share with a 0-100 score and a heart rate in one picture, and a
+     * reader who assumes one shared scale would misread every crossing.
+     */
+    flow: { notes: ['each line has its own fixed scale — the same one every sit',
+      'names are at the heads, on the right'] },
     /*
      * Ribbon's key has to carry three things, because three qualities of the picture are readings and a
      * reader who does not know that sees four pretty bands.
@@ -810,8 +896,7 @@
     /* FLOW HAS TWO CAPTIONS because it has two axes: a fixed 0-0.6 scale for the per-channel traces and a
        within-sit one for the composites. One note for both would be wrong for one of them, and a caption
        that misdescribes the axis is what taught the reader to distrust the axis in the first place. */
-    const spec = (modeKey === 'flow' && composites && LEGENDS.flowComposites)
-      ? LEGENDS.flowComposites : LEGENDS[modeKey];
+    const spec = LEGENDS[modeKey];
     if (!spec) return [];                      // hidden/experimental modes: no key yet
     /* `omitSeries` drops lines that are not being drawn — an electrode with no contact
        is absent from the picture, and a key naming it is a small lie of its own: the
@@ -835,7 +920,18 @@
     }
     if (spec.swatches) out.push(...spec.swatches.map((s) => ({ ...s })));
     if (omitted.size) {
+      const before = out.length;
       for (let i = out.length - 1; i >= 0; i--) if (omitted.has(out[i].label)) out.splice(i, 1);
+      /*
+       * NOTHING DRAWN MEANS NO KEY, not a caption describing nothing.
+       *
+       * This rule used to live only on the `follows` path, which Flow was the sole user of — and Flow's
+       * key has no swatches now, so the rule would have quietly stopped applying to anything. Generalised
+       * instead of dropped: it is the same reasoning for every mode. A caption reading "colour shows which
+       * flared" over a picture with no lines in it is worse than an empty corner, because it says the
+       * reader is looking at something.
+       */
+      if (before > 0 && out.length === 0) return out;
     }
     /*
      * WHAT IS DRIVING THIS IMAGE, when the answer is a choice rather than a constant.
@@ -872,6 +968,7 @@
   return {
     CHANNEL_COLORS, CHANNEL_LABELS, legendEntries, LEGENDS, legendFor, IRIS_MOOD,
     CORONA_COLORS, CHANNEL_ANGLES, angleDelta, lobeWeight,
+    FLOW_FAMILIES, FLOW_SERIES, FLOW_BY_KEY, FLOW_PRESETS, SHARE_RANGE, UNIT_RANGE,
     MODES, nextMode, visibleModes, autoRange, inRange, settleRange, RANGE_HOLD_SEC, noiseLevel, EventDetector, BloomField, wobble, expand, expandSoft,
     BREATH_PATTERNS, nextPattern, breathPattern, ease,
     SweepRing, DeviationTracker, PULSE_METRICS,

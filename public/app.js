@@ -65,19 +65,111 @@ const viewSwitchEl = document.getElementById('viewSwitch');
 
 // Only the `active` class changes on tick. Rewriting the markup would replace the
 // nodes and take their listeners with it.
+/*
+ * THE SERIES PICKER for the chart and for Flow.
+ *
+ * Two rows. The presets — Sensors, Mind, Body, Everything — are the quick answers, and Sensors/Mind are
+ * the two the old switch offered. Below them, one small toggle per signal, grouped by family, so a mix
+ * can be built by hand: "possibly even all (eeg, body, compositves, etc) all on the same graph".
+ *
+ * Rebuilt rather than toggled in place, because the set of signals is not fixed — VizCore.FLOW_SERIES is
+ * the single source of it, and a signal added there appears here without another edit. That is the same
+ * discipline as the legend: one list, so the picker cannot offer a series the renderer does not draw.
+ */
+const VIEW_PRESETS = [['sensors', 'Sensors'], ['composites', 'Mind'], ['body', 'Body'],
+  ['everything', 'Everything']];
+let seriesPickerOpen = false;
+
+/*
+ * BUILT ONCE, THEN ONLY TOGGLED — and this is not an optimisation.
+ *
+ * renderViewSwitch runs on the 250ms tick. The first version of this picker reassigned innerHTML every
+ * time, which destroys and recreates every pill four times a second: hover flickers, and a click whose
+ * mousedown and mouseup straddle a rebuild lands on two different nodes and fires no click event at all.
+ * That exact bug is why the Sensors/Composites pills were made static markup in the first place, and
+ * test-ui.js asserts the node identity survives several ticks — it caught this immediately.
+ *
+ * So the markup is generated once, from VizCore.FLOW_SERIES (still the single source, so a signal added
+ * there appears here with no second edit), and every later call only sets classes.
+ */
+function buildViewSwitch() {
+  const preset = VIEW_PRESETS.map(([key, label]) =>
+    `<span class="pill" data-preset="${key}" data-view="${key}">${label}</span>`).join('')
+    /* THE PER-SIGNAL TOGGLES ARE BEHIND A DISCLOSURE, and that is a layout constraint rather than a
+       preference. Eleven toggles permanently visible made the live feed panel 70px taller than the slot
+       the Train layout gives it, so it could no longer be dragged up without hitting the position clamp —
+       the panel-drag test caught it twice. The presets are one row, exactly as the two-pill switch was,
+       and the hand-picked mix is one click away. */
+    + '<span class="pill sMore" data-more="1" title="Pick individual signals">\u22ef</span>';
+  /* ONE WRAPPED ROW, not one row per family. Three fixed rows plus the presets made the live feed panel
+     70px taller, which pushed it out of the slot the Train layout gives it and hit the position clamp —
+     caught by the panel-drag test. The family name is a small inline divider instead, so the grouping is
+     still legible and the picker costs one or two lines depending on the width available. */
+  const items = VizCore.FLOW_FAMILIES.map((fam) => {
+    const picks = VizCore.FLOW_SERIES.filter((fs) => fs.family === fam.key).map((fs) =>
+      `<span class="sPick" data-series="${fs.key}"`
+      + ` style="--c:${rgbHex(fs.color)}" title="${escapeHtml(fs.label)} — ${escapeHtml(fs.unit)}">`
+      + `${escapeHtml(fs.label)}</span>`).join('');
+    return `<b class="sFam">${escapeHtml(fam.label)}</b>${picks}`;
+  }).join('');
+  viewSwitchEl.innerHTML = `<div class="sPresets">${preset}</div>`
+    + `<div class="sRow" id="sRow" hidden>${items}</div>`;
+}
+
 function renderViewSwitch() {
-  viewSwitchEl.querySelectorAll('[data-view]').forEach((el) => {
-    el.classList.toggle('active', el.dataset.view === viewMode);
-  });
+  if (!viewSwitchEl) return;
+  if (!viewSwitchEl.querySelector('[data-preset]')) buildViewSwitch();
+  const state = visual.flowSeries ? visual.flowSeries() : { preset: viewMode, keys: [] };
+  const on = new Set(state.keys);
+  /* `body` is not one of VizCore's presets, so the lit state for it is computed the same way
+     flowPresetKeys builds it — from the family — rather than from a second hardcoded list. */
+  const bodyKeys = flowPresetKeys('body');
+  const activePreset = state.preset === 'custom'
+    && bodyKeys.length === on.size && bodyKeys.every((k) => on.has(k)) ? 'body' : state.preset;
+  for (const el of viewSwitchEl.querySelectorAll('[data-preset]')) {
+    el.classList.toggle('active', el.dataset.preset === activePreset);
+  }
+  for (const el of viewSwitchEl.querySelectorAll('[data-series]')) {
+    el.classList.toggle('on', on.has(el.dataset.series));
+  }
+  const row = viewSwitchEl.querySelector('#sRow');
+  /* Opened automatically when the set is a hand-picked mix, because otherwise the picker would show four
+     unlit presets and no indication of what IS on. */
+  const open = seriesPickerOpen || state.preset === 'custom';
+  if (row) row.hidden = !open;
+  const more = viewSwitchEl.querySelector('[data-more]');
+  if (more) more.classList.toggle('active', open);
+}
+
+/* `body` is not one of VizCore's presets — it is built here from the family, because "the body signals"
+   is a natural thing to ask for and listing them twice would be two lists to keep in step. */
+function flowPresetKeys(name) {
+  if (name === 'body') return VizCore.FLOW_SERIES.filter((f) => f.family === 'body').map((f) => f.key);
+  return VizCore.FLOW_PRESETS[name] || null;
 }
 
 // Bound once, at startup, to nodes that live for the life of the page. Delegated
 // from the container so it holds even if the pills are ever re-templated.
 viewSwitchEl.addEventListener('click', (e) => {
-  const el = e.target.closest('[data-view]');
-  if (!el) return;
-  viewMode = el.dataset.view;
-  visual.setSeries(viewMode);
+  if (e.target.closest('[data-more]')) {
+    seriesPickerOpen = !seriesPickerOpen;
+    renderViewSwitch();
+    return;
+  }
+  const preset = e.target.closest('[data-preset]');
+  const one = e.target.closest('[data-series]');
+  if (!preset && !one) return;
+  if (preset) {
+    const keys = flowPresetKeys(preset.dataset.preset);
+    if (keys) visual.setFlowSeries(keys);
+  } else {
+    visual.toggleFlowSeries(one.dataset.series);
+  }
+  /* `viewMode` still drives the readout's chart and which composite the single-value visuals follow, so
+     it tracks the picker: a set that is exactly the Mind preset means composites, anything else means
+     the chart plots what the picker says. */
+  const now = visual.flowSeries();
+  viewMode = now.preset === 'composites' ? 'composites' : 'sensors';
   renderViewSwitch();
   renderLegend(); renderChart();
 });
@@ -5127,6 +5219,10 @@ setInterval(() => {
     // respiratory signal, and the visual falls back to its own pacer.
     breathAmount: strapUnreliable() ? null : breathAmount,
     metrics: pulseMetrics,
+    /* THE BODY SIGNALS, for the Flow series that plot them. Null when the strap is absent or unreliable —
+       the same rule as every other row: no trustworthy input means no reading, never a zero. */
+    hr: strapUnreliable() ? null : hrBpm,
+    hrv: strapUnreliable() ? null : hrvRmssd,
     bands: bandState.map((s) => ({ level: s.level, spike: s.spike, fresh: s.fresh })),
   });
 
