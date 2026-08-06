@@ -2153,18 +2153,39 @@ function createZenVisual(canvas) {
     c.fillStyle = light;
     c.fillRect(-W, -H, W * 2, H * 2);
 
-    if (calm > 0.45 || focus > 0.35) {
+    /*
+     * THE SETTLING SEAM — the line the folds are supposed to settle INTO.
+     *
+     * Reported as "the silk visual has an almost flat horizontal line thru it that never goes away.
+     * prob some artifact." It was not an artifact, it was this, and it was on essentially always.
+     *
+     * Two faults, both from the same mistake of gating a continuous thing with a threshold. It appeared
+     * whenever `calm > 0.45 || focus > 0.35`, and Calm was normalised within the sit so it sat at ~0.50
+     * by construction while focus sat near 0.65 — so the OR was true for practically every frame of
+     * every sit. And its amplitude was under 1% of the short side, so what it drew was not a seam the
+     * folds had settled into but a permanent flat rule across the picture.
+     *
+     * Now it fades in with `settle`, the same quantity the folds themselves flatten with, so it is a
+     * consequence of settling rather than a separate switch that happens to be on. Below a third settled
+     * it is not drawn at all; the alpha ramps from there, so it never appears at full strength in one
+     * frame. And it carries real curvature that straightens as settling completes, which is the thing it
+     * was meant to depict: at half settled it is one more fold, at fully settled it is the horizon.
+     */
+    const seam = smoothstep(0.32, 0.85, settle);
+    if (seam > 0.01) {
       const ridge = c.createLinearGradient(-width * 0.5, 0, width * 0.5, 0);
       ridge.addColorStop(0, 'rgba(90,190,255,0)');
-      ridge.addColorStop(0.43, `rgba(138,222,255,${0.08 + 0.10 * calm})`);
-      ridge.addColorStop(0.56, `rgba(255,219,166,${0.10 + 0.15 * focus})`);
+      ridge.addColorStop(0.43, `rgba(138,222,255,${(0.06 + 0.12 * calm) * seam})`);
+      ridge.addColorStop(0.56, `rgba(255,219,166,${(0.08 + 0.16 * focus) * seam})`);
       ridge.addColorStop(1, 'rgba(255,170,210,0)');
       c.strokeStyle = ridge;
       c.lineWidth = Math.max(1, min * (0.003 + 0.004 * focus));
+      // Curvature from what is LEFT to settle, so the line is a fold until it is a horizon.
+      const bend = min * 0.075 * (1 - seam);
       c.beginPath();
       c.moveTo(-width * 0.46, breath * min * 0.006);
-      c.bezierCurveTo(-width * 0.15, -min * 0.018 * (1 - calm), width * 0.14,
-        min * 0.012 * (1 - calm), width * 0.46, breath * min * 0.006);
+      c.bezierCurveTo(-width * 0.15, -bend, width * 0.14, bend * 0.7,
+        width * 0.46, breath * min * 0.006);
       c.stroke();
     }
     c.restore();

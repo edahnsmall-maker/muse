@@ -232,6 +232,34 @@ A **Sensors / Composites** switch at the top of the data panel changes *both* th
 readout and the graph, and the **visual retunes to whichever composite you've
 selected** — so if you pick Focus, the Eclipse void is tracking focus, not calm.
 
+### The composites are absolute band shares (2026-08-06)
+
+Every composite used to be built from `AdaptiveNormalizer` outputs — within-sit z-scores of
+log band power. That made Calm unable to say what a sit *was* (42–53 across seven sits whose
+physiology spanned twofold, rank correlation −0.32) and made `drowsy` nearly a constant, since
+a ratio of two numbers that both hover at 0.5 hovers at 0.5 as well. A band ratio is already
+scale-free; normalising each side first removes the information.
+
+They are now shares of theta+alpha+beta at AF7/AF8, computed from the 16-second band average
+(`DSP.bandShares`):
+
+| | formula | on a peak zazen sit | on a 26-min non-meditative session |
+|---|---|---|---|
+| **Calm** | alpha/(alpha+beta), through a fixed window | **79** (was 47) | 49 (was 50) |
+| **Thinking** | beta/(theta+alpha+beta) | **27** (was 55) | 35 |
+| **Drowsy** | theta share × how far alpha has lost the fast contest | **28** (was 59) | 28 |
+| **Focus** | theta share × how still the signal is | 52 (was 65) | 46 |
+
+Calm's window is the one fitted pair of numbers in the project and it is documented at length
+on `DSP.CALM_WINDOW`, including the mistake: fitted first to four written descriptions, it
+scored a late-night TV-and-mouse session 72. It now comes from the pooled distribution of every
+recording instead. Separation between the peak sit and the non-meditative one is **AUC 0.78** —
+fair, not good — and the reason is worth knowing: **alpha does not distinguish them.** Frontal
+alpha power was the same to within 3%; what differed was 1.4× the beta and 1.7× the gamma.
+
+`metrics.csv` keeps `calmAbs` (the unmapped share) and `calmRel` (the old normalised score), so
+any sit can be re-scored when the window turns out wrong again.
+
 - **Sensors view** — the 4 raw electrodes individually (`TP9`/`AF7`/`AF8`/`TP10`),
   each showing whichever band currently dominates at that specific electrode
   (`Alpha` / `Beta`), or `Noisy` / `No contact` / `No signal` if that channel's own

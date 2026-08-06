@@ -1027,8 +1027,185 @@
     reset() { this.entries = []; }
   }
 
+  /* ==========================================================================
+   * THE COMPOSITES, AS ABSOLUTE BAND SHARES
+   * ==========================================================================
+   *
+   * WHY THIS EXISTS. Every composite in this app used to be built from AdaptiveNormalizer outputs —
+   * within-sit z-scores of log band power, squashed through a logistic. Two consequences, both fatal
+   * and both now measured on real recordings:
+   *
+   *   1. A NORMALISED SCORE CANNOT SAY WHAT A SIT WAS. The normaliser subtracts the sit's own running
+   *      mean, so a uniformly calm sit and a uniformly agitated one both land near 50 by construction.
+   *      Across seven sits the displayed Calm spanned 42.3-52.9 while the underlying alpha/beta spanned
+   *      more than twofold, and their rank correlation was MINUS 0.32 — the best sit scored lowest.
+   *
+   *   2. A RATIO OF TWO NORMALISED NUMBERS IS ALMOST A CONSTANT. `drowsy` was normTheta/(normTheta +
+   *      normAlpha). Both inputs hover at 0.5, so the ratio hovers at 0.5. Measured on a whole retreat
+   *      sit it moved between 0.55 and 0.66 — a sixth of the display, for a metric that is supposed to
+   *      distinguish wide awake from falling asleep. `focus` and `openness` had the same shape.
+   *
+   * The second one is the deeper mistake: a ratio of band powers is ALREADY scale-free. Normalising
+   * each side first does not make it comparable, it removes the only information the ratio carried.
+   *
+   * So these take raw (16-second averaged) band powers and return shares. Nothing here has a fitted
+   * parameter except `CALM_WINDOW`, which is a display window and is documented as one.
+   */
+
+  /*
+   * THE THREE SHARES OF 4-30Hz. theta, alpha and beta as fractions of their own sum, so they add to 1
+   * and each is a share of the same whole — one simplex, comparable between sits and between people
+   * without any calibration. Delta is deliberately excluded: at a forehead electrode 1-4Hz is mostly
+   * eye movement, blinks and electrode drift, and this app's own classifyArtifact() detects a blink AS
+   * energy in that band. Gamma is excluded because above 30Hz a dry frontal electrode is reading muscle.
+   */
+  function bandShares(powers) {
+    if (!powers) return null;
+    const theta = powers.theta, alpha = powers.alpha, beta = powers.beta;
+    for (const v of [theta, alpha, beta]) {
+      if (!Number.isFinite(v) || v < 0) return null;
+    }
+    const all = theta + alpha + beta;
+    const fast = alpha + beta;
+    if (!(all > 0) || !(fast > 0)) return null;
+    return {
+      theta: theta / all,
+      alpha: alpha / all,
+      beta: beta / all,
+      // Alpha against the fast band only, ignoring theta. The contrast that orders real sits — see
+      // CALM_WINDOW. 0.5 means equal alpha and beta power, for every person on every day.
+      alphaOfFast: alpha / fast,
+    };
+  }
+
+  /*
+   * CALM'S DISPLAY WINDOW — the one fitted pair of numbers in the project, and the story of how it was
+   * got wrong once is the important part of this comment.
+   *
+   * THE MEASUREMENT is `alphaOfFast`: alpha's share of alpha plus beta at the frontal pair. It needs no
+   * calibration and 0.5 always means equal alpha and beta power. What it does not do is use the width of
+   * a 0-100 display: measured over 1762 seconds of real recording, this person's share runs p5 0.253 to
+   * p95 0.497. The window maps that observed range onto the display range, and nothing more.
+   *
+   * FIRST ATTEMPT, AND WHY IT WAS WRONG. The window was set to [0.20, 0.42] by fitting it to four sits
+   * with written descriptions, and it put the peak retreat sit at 91 — which looked like a triumph. Then
+   * a deliberately non-meditative session arrived for contrast: 26 minutes at 11:46pm, "just a test, i'm
+   * trying to figure this out and it's noisy", with notes reading "noisy from TV" and "moving the mouse
+   * and listening to music". It scored 72 on that window, and its 15-20 minute block scored 86.
+   *
+   * Fitting to four labels had produced a window that called a late-night TV session calm. So the window
+   * is now taken from the pooled DISTRIBUTION of every recording available, which is a property of the
+   * signal rather than of anyone's opinion about a sit, and rounded to two figures because 1762 seconds
+   * from one person on one headband does not support a third.
+   *
+   * WHAT THE SCORE DOES AND DOES NOT SEPARATE, measured as AUC — the chance that a random second of the
+   * Zen sit outscores a random second of the non-Zen session. 0.5 is a coin toss.
+   *
+   *   sit                                                  share    old Calm   new Calm    AUC vs non-Zen
+   *   "thinking pulling me a lot"                          0.224     42-53         5
+   *   "working, not meditating"                            0.268     42-53        11
+   *   "very calm, not a lot of effort"                      0.349     42-53        38
+   *   NON-ZEN: 26min, TV on, moving the mouse, music        0.373       50         49        (reference)
+   *   "Zen mind, but I sneezed and the sensors went out"    0.356       20         41            0.41
+   *   "relaxed, mind settling naturally"                    0.395     42-53        60
+   *   "85% Zen mind. attentive, calm, slow breathing."      0.445       47         80            0.78
+   *
+   * So: the peak sit is now clearly separated from a working session and from an agitated one, which is
+   * what the score could not do at all before — it spanned 42-53 across all of them with a rank
+   * correlation of MINUS 0.32 against the physiology. But AUC 0.78 is fair, not good, and the non-Zen
+   * session lands mid-scale rather than low. Someone watching TV late at night has as much frontal alpha
+   * as someone in deep zazen at 7am: measured, 72,833 against 74,867 in the same units, a 3% difference.
+   * This score cannot tell those two apart and the caveat in metrics.js says so.
+   *
+   * WHAT DID SEPARATE THEM, for whoever works on this next. Not alpha — BETA and GAMMA. The non-Zen
+   * session had 1.4x the beta power and 1.7x the gamma of the peak sit, and beta's share of the band
+   * separated at AUC 0.74 in the correct direction. Gamma at a dry forehead electrode is mostly facial
+   * EMG, so the cleanest single discriminator available here is closer to "is your face still" than to
+   * anything about attention. `alpha/(alpha+beta+gamma)` measured AUC 0.787 against this one's 0.778,
+   * which is not a real improvement on two sessions but is the direction worth more data.
+   *
+   * WHAT THIS IS NOT. Not a claim about physiology, not per-sit adaptation (which is the thing that broke
+   * this in the first place), and not validation: three sessions from one person on one headband. It is a
+   * FIXED, MONOTONE transform — it cannot reorder two sits, it is identical in every recording, and the
+   * unmapped share is written to `metrics.csv` as `calmAbs`, so every sit can be re-scored when the
+   * window turns out wrong again.
+   *
+   * `expandSoft` rather than a clamp: a hard clamp draws every excursion past the window as a dead flat
+   * line pressed against the edge, which reads as a confident detection rather than an out-of-range one.
+   */
+  const CALM_WINDOW = Object.freeze({ lo: 0.25, hi: 0.50 });
+
+  function calmFromShares(shares) {
+    if (!shares || !Number.isFinite(shares.alphaOfFast)) return null;
+    const t = (shares.alphaOfFast - CALM_WINDOW.lo) / (CALM_WINDOW.hi - CALM_WINDOW.lo);
+    // The same saturating map VizCore.expandSoft uses, inlined so dsp.js keeps no dependency on it.
+    return 0.5 + 0.5 * Math.tanh((t - 0.5) * 2.4);
+  }
+
+  /*
+   * THINKING: beta's share of the whole 4-30Hz band.
+   *
+   * Not `1 - calm`. Beta against alpha alone is the same axis Calm already reports, so pairing them
+   * would put one fact on the panel twice. Beta's share of everything is a different question — how
+   * much of what is going on is fast — and it can rise while alpha rises too, if theta is what gave way.
+   *
+   * The honest confound, stated because it cannot be removed at this electrode: frontal beta includes
+   * EMG from the jaw and the small muscles of the face. `jaw` is reported separately so a reader can
+   * see when that is likely, and it is why the second retreat sit reads higher on this than the first.
+   */
+  function thinkingFromShares(shares) {
+    return shares && Number.isFinite(shares.beta) ? shares.beta : null;
+  }
+
+  /*
+   * DROWSY: slow-wave dominance AND alpha having given way, as a PRODUCT.
+   *
+   * Reported as "the drowsiness is all off". It was theta's share against alpha, and it read 0.52-0.70
+   * through a sit the practitioner described as "attentive, calm" with the head accelerometer showing
+   * 90% stillness and no forward pitch drift at all. It was not wrong about the spectrum — frontal
+   * theta really was twice alpha — it was wrong about what that means.
+   *
+   * THE PROBLEM IS REAL AND HAS NO SPECTRAL-ONLY ANSWER. Frontal midline theta is the signature of
+   * absorbed internal attention, and sleep-onset theta is the signature of falling asleep, and at a
+   * forehead electrode over one-second windows they look the same. Theta alone therefore cannot
+   * separate them and never could.
+   *
+   * What DOES separate them is alpha. In drowsiness alpha attenuates and fragments as theta rises; in
+   * absorbed meditation alpha is sustained. So this is a conjunction: slow activity has to dominate the
+   * band AND alpha has to have lost the fast contest. On the retreat sits, where alpha won that contest
+   * more decisively than in any previous recording, it reads 29 and 32 instead of 59 and 60.
+   *
+   * A PRODUCT, NOT A GEOMETRIC MEAN. `sqrt(a*b)` is used elsewhere in this codebase for conjunctions
+   * and would be wrong here: it lets a large theta alone carry the score, which is exactly the failure
+   * being fixed. The product's practical range is compressed toward the bottom — sleep onset models to
+   * about 0.46 — and that is the honest shape of a conjunction rather than something to stretch out.
+   */
+  function drowsyFromShares(shares) {
+    if (!shares || !Number.isFinite(shares.theta) || !Number.isFinite(shares.alphaOfFast)) return null;
+    return Math.max(0, Math.min(1, shares.theta * (1 - shares.alphaOfFast)));
+  }
+
+  /*
+   * FOCUS: theta's share of the whole band.
+   *
+   * Frontal midline theta is the best-supported attention marker available at this placement, and this
+   * is it, unscaled. Its practical range is roughly 0.2-0.55 and it is deliberately NOT stretched to
+   * fill the display the way Calm is — there is no set of independently-described sits to anchor a
+   * window with, and inventing one would be the calibration this file exists to avoid.
+   *
+   * It shares its numerator with Drowsy on purpose. Theta rising is the same event; whether it is
+   * attention or sleepiness is what Drowsy's alpha term decides. Reading them together is the point.
+   *
+   * metrics.js combines this with `1 - variability` as a geometric mean, so Focus also requires the
+   * signal to be holding still. That part stays in metrics.js because variability is not a band share.
+   */
+  function focusFromShares(shares) {
+    return shares && Number.isFinite(shares.theta) ? shares.theta : null;
+  }
+
   return {
     BAND_AVERAGE_SEC, BandPowerAverager,
+    bandShares, CALM_WINDOW, calmFromShares, thinkingFromShares, drowsyFromShares, focusFromShares,
     MUSE_SERVICE, CONTROL_CHARACTERISTIC, EEG_CHARACTERISTICS, CHANNEL_NAMES,
     EEG_FREQUENCY, EEG_SAMPLES_PER_PACKET,
     PPG_CHARACTERISTICS, PPG_CHANNEL_NAMES, PPG_FREQUENCY, PPG_SAMPLES_PER_PACKET,

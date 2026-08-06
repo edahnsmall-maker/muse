@@ -425,19 +425,68 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
      * SAY it is averaging, because a score that lags its cause by a quarter of a minute will be read
      * wrongly by anyone who does not know it lags.
      */
+    /*
+     * MEASURED AGAINST THE SIGNAL, NOT AGAINST A FIXED NUMBER OF POINTS — and the reason for the change
+     * is worth stating, because the old form would now fail on correct behaviour.
+     *
+     * Calm used to be a within-sit normalised score, which is slow because a running mean is slow, and
+     * "no step above 12 points" was a bound on that slowness. It is now an absolute band share mapped
+     * through a fixed window (DSP.CALM_WINDOW), so it genuinely uses the whole display — and the
+     * simulator's arc sweeps alpha from 6µV to 30µV while beta goes 16µV to 5µV, which is an alpha share
+     * of 0.12 to 0.97. Real sits measure 0.22 to 0.44. So the sim traverses the entire scale twice a
+     * round trip, and a large step mid-sweep is the display doing its job.
+     *
+     * The property that actually matters is that THE DISPLAY IS NOT NOISIER THAN THE SIGNAL: it must be
+     * a monotone function of the underlying share, adding no movement of its own. That is checked
+     * directly by reading both, and it holds however fast the simulator sweeps.
+     *
+     * On the two 2026-08-06 retreat recordings, driven through the same 16-second averager, the real
+     * per-second step in this score measured median 1 point and p90 5 points.
+     */
     const walk = [];
     for (let i = 0; i < 12; i++) {
-      walk.push(await readCalm());
+      walk.push(await pageSim.evaluate(() => {
+        const m = /Calm\s*(\d+)/.exec((document.getElementById('readoutRows').textContent || '')
+          .replace(/\s+/g, ' '));
+        /* A bare name, not `window.lastCalmAbs`: app.js is a classic script, so its top-level `let`
+           bindings live in the global lexical environment and are reachable by name but are NOT
+           properties of `window`. Reading it off `window` returned undefined for all twelve samples. */
+        const share = typeof lastCalmAbs === 'number' ? lastCalmAbs : null;
+        return { calm: m ? Number(m[1]) : null, share };
+      }));
       await pageSim.waitForTimeout(700);
     }
-    const steps = [];
-    for (let i = 1; i < walk.length; i++) {
-      if (walk[i] != null && walk[i - 1] != null) steps.push(Math.abs(walk[i] - walk[i - 1]));
+    const pairs = walk.filter((w) => w.calm != null && w.share != null);
+    assert.ok(pairs.length >= 8,
+      `the raw share must be observable alongside the score (${pairs.length} of ${walk.length} readable)`);
+    // MONOTONE: every pair must be ordered the same way by the score as by the share it came from.
+    for (let i = 1; i < pairs.length; i++) {
+      for (let j = 0; j < i; j++) {
+        const dShare = pairs[i].share - pairs[j].share;
+        const dCalm = pairs[i].calm - pairs[j].calm;
+        if (Math.abs(dShare) < 0.005) continue;     // rounding to whole points can tie
+        assert.ok(Math.sign(dShare) === Math.sign(dCalm) || dCalm === 0,
+          `the score must follow the share it is computed from: share ${pairs[j].share.toFixed(3)}`
+          + `->${pairs[i].share.toFixed(3)} but score ${pairs[j].calm}->${pairs[i].calm}`);
+      }
     }
+    // AND ADD NO NOISE: where the share barely moved, the score must barely move.
+    const quiet = [];
+    for (let i = 1; i < pairs.length; i++) {
+      if (Math.abs(pairs[i].share - pairs[i - 1].share) < 0.01) {
+        quiet.push(Math.abs(pairs[i].calm - pairs[i - 1].calm));
+      }
+    }
+    const worstQuiet = quiet.length ? Math.max(...quiet) : 0;
+    assert.ok(worstQuiet <= 8,
+      `where the underlying share moved less than 0.01, the score must not lurch (worst ${worstQuiet}`
+      + ` of ${quiet.length} quiet steps)`);
+    const steps = [];
+    for (let i = 1; i < pairs.length; i++) steps.push(Math.abs(pairs[i].calm - pairs[i - 1].calm));
     const worst = Math.max(...steps);
-    assert.ok(worst <= 12,
-      `no single reading may lurch more than 12 points while the simulated arc moves smoothly`
-      + ` (worst step ${worst} across ${walk.join(',')})`);
+    assert.ok(worst <= 45,
+      `and even mid-sweep the score must not jump nearly the whole scale in 700ms`
+      + ` (worst step ${worst} across ${pairs.map((p) => p.calm).join(',')})`);
 
     const span = await pageSim.evaluate(() => ({
       text: (document.getElementById('readoutSpan').textContent || '').replace(/\s+/g, ' '),
@@ -1142,6 +1191,11 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
       set(1, 300);   // on skin but noisy
       set(2, 40);    // healthy
       set(3, 20);    // healthy
+      /* STAMP THE ARRIVAL, as a real packet does. computeChannelLabels() now reports "No data" for every
+         channel when nothing has arrived for 1200ms — see eegStale() — and this fixture fills the
+         buffers directly, so without the stamp it is asking what the labels say about a stream that
+         stopped, which is a different question and has its own test below. */
+      lastDataAt = Date.now();
       const ch = computeChannelLabels();
       return ch.map((c) => ({ name: c.name, label: c.label,
         ptp: c.ptp == null ? null : Math.round(c.ptp), floating: c.floating }));
@@ -4313,6 +4367,11 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
           buffers[ch].push(ch === 0 ? 0 : 18 * Math.sin((2 * Math.PI * (9 + ch) * i) / 256));
         }
       }
+      /* AS IF A PACKET HAD JUST LANDED. computeCalm() returns null when no EEG has arrived for 1200ms —
+         see eegStale() — and this fixture writes to `buffers` directly, so without the stamp it
+         correctly refuses to produce a result and there is no row to check. That refusal has its own
+         test below; this one is about what a row CONTAINS. */
+      lastDataAt = Date.now();
       const result = computeCalm();
       const channels = computeChannelLabels();
       sessionLog.length = 0;
@@ -4384,6 +4443,85 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     console.log(`✓ every live signal reaches metrics.csv (${Object.keys(required).length} columns`
       + ' asserted, including breath phase, source, beat rejection and per-channel state) and each'
       + ' survives the CSV round trip');
+  }
+
+  /* A STREAM THAT STOPS MUST BE VISIBLE AS A STOP, not read as a collapse in the practitioner.
+   *
+   * From a real recording, 2026-08-06. The headband stopped delivering EEG 115 seconds into a 186-second
+   * sit. Nothing noticed: `buffers[]` kept its last second of samples, the tick kept computing band
+   * powers from them, and for the remaining 67 seconds the app wrote `calmAbs` frozen at exactly 0.10,
+   * `blink` frozen at 0.04, Calm decaying to 1 — and `chanState` reading "ok ok ok ok" on every one of
+   * those rows. The practitioner was told their calmest sit had fallen apart, and the file says the
+   * sensors were fine.
+   *
+   * Every honesty rule in this project was being obeyed and defeated, because the input LOOKED present.
+   * So: no result, no row, every channel labelled, and the panel says which state it is in.
+   */
+  {
+    const out = await page.evaluate(async () => {
+      const W = 256;
+      for (let ch = 0; ch < 4; ch++) {
+        buffers[ch].length = 0;
+        for (let i = 0; i < W; i++) buffers[ch].push(18 * Math.sin((2 * Math.PI * 10 * i) / 256));
+      }
+      // Fresh: a clean window that just arrived must produce a result and label every channel.
+      lastDataAt = Date.now();
+      const freshResult = computeCalm();
+      const freshLabels = computeChannelLabels().map((c) => c.label);
+
+      /* Now the same buffers, 3 seconds stale. The CONTENTS are identical and still perfectly clean —
+         that is the whole point: only the arrival time differs. */
+      lastDataAt = Date.now() - 3000;
+      const staleResult = computeCalm();
+      const staleLabels = computeChannelLabels().map((c) => c.label);
+      const staleStates = computeChannelLabels().map((c) => (c.stale ? 'stale' : c.flat ? 'flat'
+        : c.floating ? 'floating' : c.artifact ? 'noisy' : 'ok'));
+
+      /* And what the REAL tick does with it. Called by waiting for it rather than by invoking it: the
+         250ms tick is an anonymous function inside setInterval, and a test that reached in to call a
+         copy of it would be testing the copy. `museConnected` is overridden so this is the case that
+         matters — a headband that reports as connected and has gone silent. */
+      sessionLog.length = 0;
+      const before = sessionLog.length;
+      museConnected = () => true;
+      /* A transient message from an earlier test still owns the status line for a few seconds
+         (`statusLockUntil`), and that lock is respected on purpose — a cue must not be stepped on. It has
+         to be released here or this would be reading the previous test's message. */
+      statusLockUntil = 0;
+      const staleAt = Date.now() - 3000;
+      lastDataAt = staleAt;
+      await new Promise((r) => setTimeout(r, 700));
+      lastDataAt = staleAt;                // the tick does not refresh it; keep it pinned for the read
+      return {
+        freshOk: freshResult != null && freshResult.calm != null,
+        freshLabels,
+        staleIsNull: staleResult === null,
+        staleLabels, staleStates,
+        rowsWritten: sessionLog.length - before,
+        panel: (document.getElementById('readoutRows').textContent || '').replace(/\s+/g, ' '),
+        status: (document.getElementById('status').textContent || '').replace(/\s+/g, ' '),
+      };
+    });
+
+    assert.ok(out.freshOk, 'a clean window that just arrived must still produce a score');
+    assert.ok(!out.freshLabels.includes('No data'),
+      `and must not be called stale (${out.freshLabels.join(', ')})`);
+    assert.strictEqual(out.staleIsNull, true,
+      'the SAME clean window, three seconds old, must produce no score at all — a frozen buffer'
+      + ' classifies as clean forever, which is how 67 seconds of fiction got written');
+    assert.deepStrictEqual(out.staleStates, ['stale', 'stale', 'stale', 'stale'],
+      `every channel must be recorded as stale, not "ok" (${out.staleStates.join(', ')})`);
+    assert.strictEqual(out.rowsWritten, 0,
+      `a stale tick must write NO row to the recording (wrote ${out.rowsWritten}) — a gap is the truth`
+      + ' and a flat line is not');
+    assert.match(out.panel, /Signal lost/i,
+      `the panel must say the signal is lost, not show the last numbers (got "${out.panel.slice(0, 120)}")`);
+    assert.ok(!/\bCalm\s*\d/.test(out.panel),
+      `and must not display a Calm value at all (got "${out.panel.slice(0, 120)}")`);
+    assert.match(out.status, /signal lost/i,
+      `the status line must say so rather than "gathering signal" (got "${out.status}")`);
+    console.log('✓ a stopped EEG stream reads as stopped: no score, no row, all four channels marked'
+      + ' stale, and the panel says so instead of showing the last numbers');
   }
 
   assert.deepStrictEqual(errors, [], `no errors may appear during interaction:\n  ${errors.join('\n  ')}`);

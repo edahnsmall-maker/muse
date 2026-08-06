@@ -204,18 +204,54 @@
    * Returns 0..1 where 1 is very steady. Needs a few RMSSD samples before it
    * says anything, and returns null until then rather than guessing.
    */
+  /*
+   * HOW STEADY THE HRV IS — and the fix here is about INDEPENDENCE, not about the scale.
+   *
+   * Reported as "equanimity is ceilinging". Measured, on a real sit's rr.csv through the app's own
+   * pipeline: it started at 0.78 and climbed monotonically to 0.92, spending the whole second half above
+   * 0.90. Not literally pinned at 1.00, but it was measuring the wrong thing, and the mechanism is the
+   * interesting part.
+   *
+   * The app computes RMSSD over a SIXTY-SECOND rolling window and called update() once per heartbeat. At
+   * ~70bpm, twelve consecutive samples span about ten seconds — so all twelve are computed from windows
+   * sharing roughly 85% of their beats. Their coefficient of variation is therefore tiny by construction,
+   * and it gets tinier the longer the buffer has been full. What the score tracked was the overlap of its
+   * own input windows, and its upward drift was the buffer filling, not the practitioner settling.
+   *
+   * `minSpacingSec` fixes it: a sample is only accepted once a full window has passed since the last
+   * accepted one, so consecutive samples describe DISJOINT stretches of time and their spread is real
+   * variation in HRV rather than an artefact of resampling. That costs history — at 20s spacing, six
+   * samples is two minutes — so `history` comes down to match, and the tracker reports null until it has
+   * enough, which is the same rule every other metric here follows.
+   *
+   * The scale stays at 0.35. It was not the problem, and there is no set of described sits to re-fit it
+   * against; changing an untested constant at the same time as fixing a structural fault would make it
+   * impossible to say which change did what.
+   */
   class SteadinessTracker {
-    constructor({ history = 12, scale = 0.35 } = {}) {
+    constructor({ history = 6, scale = 0.35, minSpacingSec = 20, nowSec = null } = {}) {
       this.history = history;
       this.scale = scale;   // relative spread that maps to "not steady at all"
+      this.minSpacingSec = minSpacingSec;
       this.samples = [];
+      this.lastAtSec = null;
+      // Injectable clock, so a test can drive spacing without sleeping.
+      this.nowSec = nowSec || (() => Date.now() / 1000);
     }
-    update(rmssdMs) {
+    update(rmssdMs, atSec = null) {
       if (!Number.isFinite(rmssdMs) || rmssdMs <= 0) return this.value();
+      const t = atSec != null ? atSec : this.nowSec();
+      /* THE SPACING GATE. Rejecting rather than averaging: a mean of overlapping windows is still an
+         overlapping window, and it is the independence that the spread needs, not the smoothing. */
+      if (this.lastAtSec != null && t - this.lastAtSec < this.minSpacingSec) return this.value();
+      this.lastAtSec = t;
       this.samples.push(rmssdMs);
       if (this.samples.length > this.history) this.samples.shift();
       return this.value();
     }
+    // How much of the history is behind the current answer, so a caller can say "reading…" rather than
+    // presenting two samples' worth of spread as an equanimity score.
+    get filled() { return this.samples.length; }
     value() {
       if (this.samples.length < 4) return null;
       const mean = this.samples.reduce((a, b) => a + b, 0) / this.samples.length;

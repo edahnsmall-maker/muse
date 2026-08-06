@@ -192,26 +192,63 @@ function hrmPacket({ hr = 60, rr = [], hr16 = false, energy = null, contact = nu
 //     steady HRV from a lurching one. Steadiness is a different claim from
 //     level — a person can have high HRV and still be reacting to everything.
 {
+  /* SPACED SAMPLES. The tracker only accepts one sample per `minSpacingSec`, so the tests drive an
+     explicit clock — see the note on SteadinessTracker for why overlapping samples were the bug. */
+  const feed = (tracker, values, stepSec = 25) => {
+    let at = 0;
+    let last = null;
+    for (const v of values) { last = tracker.update(v, at); at += stepSec; }
+    return last;
+  };
   const t = new Polar.SteadinessTracker();
-  assert.strictEqual(t.update(40), null, 'must not guess from one sample');
-  assert.strictEqual(t.update(41), null);
-  assert.strictEqual(t.update(39), null);
-  const steady = t.update(40);
+  assert.strictEqual(t.update(40, 0), null, 'must not guess from one sample');
+  assert.strictEqual(t.update(41, 25), null);
+  assert.strictEqual(t.update(39, 50), null);
+  const steady = t.update(40, 75);
   assert.ok(steady != null && steady > 0.8, `a steady HRV should read high (got ${steady})`);
 
   const lurching = new Polar.SteadinessTracker();
-  [20, 90, 25, 85, 30, 95].forEach((v) => lurching.update(v));
-  const lv = lurching.value();
+  const lv = feed(lurching, [20, 90, 25, 85, 30, 95]);
   assert.ok(lv != null && lv < 0.4, `a lurching HRV should read low (got ${lv})`);
 
   // Relative, not absolute: a person with high resting HRV who is steady must
   // not be penalised for the level.
   const highButSteady = new Polar.SteadinessTracker();
-  [140, 143, 138, 141, 139, 142].forEach((v) => highButSteady.update(v));
+  feed(highButSteady, [140, 143, 138, 141, 139, 142]);
   assert.ok(highButSteady.value() > 0.8,
     `steadiness must be relative to the person, not their absolute HRV (got ${highButSteady.value()})`);
-  assert.ok(t.update(NaN) != null, 'garbage input must not destroy the running value');
-  console.log('✓ SteadinessTracker needs data, is relative, and separates steady from lurching');
+  assert.ok(t.update(NaN, 200) != null, 'garbage input must not destroy the running value');
+
+  /*
+   * THE OVERLAP BUG, asserted directly. Reported as "equanimity is ceilinging".
+   *
+   * The app computes RMSSD over a SIXTY-second rolling window and used to call update() once per
+   * heartbeat. Twelve consecutive samples then spanned about ten seconds and were computed from windows
+   * sharing ~85% of their beats, so their spread was tiny by construction and got tinier as the buffer
+   * filled — the score was measuring its own input overlap, and its slow climb was the buffer filling
+   * rather than the practitioner settling. Measured on a real sit's rr.csv: 0.78 climbing to 0.92,
+   * above 0.90 for the whole second half.
+   *
+   * So samples arriving faster than one window apart must be REFUSED, not averaged: it is independence
+   * the spread needs, and a mean of overlapping windows is still an overlapping window.
+   */
+  {
+    const spaced = new Polar.SteadinessTracker();
+    /* Eighteen beats' worth of updates inside ONE spacing interval, as the app used to do — 15 seconds
+       at ~72bpm, which is well under the 20s the tracker requires between independent samples. */
+    for (let i = 0; i < 18; i++) spaced.update(70 + (i % 3), i * 0.85);
+    assert.strictEqual(spaced.filled, 1,
+      `a burst of near-simultaneous samples must count as ONE (counted ${spaced.filled})`);
+    assert.strictEqual(spaced.value(), null,
+      'and must not produce a score, because there is nothing yet to compare it against');
+    // The same values properly spaced do produce one.
+    const wide = new Polar.SteadinessTracker();
+    feed(wide, [70, 71, 72, 70, 71, 72]);
+    assert.strictEqual(wide.filled, 6, 'spaced samples are all accepted');
+    assert.ok(wide.value() != null, 'and six of them is a score');
+  }
+  console.log('✓ SteadinessTracker needs data, is relative, separates steady from lurching, and'
+    + ' refuses samples too close together to be independent');
 }
 
 // 14) Breath PHASE from RSA. This is the new capability: not just how fast you

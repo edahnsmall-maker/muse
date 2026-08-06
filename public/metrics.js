@@ -18,10 +18,20 @@
  * expected to show them. A speculative score is fine to look at; a speculative
  * score dressed up as an instrument is not.
  */
+/* DSP is a dependency now, because the composites are band shares and the band-share formulas live
+   there — see the note above DSP.bandShares. Resolved the same way the rest of this project resolves
+   its modules: `require` under Node for the tests, the global under a browser where dsp.js is loaded
+   first by direct.html. Asserted rather than assumed: a missing DSP here would silently return null for
+   every composite, which is indistinguishable on screen from a headband that is not reading. */
 (function (root, factory) {
-  if (typeof module !== 'undefined' && module.exports) module.exports = factory();
-  else root.Metrics = factory();
-})(typeof window !== 'undefined' ? window : globalThis, function () {
+  const dsp = (typeof module !== 'undefined' && module.exports)
+    ? require('./dsp.js') : root.DSP;
+  if (!dsp || typeof dsp.bandShares !== 'function') {
+    throw new Error('metrics.js needs dsp.js (bandShares) — check the script order in direct.html');
+  }
+  if (typeof module !== 'undefined' && module.exports) module.exports = factory(dsp);
+  else root.Metrics = factory(dsp);
+})(typeof window !== 'undefined' ? window : globalThis, function (DSP) {
 
   const TIERS = {
     solid: {
@@ -43,23 +53,23 @@
   const METRICS = [
     {
       key: 'calm', label: 'Calm', tier: 'moderate',
-      source: 'alpha minus beta log-power at AF7/AF8, normalised to your session baseline',
-      caveat: 'Alpha rises in relaxed wakefulness — but it also rises with drowsiness. This cannot distinguish settled from sleepy. Frontal alpha is also affected by eye movement.',
+      source: 'alpha\u2019s share of alpha+beta at AF7/AF8, on a fixed scale (DSP.CALM_WINDOW) \u2014 the same in every sit, never normalised to the sit itself',
+      caveat: 'Alpha rises in relaxed wakefulness \u2014 but it also rises with drowsiness, and this cannot distinguish settled from sleepy. Measured limit: a 26-minute non-meditative session (TV on, moving the mouse, late at night) scored 49 against a peak zazen sit\u2019s 79, and had the same frontal alpha power to within 3%. Separation between them is AUC 0.78, which is fair rather than good. What actually differed was beta and gamma, not alpha.',
     },
     {
       key: 'thinking', label: 'Thinking', tier: 'moderate',
-      source: 'beta level, plus how much the band balance churns, plus the rate of abrupt shifts',
-      caveat: 'This is cortical activation and signal instability. It cannot read thought content, and cannot tell problem-solving from worrying from composing a poem.',
+      source: 'beta\u2019s share of theta+alpha+beta at AF7/AF8 \u2014 how much of what is going on is fast',
+      caveat: 'This is cortical activation. It cannot read thought content, and cannot tell problem-solving from worrying from composing a poem. Frontal beta also contains jaw and facial muscle, which is why `jaw` is reported separately. Measured: it separated a non-meditative session from a zazen sit at AUC 0.74, slightly better than Calm did.',
     },
     {
       key: 'focus', label: 'Focus', tier: 'moderate',
-      source: 'steadiness of frontal theta (4-8Hz)',
-      caveat: 'Frontal-midline theta is the best-replicated focused-attention marker in meditation research, but true Fz sits BETWEEN our two sensors so this is a proxy of a proxy — and theta also rises with drowsiness.',
+      source: 'theta\u2019s share of theta+alpha+beta at AF7/AF8, times how still the signal is holding',
+      caveat: 'Frontal-midline theta is the best-replicated focused-attention marker in meditation research, but true Fz sits BETWEEN our two sensors so this is a proxy of a proxy \u2014 and theta also rises with drowsiness. It shares its theta term with Drowsy on purpose: whether rising theta is attention or sleepiness is what Drowsy\u2019s alpha term decides, so the two are meant to be read together.',
     },
     {
       key: 'drowsy', label: 'Drowsy', tier: 'moderate',
-      source: "theta's share of theta plus alpha — theta rising as alpha gives way",
-      caveat: 'Included mainly as a CONFOUND CHECK rather than a goal. If this is high, treat Calm and Focus with suspicion — the same band changes look like both settling and falling asleep. Delta is deliberately excluded: on a forehead electrode it is mostly eye movement and drift, and this app already treats delta energy across both frontal sensors as a BLINK, so counting it here made blinking look like dozing.',
+      source: "theta's share of theta+alpha+beta, times how far alpha has lost the fast contest \u2014 slow-wave dominance AND alpha giving way, both required",
+      caveat: 'Included mainly as a CONFOUND CHECK rather than a goal. If this is high, treat Calm and Focus with suspicion \u2014 the same band changes look like both settling and falling asleep. It used to be theta against alpha alone and read 59 through a sit reported as "attentive, calm" with the head accelerometer showing 90% stillness and no forward pitch drift; frontal midline theta in absorbed attention really is about twice alpha, so no theta-vs-alpha ratio could have separated absorption from sleep onset. Alpha is what separates them, so alpha is now required. Delta is deliberately excluded: on a forehead electrode it is mostly eye movement and drift, and this app already treats delta energy across both frontal sensors as a BLINK, so counting it here made blinking look like dozing.',
     },
     {
       key: 'blink', label: 'Blinks', tier: 'solid',
@@ -150,50 +160,37 @@
       // Clamped, not passed through: these feed geometry downstream, so an
       // out-of-range input must not propagate into a radius or a colour.
       case 'calm': return has(f.calm) ? clamp01(f.calm) : null;
-      case 'thinking': return has(f.activity) ? clamp01(f.activity) : null;
-      case 'focus':
-        /* THETA PRESENT *AND* HOLDING STILL, as a geometric mean rather than a weighted penalty.
-         *
-         * This used to be `thetaLevel * (1 - 0.55 * variability)`, and the 0.55 came from nowhere.
-         * A geometric mean says the same thing — both conditions must hold, neither substitutes for
-         * the other — with no free parameter to invent. It is also better behaved at the edges: if
-         * theta is absent the answer is 0 regardless of steadiness, which is what "sustained
-         * attention" should mean, whereas the weighted form still returned 0.45 of nothing.
-         */
-        if (!has(f.thetaLevel)) return null;
-        return clamp01(Math.sqrt(
-          clamp01(f.thetaLevel) * (1 - clamp01(has(f.variability) ? f.variability : 0.5))));
-      case 'drowsy':
-        /* THETA'S SHARE OF THETA PLUS ALPHA. Delta is deliberately NOT in it.
-         *
-         * Two changes, for two different reasons.
-         *
-         * FIRST, it stopped being a weighted sum. It was `0.5*theta + 0.5*delta - 0.35*alpha + 0.17`
-         * — four invented numbers, one of which (+0.17) existed only to drag the result back into
-         * range after the subtraction. The intent was always "slow activity rising while alpha
-         * falls", and that is a ratio, bounded 0..1 by construction with nothing to tune.
-         *
-         * SECOND, and this is the part that was reported as wrong — "i dont know what the drowsy
-         * metric is based on, but it's not reading me right" — delta came out.
-         *
-         * Delta on a forehead electrode is not mostly brain. It is eye movement, blinks, and slow
-         * electrode drift. This app says so itself, in classifyArtifact(): a blink is detected AS a
-         * large deflection in roughly 1-4Hz appearing on both frontal sensors, which is the delta
-         * band. So the same energy that made the app report a blink also pushed Drowsy up. Anyone
-         * sitting with their eyes flickering, or with the headband settling on their skin, read as
-         * falling asleep. Two parts of one app cannot disagree about what delta means.
-         *
-         * Theta against alpha is the pairing that actually tracks sleep onset — theta rises as alpha
-         * gives way — and it is the standard drowsiness contrast for that reason. Losing delta loses
-         * some real slow-wave signal along with the artifact; that is the right trade when the
-         * artifact and the signal are inseparable at this electrode placement.
-         */
-        if (!has(f.thetaLevel) || !has(f.alphaLevel)) return null;
-        {
-          const theta = clamp01(f.thetaLevel);
-          const total = theta + clamp01(f.alphaLevel);
-          return total > 0 ? clamp01(theta / total) : null;
-        }
+      /*
+       * THINKING, DROWSY, FOCUS AND OPENNESS ARE ABSOLUTE BAND SHARES NOW.
+       *
+       * Each of them used to be built from AdaptiveNormalizer outputs — a within-sit z-score of log band
+       * power. Measured on a whole retreat sit, `drowsy` was normTheta/(normTheta+normAlpha) and moved
+       * between 0.55 and 0.66: a sixth of the display, for a metric that has to tell wide awake from
+       * falling asleep. Both inputs hover at 0.5 by construction, so their ratio does too.
+       *
+       * The formulas themselves live in dsp.js (`bandShares` and the four functions beside it), where
+       * they can be unit-tested against synthetic spectra and re-used by the lab, rather than being
+       * spelled out here from features that have already been transformed. Read the notes there: they
+       * carry the six-sit table and the reason Drowsy is a product rather than a geometric mean.
+       */
+      case 'thinking': return DSP.thinkingFromShares(f.shares);
+      case 'focus': {
+        /* THETA PRESENT *AND* HOLDING STILL, as a geometric mean — the conjunction is kept, only its
+           theta term changed. `1 - variability` is the one within-sit quantity that belongs in a
+           composite: "is the signal churning right now" is genuinely a question about this sit, unlike
+           "is there a lot of theta", which is a question about the person. Sustained attention needs
+           both, and the geometric mean will not let a large theta alone carry it. */
+        const theta = DSP.focusFromShares(f.shares);
+        if (theta == null) return null;
+        return clamp01(Math.sqrt(theta * (1 - clamp01(has(f.variability) ? f.variability : 0.5))));
+      }
+      case 'drowsy': return DSP.drowsyFromShares(f.shares);
+      /* THE PREVIOUS DROWSY was theta/(theta+alpha) on normalised levels, and before that a weighted
+         sum with a +0.17 in it whose only job was to drag the result back into range. Both are gone.
+         The delta band stays excluded for the reason that removal established and which has not
+         changed: on a forehead electrode 1-4Hz is mostly eye movement, and this app's own
+         classifyArtifact() detects a blink AS energy in that band, so the same volts that raised a
+         blink warning also raised Drowsy. Two parts of one app cannot disagree about what delta is. */
       case 'blink': return has(f.blink) ? clamp01(f.blink) : null;
       case 'jaw': return has(f.jaw) ? clamp01(f.jaw) : null;
       case 'asymmetry':
@@ -227,13 +224,14 @@
          * report open awareness, which is the opposite of what the finding describes. The
          * conjunction form cannot do that: churn pulls the whole thing down.
          */
-        if (!has(f.alphaLevel) || !has(f.betaLevel)) return null;
+        /* THE SHARE IS ABSOLUTE NOW (DSP.bandShares.alphaOfFast) for the same reason as the others: it
+           was alphaLevel/(alphaLevel+betaLevel), a ratio of two within-sit z-scores, which sits at 0.5
+           whatever the sit was doing. Steadiness is still the normalised churn — that one is genuinely a
+           within-sit quantity, since "is the signal holding still" is a question about this sit. */
+        if (!f.shares || !has(f.shares.alphaOfFast)) return null;
         {
-          const a = clamp01(f.alphaLevel), b = clamp01(f.betaLevel);
-          if (!(a + b > 0)) return null;
-          const share = a / (a + b);
           const steady = 1 - clamp01(has(f.variability) ? f.variability : 0.5);
-          return clamp01(Math.sqrt(share * steady));
+          return clamp01(Math.sqrt(clamp01(f.shares.alphaOfFast) * steady));
         }
       default: return null;
     }

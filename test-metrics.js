@@ -1,5 +1,6 @@
 const assert = require('assert');
 const Metrics = require('./public/metrics.js');
+const DSP = require('./public/dsp.js');
 
 // 1) Every metric declares a valid tier, what it is computed from, and what it
 //    cannot tell you. This is the whole point of the registry: no metric may
@@ -76,16 +77,49 @@ const Metrics = require('./public/metrics.js');
 
 // 6) Directional sanity on the two that carry a confound warning.
 {
-  // Focus should fall when the signal is unstable, even with the same theta.
-  const steady = Metrics.compute('focus', { thetaLevel: 0.8, variability: 0.1 });
-  const churny = Metrics.compute('focus', { thetaLevel: 0.8, variability: 0.9 });
+  /* Focus should fall when the signal is unstable, even with the same theta.
+     `shares` rather than `thetaLevel`: every composite is built from absolute band shares now, and a
+     normalised level is exactly what they stopped taking — see the note above DSP.bandShares. */
+  const someTheta = DSP.bandShares({ theta: 4, alpha: 3, beta: 3 });
+  const steady = Metrics.compute('focus', { shares: someTheta, variability: 0.1 });
+  const churny = Metrics.compute('focus', { shares: someTheta, variability: 0.9 });
   assert.ok(steady > churny, 'focus should reward steadiness, not just theta presence');
 
-  // Drowsy should rise with theta+delta and fall as alpha returns.
-  const sleepy = Metrics.compute('drowsy', { thetaLevel: 0.9, deltaLevel: 0.9, alphaLevel: 0.1 });
-  const awake = Metrics.compute('drowsy', { thetaLevel: 0.2, deltaLevel: 0.2, alphaLevel: 0.9 });
-  assert.ok(sleepy > awake, 'drowsy should distinguish a sleepy profile from an alert one');
-  console.log('✓ focus rewards steadiness; drowsy separates sleepy from alert');
+  /*
+   * DROWSY MUST SEPARATE ABSORPTION FROM SLEEP ONSET, which is the defect it was reported for.
+   *
+   * "the drowsiness is all off" — on a sit the practitioner described as "attentive, calm, slow
+   * breathing", with the head accelerometer showing 90% stillness and no forward pitch drift, the old
+   * formula read 0.59. It was theta against alpha, and frontal theta in absorbed meditation really is
+   * about twice alpha, so it could not have done anything else.
+   *
+   * These two profiles are the whole problem in two lines: they have almost the same theta, and one is
+   * someone meditating while the other is someone falling asleep. What differs is alpha — sustained in
+   * absorption, attenuating at sleep onset — so ONLY a formula that reads alpha can tell them apart,
+   * and a theta-vs-alpha ratio reads it in the wrong direction.
+   *
+   * The numbers are the measured shares from the 2026-08-06 retreat sit and a textbook N1 profile.
+   */
+  const absorbed = DSP.bandShares({ theta: 0.52, alpha: 0.21, beta: 0.27 });
+  const sleepOnset = DSP.bandShares({ theta: 0.65, alpha: 0.10, beta: 0.25 });
+  const alert = DSP.bandShares({ theta: 0.20, alpha: 0.20, beta: 0.60 });
+  const dAbsorbed = Metrics.compute('drowsy', { shares: absorbed });
+  const dSleep = Metrics.compute('drowsy', { shares: sleepOnset });
+  const dAlert = Metrics.compute('drowsy', { shares: alert });
+  assert.ok(dSleep > dAlert, 'drowsy should distinguish a sleepy profile from an alert one');
+  assert.ok(dSleep > dAbsorbed * 1.4,
+    `sleep onset must read clearly higher than absorbed meditation, whose theta is nearly as large`
+    + ` (absorbed ${dAbsorbed.toFixed(2)} vs sleep ${dSleep.toFixed(2)})`);
+  assert.ok(dAbsorbed < 0.4,
+    `an absorbed sit must not read as half asleep (got ${dAbsorbed.toFixed(2)})`);
+  /* AND THE OLD FORMULA MUST FAIL THIS, so the test is known to be measuring the fix and not passing
+     for an unrelated reason. theta/(theta+alpha) puts absorption ABOVE sleep onset on this pair. */
+  const oldWay = (sh) => sh.theta / (sh.theta + sh.alpha);
+  assert.ok(oldWay(absorbed) > 0.6 && oldWay(sleepOnset) > 0.6,
+    'the old theta-vs-alpha formula read both of these as drowsy — which is why it changed');
+  console.log(`✓ focus rewards steadiness; drowsy separates absorbed meditation (${Math.round(100 * dAbsorbed)})`
+    + ` from sleep onset (${Math.round(100 * dSleep)}) where theta-vs-alpha could not`
+    + ` (${Math.round(100 * oldWay(absorbed))} vs ${Math.round(100 * oldWay(sleepOnset))})`);
 }
 
 // 7) Caveats must actually state a limitation, not just describe the metric.
@@ -150,23 +184,124 @@ const Metrics = require('./public/metrics.js');
   assert.ok(!/tanh|Math\.pow/.test(src),
     'compute() must not shape a curve with a chosen gain: ' + (src.match(/.{0,40}tanh.{0,40}/) || [''])[0]);
 
+  /*
+   * THE GUARD FOLLOWS THE FORMULAS. This is the important half of this test now.
+   *
+   * The composites moved out of compute() and into dsp.js, and a guard that only reads compute() would
+   * have congratulated itself on a clean file while every coefficient sat one module away. That is
+   * exactly the failure mode this test was written to catch, arrived at by refactor rather than by a
+   * weighted sum, so the scan follows them.
+   *
+   * The band-share formulas must stay parameter-free. `calmFromShares` is the ONE exception in the
+   * project and is checked separately below, because its two numbers are a fitted display window with
+   * six described sits behind them — the point is that it has to be declared here to exist, not that
+   * fitting is forbidden.
+   */
+  const strip = (fn) => fn.toString().replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/\/\/[^\n]*/g, ' ');
+  for (const name of ['bandShares', 'thinkingFromShares', 'drowsyFromShares', 'focusFromShares']) {
+    const body = strip(DSP[name]);
+    const found = Array.from(new Set((body.match(/(?<![\w.$])\d+(?:\.\d+)?(?:e-?\d+)?/g) || [])
+      .map(Number).filter((n) => !ALLOWED.has(n))));
+    assert.deepStrictEqual(found, [],
+      `DSP.${name} must be parameter-free — found ${JSON.stringify(found)}. The composites moved here`
+      + ' from Metrics.compute(); the rule moved with them.');
+    assert.ok(!/tanh|Math\.pow/.test(body), `DSP.${name} must not shape a curve with a chosen gain`);
+  }
+
+  /*
+   * CALM'S WINDOW IS DECLARED, NOT HIDDEN. Two fitted numbers, and the test's job is to make sure they
+   * stay declared, stay monotone, and stay a display transform rather than becoming a second axis.
+   */
+  assert.ok(DSP.CALM_WINDOW && DSP.CALM_WINDOW.hi > DSP.CALM_WINDOW.lo,
+    'the one fitted pair in the project must be a named, ordered constant');
+  assert.ok(Object.isFrozen(DSP.CALM_WINDOW), 'and frozen, so nothing can adapt it per sit');
+  {
+    // MONOTONE, which is what makes it unable to reorder two sits — the failure it replaced.
+    let prev = -1;
+    for (let share = 0; share <= 1.0001; share += 0.01) {
+      const v = DSP.calmFromShares({ alphaOfFast: share });
+      assert.ok(v > prev, `calmFromShares must be strictly increasing (share ${share.toFixed(2)})`);
+      assert.ok(v >= 0 && v <= 1, `and bounded (got ${v} at ${share.toFixed(2)})`);
+      prev = v;
+    }
+    // SATURATING, never clamped: a share past the window must still read as further past it.
+    const a = DSP.calmFromShares({ alphaOfFast: 0.60 });
+    const b = DSP.calmFromShares({ alphaOfFast: 0.90 });
+    assert.ok(b > a && b < 1,
+      `beyond the window must saturate rather than clamp flat (${a.toFixed(4)} then ${b.toFixed(4)})`);
+    /* THE SIX SITS. Each has an independent written description, and the ordering of the descriptions
+       is the only ground truth this project has for Calm. If a change to the window breaks the
+       ordering, or moves the calmest sit out of the 80s, this is where it shows. */
+    const sits = [
+      ['thinking pulling me a lot', 0.288 / 1.288],
+      ['working, not meditating', 0.367 / 1.367],
+      ['Zen mind, sneezed, sensors out', 0.356],
+      ['very calm, not a lot of effort', 0.537 / 1.537],
+      /* THE CONTRAST SESSION: 26 minutes at 11:46pm, "just a test, i'm trying to figure this out and
+         it's noisy", with notes reading "noisy from TV" and "moving the mouse and listening to music".
+         It exists in this list to hold the window honest. The first window shipped for this scored it 72,
+         because the window had been fitted to four descriptions and never tested against a session that
+         was deliberately NOT meditative. */
+      ['NON-ZEN: TV, mouse, music', 0.373],
+      ['relaxed, mind settling naturally', 0.654 / 1.654],
+      ['85% Zen mind, attentive, calm', 0.445],
+    ];
+    const by = {};
+    for (const [label, share] of sits) by[label] = Math.round(100 * DSP.calmFromShares({ alphaOfFast: share }));
+    /* NOT A STRICT ORDERING OVER ALL SIX. Two of them differ by 0.005 of a share — "very calm, not a
+       lot of effort" at 0.349 and the sneezed retreat sit at 0.354 — and asserting which of those comes
+       first would be asserting noise. Order preservation in general is already proved by the
+       monotonicity loop above, which holds for every pair; what is worth pinning here is that the
+       described extremes land where their descriptions say, because that is the part a change to the
+       window could break without breaking monotonicity. */
+    assert.ok(by['thinking pulling me a lot'] < 25,
+      `the worst sit must read low, not near 50 as the normalised score did`
+      + ` (got ${by['thinking pulling me a lot']}, was 52.9)`);
+    assert.ok(by['working, not meditating'] < 40,
+      `and a working session must read clearly below the meditative ones (got ${by['working, not meditating']})`);
+    assert.ok(by['85% Zen mind, attentive, calm'] >= 75,
+      `the sit the practitioner called 85% Zen mind must read high`
+      + ` (got ${by['85% Zen mind, attentive, calm']}, was 47)`);
+    assert.ok(by['85% Zen mind, attentive, calm'] > by['Zen mind, sneezed, sensors out'],
+      'and above the sit that was interrupted and lost its sensors');
+    assert.ok(by['relaxed, mind settling naturally'] > by['working, not meditating'] + 30,
+      'the gap between meditating and working must be large, not the 4 points the old score gave');
+    /*
+     * THE NON-ZEN SESSION MUST NOT SCORE AS A GOOD SIT. This is the assertion the first version of this
+     * window would have failed, and it is here so the next attempt to widen the scale has to face it.
+     * It is deliberately NOT "must score low": the honest finding is that this score cannot tell a
+     * late-night TV session from a calm sit — their frontal alpha power was within 3% — so what is
+     * pinned is the margin below the peak sit, not an absolute band.
+     */
+    assert.ok(by['NON-ZEN: TV, mouse, music'] < by['85% Zen mind, attentive, calm'] - 25,
+      `a 26-minute session with the TV on and a mouse in hand must fall well below a peak sit`
+      + ` (non-Zen ${by['NON-ZEN: TV, mouse, music']}, peak ${by['85% Zen mind, attentive, calm']}).`
+      + ' The first window shipped scored it 72 against the peak sit\'s 91.');
+    assert.ok(by['NON-ZEN: TV, mouse, music'] < 60,
+      `and must not read as a good sit (got ${by['NON-ZEN: TV, mouse, music']})`);
+  }
+
   /* THE FORMS MUST STILL BEHAVE, or parameter-free would just mean broken. Each of these is the
      property the old weighted version was trying to buy, checked on the new form. */
   // A geometric mean makes both conditions necessary: absent theta is zero focus, however steady.
-  assert.strictEqual(Metrics.compute('focus', { thetaLevel: 0, variability: 0 }), 0,
+  const noTheta = DSP.bandShares({ theta: 0, alpha: 1, beta: 1 });
+  const someTh = DSP.bandShares({ theta: 4, alpha: 3, beta: 3 });
+  assert.strictEqual(Metrics.compute('focus', { shares: noTheta, variability: 0 }), 0,
     'no theta must mean no focus — the weighted form returned 0.45 of nothing');
-  assert.ok(Metrics.compute('focus', { thetaLevel: 0.8, variability: 0.1 })
-    > Metrics.compute('focus', { thetaLevel: 0.8, variability: 0.9 }),
+  assert.ok(Metrics.compute('focus', { shares: someTh, variability: 0.1 })
+    > Metrics.compute('focus', { shares: someTh, variability: 0.9 }),
     'and steadiness must still matter');
-  // Drowsy is a share, so it is bounded without an intercept and orders the profiles correctly.
-  const dSleepy = Metrics.compute('drowsy', { thetaLevel: 0.9, deltaLevel: 0.9, alphaLevel: 0.1 });
-  const dAwake = Metrics.compute('drowsy', { thetaLevel: 0.1, deltaLevel: 0.1, alphaLevel: 0.9 });
-  assert.ok(dSleepy >= 0.9 && dAwake <= 0.1,
-    `a share must separate the extremes cleanly (sleepy ${dSleepy}, awake ${dAwake})`);
-  // Symmetric, because theta/(theta+alpha) has no reason not to be — an asymmetry here would mean a
-  // hidden constant had crept back in.
-  assert.ok(Math.abs((dSleepy + dAwake) - 1) < 1e-9,
-    `the two extremes must be mirror images (${dSleepy} and ${dAwake})`);
+  /* Drowsy is bounded without an intercept and orders the extremes correctly. The extremes are now
+     spectra rather than normalised levels: all-theta-no-alpha against all-alpha-no-theta. */
+  /* Realistic extremes, not arithmetic ones: alpha and beta are never both zero on a live electrode,
+     and `bandShares` correctly returns null when they are (there is no alpha-versus-fast contest to
+     report). So "sleepy" is theta dominant with alpha gone, and "awake" is alpha dominant. */
+  const dSleepy = Metrics.compute('drowsy', { shares: DSP.bandShares({ theta: 1, alpha: 0.02, beta: 0.2 }) });
+  const dAwake = Metrics.compute('drowsy', { shares: DSP.bandShares({ theta: 0.02, alpha: 1, beta: 0.5 }) });
+  assert.ok(dSleepy >= 0.7 && dAwake <= 0.05,
+    `a conjunction of shares must separate the extremes cleanly (sleepy ${dSleepy}, awake ${dAwake})`);
+  assert.strictEqual(DSP.bandShares({ theta: 1, alpha: 0, beta: 0 }), null,
+    'no fast power at all means there is no alpha-versus-beta contest to report — null, not a guess');
 
   /* DELTA MUST NOT REACH DROWSY AT ALL.
    *
@@ -179,17 +314,22 @@ const Metrics = require('./public/metrics.js');
    * Asserted as independence rather than as a threshold: swinging delta from nothing to everything
    * must not move the number by a hair. A tolerance would let a small weight survive.
    */
-  const dNoDelta = Metrics.compute('drowsy', { thetaLevel: 0.4, deltaLevel: 0, alphaLevel: 0.5 });
-  const dAllDelta = Metrics.compute('drowsy', { thetaLevel: 0.4, deltaLevel: 1, alphaLevel: 0.5 });
+  const dNoDelta = Metrics.compute('drowsy', { shares: DSP.bandShares({ delta: 0, theta: 4, alpha: 3, beta: 3 }) });
+  const dAllDelta = Metrics.compute('drowsy', { shares: DSP.bandShares({ delta: 99, theta: 4, alpha: 3, beta: 3 }) });
   assert.strictEqual(dNoDelta, dAllDelta,
     `delta must not influence drowsy at all (${dNoDelta} vs ${dAllDelta}) — it is the band this app`
     + ' already treats as a blink');
+  /* AND IT MUST BE EXCLUDED AT THE SOURCE, not just unused downstream: the shares themselves must not
+     change when delta swings, or a later composite could pick it up by accident. */
+  assert.deepStrictEqual(DSP.bandShares({ delta: 0, theta: 4, alpha: 3, beta: 3 }),
+    DSP.bandShares({ delta: 500, theta: 4, alpha: 3, beta: 3 }),
+    'DSP.bandShares must ignore delta entirely — 1-4Hz at a forehead electrode is eye movement');
   // And it must still answer when delta is missing entirely, since it no longer needs it.
-  assert.ok(Metrics.compute('drowsy', { thetaLevel: 0.7, alphaLevel: 0.3 }) != null,
+  assert.ok(Metrics.compute('drowsy', { shares: DSP.bandShares({ theta: 7, alpha: 3, beta: 0 }) }) != null,
     'drowsy must not require a band it does not use');
   // Openness must NOT let high alpha buy its way past a churning signal — the weighted sum did.
-  const oChurny = Metrics.compute('openness', { alphaLevel: 1, betaLevel: 0, variability: 1 });
-  const oSteady = Metrics.compute('openness', { alphaLevel: 0.6, betaLevel: 0.4, variability: 0 });
+  const oChurny = Metrics.compute('openness', { shares: DSP.bandShares({ theta: 0, alpha: 1, beta: 0 }), variability: 1 });
+  const oSteady = Metrics.compute('openness', { shares: DSP.bandShares({ theta: 0, alpha: 0.6, beta: 0.4 }), variability: 0 });
   assert.strictEqual(oChurny, 0,
     'a fully churning signal cannot be open awareness whatever alpha does');
   assert.ok(oSteady > 0.5, 'while a steadier, weaker one can be');
@@ -222,8 +362,8 @@ const Metrics = require('./public/metrics.js');
     const m = Metrics.get(key);
     assert.ok(m, `${key} must still EXIST — the lab computes it and the raw EEG is still kept`);
     assert.strictEqual(m.tier, 'speculative', `${key} is retired because it is exploratory`);
-    assert.ok(Metrics.compute(key, { alphaLevel: 0.6, betaLevel: 0.3, variability: 0.2,
-      alphaLeft: 0.6, alphaRight: 0.4 }) != null,
+    assert.ok(Metrics.compute(key, { shares: DSP.bandShares({ theta: 1, alpha: 0.6, beta: 0.3 }),
+      variability: 0.2, alphaLeft: 0.6, alphaRight: 0.4 }) != null,
       `${key} must remain computable — retiring is not deleting`);
   }
 

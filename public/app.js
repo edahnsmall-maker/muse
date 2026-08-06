@@ -522,6 +522,11 @@ function logSessionSample(result, channels) {
        and means the same thing in every recording, which makes it the first EEG number here that a
        whole-session comparison can honestly use. */
     calmAbs: result.calmAbs,
+    /* THE OLD NORMALISED SCORE, kept as a column after it stopped being what the app shows.
+       Calm is absolute now (DSP.CALM_WINDOW). Keeping the within-sit version means a sit recorded under
+       the new formula can still be compared with the seven recorded under the old one, and means the
+       claim that the normalised score was uninformative stays checkable rather than becoming folklore. */
+    calmRel: result.calmRel,
     noise: result.artifactRate,
     levels: channels.map((c) => (c.pct == null ? null : c.pct)),
     spikes: bandState.filter((s) => s.spike > 0.9).length,
@@ -590,7 +595,10 @@ function logSessionSample(result, channels) {
        that read nothing, and a floating electrode, a flat dead input and a jaw clench are three
        different facts with three different fixes. The live panel distinguishes them and says what to do
        about each; the file could not tell them apart at all. */
-    chanState: channels.map((c) => (c.flat ? 'flat' : c.floating ? 'floating'
+    /* `stale` FIRST, and it is the state this column was missing. See eegStale(): a sit that lost its
+       EEG stream recorded 67 seconds of "ok" because the classifier was reading a buffer that had
+       stopped changing, and every score written beside it was fiction. */
+    chanState: channels.map((c) => (c.stale ? 'stale' : c.flat ? 'flat' : c.floating ? 'floating'
       : c.artifact ? 'noisy' : 'ok')),
   };
   // Composites too, so a marked moment can be compared against every score
@@ -1653,6 +1661,10 @@ function computeFeatures(result) {
 
   const f = {
     calm: result.calm, activity: result.activity,
+    /* THE SHARES, straight through to metrics.js. Thinking, Drowsy, Focus and Openness are all built
+       from these now instead of from AdaptiveNormalizer outputs — see the long note above DSP.bandShares
+       for why a ratio of two normalised numbers is nearly a constant. */
+    shares: result.shares,
     blink: art.blink, jaw: art.jaw,
     variability: activityTracker.varNorm ? activityTracker.varNorm.value : 0.5,
     // No longer deliberately absent: with a chest strap connected these are
@@ -2099,6 +2111,9 @@ function updateBreathing() {
 // Tracks what fraction of recent windows were artifact-flagged, so a single
 // blink doesn't flash a warning but sustained talking/jaw tension does.
 let artifactRate = 0;
+/* The last raw alpha share, for the tests and for anyone opening the console. See lastCalmAbs above the
+   assignment: Calm is a mapped score, and a mapped score has to be checkable against its input. */
+let lastCalmAbs = null;
 
 function pushSamples(channelIndex, microvolts) {
   // THE RAW SIGNAL, saved before anything derives anything from it. Every
@@ -2113,25 +2128,53 @@ function pushSamples(channelIndex, microvolts) {
   lastDataAt = Date.now();
 }
 
+/*
+ * HAS ANY EEG ARRIVED RECENTLY?
+ *
+ * WHY THIS EXISTS, from a real recording. In the second retreat sit of 2026-08-06 the headband stopped
+ * delivering EEG 115 seconds into a 186-second sit. Nothing noticed. `buffers[]` kept its last second of
+ * samples, the tick kept computing band powers from them, and for the remaining 67 seconds the app
+ * reported `calmAbs` frozen at exactly 0.10, `blink` frozen at 0.04, Calm decaying to 1 — and
+ * `chanState` saying "ok ok ok ok" for every one of those seconds.
+ *
+ * That is the worst failure this app can have. It told someone their calmest sit had collapsed, while
+ * holding no data at all, and the file it wrote says the sensors were fine. Every other honesty rule
+ * here — a metric with no input returns null, never zero — was being obeyed to the letter and defeated,
+ * because the input LOOKED present.
+ *
+ * 1200ms: the analysis window is one second, so past that the window contains nothing that arrived since
+ * the last check and any number from it describes a moment already gone. Packets land every ~46ms, so
+ * this is 25 missed packets and cannot be ordinary jitter.
+ */
+const EEG_STALE_MS = 1200;
+function eegStale() { return !lastDataAt || Date.now() - lastDataAt > EEG_STALE_MS; }
+
 function computeCalm() {
   const ready = FRONTAL.every((ch) => buffers[ch].length >= WINDOW);
   if (!ready) return null;
+  /* STALE IS NOT A LOW SCORE, IT IS NO SCORE. Returning null here is what makes every composite go
+     null, the readout say so, and metrics.csv record a gap instead of 67 seconds of invention. */
+  if (eegStale()) return null;
 
   const windows = FRONTAL.map((ch) => buffers[ch].slice(-WINDOW));
   const artifact = windows.some((w) => DSP.isArtifact(w));
   artifactRate += 0.2 * ((artifact ? 1 : 0) - artifactRate);
 
   if (artifact) {
+    /* SHARES ARE NULL, not held. A blink is missing data, and a composite computed from the last clean
+       second while the eyes are moving is a number about the blink. The readout shows the held value
+       from `features` for continuity; what must not happen is a NEW reading being minted here. */
+    const rel = tracker.update(null);
     return {
-      calm: tracker.update(null), ratio: null, artifact, artifactRate,
+      calm: rel, calmRel: rel, calmAbs: null, shares: null, ratio: null, artifact, artifactRate,
       activity: activityTracker.update({ artifact: true }),
     };
   }
 
-  let alphaSum = 0, betaSum = 0;
+  let alphaSum = 0, betaSum = 0, thetaSum = 0;
   for (const window of windows) {
     const powers = DSP.bandPowers(window, DSP.EEG_FREQUENCY);
-    alphaSum += powers.alpha; betaSum += powers.beta;
+    alphaSum += powers.alpha; betaSum += powers.beta; thetaSum += powers.theta;
   }
   /* THE RATIO COMES FROM THE 16-SECOND AVERAGE, not from this one window.
      Calm is the headline number and the thing that drives the visual, so it is the number the
@@ -2187,8 +2230,31 @@ function computeCalm() {
     artifact: false,
     spiked: bandState.some((b) => b.spike > 0.9),
   });
-  return { calm: tracker.update(ratio), calmAbs, ratio, artifact, artifactRate,
-    alphaSum, betaSum, activity };
+  /*
+   * THE SHARES, from the same averaged powers, and they are now what every composite is built from.
+   * thetaSum is summed here alongside alpha and beta because Thinking, Drowsy and Focus are shares of
+   * theta+alpha+beta and the instantaneous fallback needs all three — see DSP.bandShares.
+   */
+  const absTheta = useAveraged ? averaged.theta : thetaSum / FRONTAL.length;
+  const shares = DSP.bandShares({ theta: absTheta, alpha: absAlpha, beta: absBeta });
+  /*
+   * CALM IS THE ABSOLUTE SCORE NOW. `calmRel` is the old within-sit normalised one, kept and still
+   * written to metrics.csv so the change is auditable and so the two can be compared on a sit that has
+   * already been recorded — but it is no longer what the app shows, because it could not say what a sit
+   * WAS. See DSP.CALM_WINDOW for the six sits this was checked against.
+   *
+   * The normaliser is still updated on every tick rather than skipped: its output is a running state,
+   * and a baseline that only advances when someone happens to be looking at the relative number would
+   * make that number depend on the display.
+   */
+  const calmRel = tracker.update(ratio);
+  const calm = DSP.calmFromShares(shares);
+  /* THE RAW SHARE, observable. Calm is a mapped quantity now, and the only way to check that the mapping
+     adds no movement of its own is to be able to read both — see the smoothness assertion in test-ui.js.
+     Written to the global rather than returned because it is a diagnostic, not an input to anything. */
+  lastCalmAbs = calmAbs;
+  return { calm: calm != null ? calm : calmRel, calmRel, calmAbs, shares, ratio,
+    artifact, artifactRate, alphaSum, betaSum, thetaSum, activity };
 }
 
 // Raw per-sensor readout — all 4 electrodes individually (TP9/TP10 behind
@@ -2201,9 +2267,17 @@ function computeCalm() {
 // ratio, so it doubles as this channel's "band level" for the visual
 // without needing a separate adaptive normalizer.
 function computeChannelLabels() {
+  /* A CHANNEL WITH NO NEW SAMPLES IS NOT "OK" — see eegStale(). This is checked before the buffer's
+     CONTENTS are looked at, because the contents are what look fine: a frozen second of clean EEG
+     classifies as clean forever. */
+  const stale = eegStale();
   return DSP.CHANNEL_NAMES.map((name, ch) => {
     const buf = buffers[ch];
     if (buf.length < WINDOW) return { name, label: '…', pct: null, artifact: false };
+    if (stale) {
+      return { name, label: 'No data', pct: null, artifact: true, ptp: null,
+        floating: false, flat: false, stale: true };
+    }
     const window = buf.slice(-WINDOW);
     /* SAY HOW BAD, not just that it is bad.
      *
@@ -4891,6 +4965,30 @@ function renderNotConnectedReadout() {
   renderViewSwitch();
 }
 
+/*
+ * THE HEADBAND IS CONNECTED AND HAS STOPPED SENDING.
+ *
+ * A distinct state from "not connected", and the one that had no screen at all — see eegStale(). The
+ * numbers are deliberately not shown: they are the last ones that arrived, they are being presented in
+ * the place where the current ones go, and the whole reason this exists is a recorded sit where exactly
+ * that happened for a minute and looked like a collapse in the practitioner's state.
+ *
+ * A sentence rather than a table of dashes, for the same reason renderNotConnectedReadout uses one:
+ * dashes in a table read as broken sensors, and the sensors may be fine — it is the link that is not.
+ */
+function renderSignalLostReadout() {
+  const secs = lastDataAt ? Math.round((Date.now() - lastDataAt) / 1000) : 0;
+  readoutRowsEl.innerHTML =
+    '<div class="rNote"><b>Signal lost.</b><br>'
+    + `No EEG has arrived for ${secs}s. The headband still reports as connected, so this is usually`
+    + ' the band slipping — reseat it and wet the contacts behind your ears.<br>'
+    + '<span class="rNoteDim">Scores are hidden rather than held: the last ones that arrived are not'
+    + ' what is happening now. Nothing is written to the recording while this shows, so the sit will'
+    + ' have a gap here rather than a flat line.</span></div>';
+  readoutEl.classList.add('show');
+  renderViewSwitch();
+}
+
 // A minimal readout for when the strap is connected but the headband isn't. The
 // strap alone genuinely measures three things — heart rate, HRV, and a real
 // breathing rate from RSA — and none of them need EEG.
@@ -4958,13 +5056,40 @@ setInterval(() => {
   updateProbes();
 
   if (!result) {
+    /*
+     * A LOST STREAM MUST SAY SO, AND MUST DROP ITS NUMBERS.
+     *
+     * This branch used to say "gathering signal — sit still for a moment…" whatever the reason, and the
+     * message that actually described the case — "signal lost — check the headband fit" — sat forty
+     * lines BELOW this return and so could never be reached when there was no data. The one recorded sit
+     * that lost its headband therefore showed a message about settling in, for a minute, while the panel
+     * kept displaying the last numbers it had. See eegStale().
+     *
+     * The held EEG values are cleared rather than left standing. A number on screen is a claim about
+     * now; there is nothing more misleading than the correct value from a minute ago presented in the
+     * place where the current one goes.
+     */
+    if (lastDataAt && eegStale()) {
+      for (const k of ['shares', 'deltaLevel', 'thetaLevel', 'alphaLevel', 'betaLevel',
+        'alphaLeft', 'alphaRight', 'calm', 'activity', 'blink', 'jaw']) {
+        features[k] = null;
+      }
+      for (let i = 0; i < bandFresh.length; i++) bandFresh[i] = false;
+    }
+    /* SIGNAL LOST comes first, because it is the only one of these three that was reachable ONLY as a
+       misdiagnosis: with a headband connected and silent, the old code fell through to the strap-only
+       panel or to nothing at all, and said "gathering signal". */
+    if (lastDataAt && eegStale() && museConnected()) renderSignalLostReadout();
     // Strap-only operation is a legitimate state: the strap alone gives heart
     // rate, HRV and a real breathing rate, none of which need the headband.
-    if (strapConnected()) renderStrapOnlyReadout();
+    else if (strapConnected()) renderStrapOnlyReadout();
     /* And no device at all is also a legitimate state — it is the state every page load starts in.
        It used to render nothing, which is why a working app's first screen looked broken. */
     else if (!museConnected()) renderNotConnectedReadout();
-    if (lastDataAt && !lockedNow) setStatus('gathering signal — sit still for a moment…');
+    if (!lockedNow) {
+      if (lastDataAt && eegStale()) setStatus('signal lost — check the headband fit');
+      else if (lastDataAt) setStatus('gathering signal — sit still for a moment…');
+    }
     return;
   }
   const channels = computeChannelLabels(); // one call, reused for readout + bands + chart

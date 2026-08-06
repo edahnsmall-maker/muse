@@ -271,6 +271,35 @@ full resolution. Softness can be downsampled; a hairline cannot.
 several visuals "had no colour". Either draw genuinely bright, or use a light ground
 (`Eclipse` does).
 
+**A NORMALISED SCORE CANNOT SAY WHAT A SIT WAS, and a ratio of two normalised numbers
+says almost nothing at all.** Every composite used to be built from `AdaptiveNormalizer`
+outputs — within-sit z-scores. Two measured consequences: Calm spanned 42-53 across seven
+sits whose physiology spanned twofold, rank correlation MINUS 0.32; and `drowsy` was
+normTheta/(normTheta+normAlpha), where both inputs hover at 0.5 so the ratio did too — it
+moved between 0.55 and 0.66 across a whole retreat sit. A band ratio is ALREADY scale-free;
+normalising each side first removes the only information it carried. The composites are
+absolute band shares now (`DSP.bandShares` and the four functions beside it).
+
+**Fitting a display window to labels you like will produce a window that flatters.**
+Calm's window was first set to [0.20, 0.42] by fitting four sits with written descriptions,
+and it scored the peak retreat sit 91 — which looked like success until a deliberately
+non-meditative session arrived (26 minutes, 11:46pm, "noisy from TV", "moving the mouse and
+listening to music") and scored **72**. The window now comes from the pooled DISTRIBUTION of
+every recording, which is a property of the signal rather than of anyone's opinion. Read the
+long note on `DSP.CALM_WINDOW`: it carries the seven-sit table and the AUC.
+
+**Alpha does not separate calm from not-calm on this hardware. Beta and gamma do.**
+Measured: the non-meditative session had the same frontal alpha power as peak zazen to within
+3% (72,833 vs 74,867), but 1.4x the beta and 1.7x the gamma. Alpha's share of alpha+beta
+separates them at AUC 0.78, beta's share at 0.74, and `alpha/(alpha+beta+gamma)` at 0.787.
+Anyone improving these scores should start from the fast bands, not from alpha.
+
+**A frozen buffer classifies as clean forever.** A sit lost its EEG stream 115s in and the app
+kept computing from `buffers[]` for 67 more seconds — `calmAbs` pinned at 0.10, Calm decaying
+to 1, and `chanState` recording "ok ok ok ok" for every one of those rows. Every honesty rule
+here was obeyed and defeated because the input LOOKED present. `eegStale()` is the gate;
+freshness has to be checked before contents, always.
+
 **An axis derived from the data is an axis that moves.** This cost three rounds of
 "the lines still drift and i think it's bc the range is recent". `Flow`'s per-channel
 traces now use a **constant** 0–0.75 window (alpha's share of alpha+beta is a bounded
