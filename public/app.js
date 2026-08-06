@@ -2196,6 +2196,18 @@ function updateBreathing() {
   const period = DSP.estimateBreathingPeriod(beats);
   if (period != null) {
     breathPeriod = period;
+    /*
+     * SAY WHERE IT CAME FROM. This path is RSA recovered from the Muse's TEMPLE PPG, and it set
+     * `breathPeriod` without ever setting `breathSource` — so a sit with no chest strap wrote a breathing
+     * rate to metrics.csv with the source column empty, which is exactly the ambiguity that column was
+     * added to remove. Found while checking the provenance of an 8.85/min reading on a real sit: the
+     * number was good and there was no way to know what had measured it.
+     *
+     * Only when nothing better is already claiming it. The chest strap and the strap's own RSA both
+     * overwrite this within a tick when they are present, and a temple pulse sensor is the weakest of the
+     * three — so it must not relabel a chest measurement as a PPG one just because it ran later.
+     */
+    if (breathSource == null) breathSource = 'ppg';
     visual.setBreathPeriod(period);
   }
 }
