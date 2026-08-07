@@ -271,6 +271,20 @@ full resolution. Softness can be downsampled; a hairline cannot.
 several visuals "had no colour". Either draw genuinely bright, or use a light ground
 (`Eclipse` does).
 
+**A HARNESS THAT SETS STATE AND SCREENSHOTS IS PROBABLY LYING TO YOU.** The app's own
+tick calls `visual.setState` four times a second, so a test driver at the same cadence
+only wins about half the frames. Three rounds of colour tuning were done against a
+`smooth.calm` of 0.28 while the harness believed it had set 0.92 — every conclusion drawn
+from those screenshots was about the wrong state. `visual.debugSmooth()` exists to close
+that: read the eased values back and assert them before believing a screenshot.
+
+**A VISUAL WHOSE GEOMETRY IS THE SAMPLE BUFFER IS A CHART, AND IT WILL TICK.** Ribbon was
+built for the Meditate screen and reported as "too similar to flow ... really choppy too".
+Drawing history as filled bands rather than lines makes a prettier chart, not a different
+kind of picture, and any shape derived from a 4Hz buffer changes four times a second
+however it is smoothed. Lumen touches `history` not at all: positions are continuous
+functions of elapsed time and the data only sets eased parameters.
+
 **A NORMALISED SCORE CANNOT SAY WHAT A SIT WAS, and a ratio of two normalised numbers
 says almost nothing at all.** Every composite used to be built from `AdaptiveNormalizer`
 outputs — within-sit z-scores. Two measured consequences: Calm spanned 42-53 across seven

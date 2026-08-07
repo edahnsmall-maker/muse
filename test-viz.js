@@ -854,9 +854,27 @@ const VizCore = require('./public/viz-core.js');
  * in both directions and for the case where the caller does not say.
  */
 {
-  assert.strictEqual(VizCore.MODES[0].key, 'ribbon',
-    'Ribbon must be mode 0 — that is what makes it the default a fresh page opens on');
+  /* LUMEN is mode 0 now. Ribbon held the place for one build and was reported as "too similar to flow ...
+     really choppy too" — both true, and both because Ribbon's geometry IS the sample buffer, so it is a
+     chart by construction and ticks at the sample rate however it is drawn. Ribbon is kept as a mode; what
+     changed is which one Meditate opens on. */
+  assert.strictEqual(VizCore.MODES[0].key, 'lumen',
+    'Lumen must be mode 0 — that is what makes it the default a fresh page opens on');
+  assert.ok(VizCore.MODES.some((m) => m.key === 'ribbon'), 'and Ribbon must still exist');
   assert.ok(!VizCore.MODES[0].hidden, 'and it must be reachable from the picker and by cycling');
+
+  /* LUMEN'S KEY, and the honesty rule that matters in it. Its colours are not series — the whole field
+     walks one warm-to-cool axis — so swatches would name lines that are not there. And the pulse is only
+     called your breath when something is measuring one. */
+  const lum = VizCore.legendFor('lumen', {});
+  assert.ok(lum.length && lum.every((e) => e.text && !e.label),
+    `Lumen's key must be words only: ${JSON.stringify(lum)}`);
+  assert.ok(!/pulse/.test(lum.map((e) => e.text).join(' ')),
+    'with no bloom driver it must say nothing about the pulse');
+  const lumPaced = VizCore.legendFor('lumen', { bloom: 'pacer' }).map((e) => e.text).join(' | ');
+  assert.match(lumPaced, /not your breath/, 'a fallback pacer must say it is not your breath');
+  assert.match(VizCore.legendFor('lumen', { bloom: 'breath' }).map((e) => e.text).join(' | '),
+    /follows your breath/, 'and a measured one is named as one');
 
   const key = VizCore.legendFor('ribbon', {});
   const labels = key.filter((e) => e.label).map((e) => e.label);
@@ -883,8 +901,8 @@ const VizCore = require('./public/viz-core.js');
   assert.ok(!/follows your breath/.test(paced),
     'and must not also claim it follows it');
   assert.ok(!/%BLOOM%/.test(breathed + paced + notes), 'and the placeholder must never reach the screen');
-  console.log('✓ Ribbon is mode 0 and its key names all four ribbons, both encodings, and says'
-    + ' honestly whether the bloom is following your breath or running on a timer');
+  console.log('✓ Lumen is mode 0 with a wordless key, Ribbon survives and still names all four ribbons'
+    + ' and both encodings, and both say honestly whether the pulse is your breath or a timer');
 }
 
 console.log('\nAll viz-core tests passed.');

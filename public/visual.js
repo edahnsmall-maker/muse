@@ -136,7 +136,9 @@ function createZenVisual(canvas) {
   /* Ribbon is here for the same reason Flow is: the bright hairline along each ribbon's top edge is
      sub-pixel, and the shared 560px buffer would deliver it upscaled 4x as a smear. It costs nothing
      extra — this mode uses no blur ops at all, only gradients. */
-  const DIRECT_MODES = new Set(['flow', 'ribbon', 'pulse', 'corona', 'silk']);
+  /* Lumen is here because it is nothing BUT large soft gradients: through the shared 560px buffer they
+     would be upscaled 4x and band, and the whole picture is falloff. It costs no blur ops. */
+  const DIRECT_MODES = new Set(['flow', 'lumen', 'ribbon', 'pulse', 'corona', 'silk']);
 
   // Which series Flow graphs: the four electrodes, or the four composites.
   // Follows the data panel's Sensors/Composites switch, because a main visual
@@ -185,6 +187,7 @@ function createZenVisual(canvas) {
   let flowRanges = [null, null, null, null];
   /* Where the newest sample was drawn last frame, in canvas pixels. See flowScroll(). */
   let flowHeadX = null;
+  let pushSeq = 0;
   let flowDt = 0;
 
   /*
@@ -1732,8 +1735,12 @@ function createZenVisual(canvas) {
          */
         const age = (n - 1 - i) / Math.max(1, n - 1);
         const liveness = smoothstep(0.34, 0.0, age);
+        /* KEYED TO THE SAMPLE, not to `x`. On screen position the shimmer pattern is fixed in space and
+           the ribbon slides through it, which beats against the scroll and is the other half of the chop.
+           On `seq` the ripple travels WITH the sample, which is what a ripple on a moving surface does. */
+        const seq = history[i].seq == null ? i : history[i].seq;
         const shimmer = bandH * 0.025 * thinking * liveness
-          * Math.sin(x * 0.055 + tSec * 1.5 + k * 2.1);
+          * Math.sin(seq * 0.42 + tSec * 1.5 + k * 2.1);
         const y = laneMid + laneSwing * (0.5 - e) * 2 + shimmer;
         /* THICKNESS IS THE VALUE AGAIN. The floor is not zero: a ribbon must stay visible at its lowest,
            or "calm is low" and "calm is not being measured" look the same, and only one of those is a
@@ -1815,9 +1822,25 @@ function createZenVisual(canvas) {
          * The newest point is always kept whatever the stride lands on, because that is where the head dot
          * goes and a head that snapped between every third sample would tick visibly.
          */
+        /*
+         * CHOSEN BY THE SAMPLE'S OWN IDENTITY, not by its position in the array — and this is the fix for
+         * "the ribbon is really choppy".
+         *
+         * The array scrolls: every push shifts every index by one. Selecting `i % 3 === 0` therefore
+         * re-picks a DIFFERENT third of the samples four times a second, and a Catmull-Rom curve through a
+         * different control set is a different curve. So the whole ribbon re-shaped on every sample —
+         * small in amplitude, but four times a second, everywhere at once, which is exactly what reads as
+         * chop rather than as movement.
+         *
+         * `seq` is a counter that belongs to the sample, so a given sample is a control point for its whole
+         * life or never. The curve behind the head then never changes shape again.
+         */
         const idx = [];
-        for (let i = a; i < b; i += RIBBON_STRIDE) idx.push(i);
-        if (idx[idx.length - 1] !== b - 1) idx.push(b - 1);
+        for (let i = a; i < b; i++) {
+          const h = history[i];
+          if (h.seq == null || h.seq % RIBBON_STRIDE === 0) idx.push(i);
+        }
+        if (!idx.length || idx[idx.length - 1] !== b - 1) idx.push(b - 1);
         const up = idx.map((i) => upper[i]);
         const dn = idx.map((i) => lower[i]).reverse();
         /* `grow` is a MULTIPLE OF EACH POINT'S OWN HALF-WIDTH, not a constant number of pixels. A constant
@@ -1899,6 +1922,226 @@ function createZenVisual(canvas) {
   /* Which of the two things the centre bloom is doing, so the key can say so rather than implying the
      nicer of the two. Read by app.js when it asks for a legend. */
   function ribbonBreathDriver() { return smooth.breathAmount != null ? 'breath' : 'pacer'; }
+
+  /* ==== LUMEN =========================================================================================
+   *
+   * WHAT IT IS. Drifting lobes of coloured light that overlap and merge, like light through moving water.
+   * No axis, no head, no plotted history — nothing in it reads as a chart.
+   *
+   * WHY IT EXISTS, and it is a correction. Ribbon was built for the Meditate screen and the report was:
+   * "it's too similar to flow. i wanted abstract and beautiful. the one you made is really choppy too."
+   * Both true, and the two faults have one cause: Ribbon's GEOMETRY IS THE SAMPLE BUFFER. Drawing the
+   * history as filled bands rather than as lines makes it a prettier chart, not a different kind of
+   * picture — and any shape derived from a 4Hz buffer changes four times a second no matter how it is
+   * smoothed, which is what chop is.
+   *
+   * So nothing here touches `history`. Every lobe's position is a continuous function of elapsed time, and
+   * the DATA only sets parameters that are already eased per frame in `smooth`. That makes it smooth by
+   * construction at any frame rate: there is no sample arrival for the eye to catch.
+   *
+   * WHAT IS STILL A READING. The same discipline as everywhere else — nothing here is decoration:
+   *
+   *   COHERENCE   focus. High focus draws the lobes toward one centre and slows them; low focus lets them
+   *               scatter to the corners. So absorption looks like one thing and distraction looks like
+   *               several, which is the distinction the state actually has.
+   *   HUE         calm against thinking. Amber and gold when settled, violet and magenta when busy, on the
+   *               same warm-to-cool axis the metrics panel uses.
+   *   DRIFT SPEED thinking. A quiet mind moves the field slowly.
+   *   BREADTH     calm. Settling opens the lobes out; agitation contracts them into tighter knots.
+   *   BRIGHTNESS  calm, so the picture is nicer when the thing it measures is going well.
+   *   THE PULSE   your measured breath, or a fixed 10s pacer when nothing is measuring one — and the key
+   *               says which, in those words. A pacer presented as your own breathing is the unearned
+   *               claim this project forbids; a pacer that says it is one is a real practice tool.
+   *
+   * WHAT IT CANNOT DO, said plainly: it has no memory. You cannot look at it and see how the sit went,
+   * which is the whole point of Iris and of Flow. It is a mirror, not a record.
+   */
+  /*
+   * FIVE LARGE LOBES, NOT SEVEN SMALL ONES — and this is the difference between a field of light and a
+   * scatter of dots, which is what the first two attempts were.
+   *
+   * Discrete radial gradients only read as one luminous body if they overlap almost entirely AND are drawn
+   * bright. Seven modest lobes spread over half the frame at a fifth of an alpha each is seven visible
+   * discs whose colours average to grey in the gaps. Five that each cover most of the short side, at two
+   * or three times that alpha, sum into a single mass whose interior varies — which is the look.
+   */
+  const LUMEN_LOBES = 5;
+  const LUMEN_PACER_SEC = 10;
+
+  /*
+   * Each lobe's own slow path, as a pair of incommensurable sine terms.
+   *
+   * Incommensurable on purpose: two frequencies with a rational ratio close and the lobe retraces the same
+   * closed loop every few seconds, which the eye learns and then reads as a mechanism. The ratios here are
+   * irrational multiples so the path never exactly repeats, and each lobe gets its own phase so the seven
+   * of them never line up into a pattern.
+   */
+  const LUMEN_PATHS = Array.from({ length: LUMEN_LOBES }, (_, i) => ({
+    // Small excursions, so the lobes stay overlapped and the mass kneads rather than dispersing.
+    ax: 0.13 + 0.07 * ((i * 7) % 5) / 4,
+    ay: 0.11 + 0.07 * ((i * 3) % 4) / 3,
+    fx: 0.021 + 0.0135 * Math.sqrt(i + 1),
+    fy: 0.017 + 0.0122 * Math.sqrt((i * 2 + 3) % 7 + 1),
+    px: i * 2.399963,          // the golden angle in radians, so the phases spread evenly
+    py: i * 1.399963 + 0.7,
+    hue: i / LUMEN_LOBES,
+  }));
+
+  function renderLumen(c, W, H, tSec) {
+    const calm = clamp01(smooth.calm);
+    const thinking = clamp01(smooth.activity);
+    const focus = clamp01(smooth.focus);
+
+    const measured = smooth.breathAmount != null;
+    const pulse = measured
+      ? clamp01(0.5 + 0.5 * smooth.breathAmount)
+      : 0.5 - 0.5 * Math.cos((tSec * 2 * Math.PI) / LUMEN_PACER_SEC);
+
+    // The ground. Warmer at the bottom so the field has somewhere to sit rather than floating in a void.
+    /* THE GROUND FOLLOWS THE MOOD TOO. A cool navy ground tints a dim warm field toward muddy violet — at
+       calm 0.9 the picture read violet while every lobe colour in it was amber, because the ground was
+       most of what was visible. So the ground warms as the field does, and the two agree. */
+    const mood0 = Math.pow(clamp01(smooth.calm), 0.75);
+    const g0 = mixColor([5, 6, 15], [14, 8, 8], mood0);
+    const g1 = mixColor([12, 7, 20], [26, 14, 11], mood0);
+    const bg = c.createLinearGradient(0, 0, 0, H);
+    bg.addColorStop(0, rgba(g0, 1));
+    bg.addColorStop(0.6, rgba(mixColor(g0, g1, 0.5), 1));
+    bg.addColorStop(1, rgba(g1, 1));
+    c.fillStyle = bg;
+    c.fillRect(0, 0, W, H);
+
+    const min = Math.min(W, H);
+    const cx = W * 0.5;
+    const cy = H * 0.47;
+    /* COHERENCE. At focus 1 the lobes sit almost on top of each other and the field is one form; at 0 they
+       use most of the frame. Cubed so the gathering happens at the top of the range, where the difference
+       between concentrated and very concentrated is the one worth showing. */
+    /*
+     * A FLOOR UNDER THE GATHERING. With no floor, high focus pulled the five lobes essentially concentric
+     * and the picture became one featureless blown-out disc — verified at a real `smooth.calm` of 0.92,
+     * after three rounds of tuning against 0.28 because the harness was racing the app's own tick.
+     * Gathering has to produce a coherent FORM, not a point.
+     */
+    const spread = 1 - 0.42 * Math.pow(focus, 2);
+    // A quiet mind moves the field slowly. The floor is not zero: a frozen picture reads as broken.
+    const rate = 0.30 + 1.25 * thinking;
+    const t = tSec * rate;
+    // Settling opens the lobes; agitation knots them. The breath pulse rides on top of both.
+    // Each lobe covers most of the short side, so five of them are one body and not five shapes.
+    const size = min * (0.30 + 0.17 * calm) * (0.94 + 0.12 * pulse);
+    /*
+     * DRAWN GENUINELY BRIGHT, and the first version was not.
+     *
+     * It used 0.055-0.13 and came out as a brown-grey haze with no form in it. HANDOFF says exactly why:
+     * "additive colour at low alpha over near-black desaturates toward grey — either draw genuinely
+     * bright, or use a light ground". Seven lobes at a twentieth of an alpha each sum to a flat wash whose
+     * hue has been averaged away, which is the failure that made several earlier visuals colourless.
+     */
+    /*
+     * TUNED FOR THE SUM, not for one lobe. Five lobes overlapping almost entirely means the alpha that
+     * matters is roughly five times this — at 0.34+0.34*calm the centre saturated to white and the picture
+     * was a blown-out pink blob. The overlap is what should be bright; each lobe on its own is faint.
+     */
+    const bright = 0.17 + 0.15 * calm;
+
+    /* THE PALETTE, warm-to-cool on the same axis the metrics panel uses. `hue` walks each lobe a little
+       way along it so the field has variation rather than being one colour at seven opacities. */
+    /* SATURATED ENDS. A palette whose members are close together averages to grey the moment it is added
+       up, which is precisely what seven overlapping lobes do. */
+    const WARM = [255, 158, 74];
+    const GOLD = [255, 214, 130];
+    const COOL = [168, 96, 255];
+    const DEEP = [72, 92, 232];
+    const mood = Math.pow(calm, 0.75);
+
+    c.save();
+    c.globalCompositeOperation = 'lighter';
+    /* A VERY SLOW WHOLE-FIELD ROTATION. Without it the lobes drift but the composition does not, and over
+       minutes that reads as static. One turn every eight minutes or so — below the threshold where the eye
+       reads it as motion, above the one where nothing is happening. */
+    c.translate(cx, cy);
+    c.rotate(tSec * 0.0021 * (0.5 + 0.5 * calm));
+    c.translate(-cx, -cy);
+
+    for (let i = 0; i < LUMEN_LOBES; i++) {
+      const p = LUMEN_PATHS[i];
+      const x = cx + Math.sin(t * p.fx * 2 * Math.PI + p.px) * W * p.ax * spread;
+      const y = cy + Math.sin(t * p.fy * 2 * Math.PI + p.py) * H * p.ay * spread;
+      /* Each lobe breathes on its own slow cycle as well as with the global pulse, so the field kneads
+         rather than scaling as a whole — that is what makes it read as liquid instead of as a zoom. */
+      const own = 0.78 + 0.30 * Math.sin(t * (0.031 + 0.011 * i) * 2 * Math.PI + p.py * 1.7);
+      /* SIZES VARY PER LOBE. Seven identical discs sum to one smooth dome with no internal structure —
+         which is what the first version was. A mix of broad, faint lobes and smaller, denser ones is what
+         makes the overlaps read as ridges of light rather than as an average. */
+      const scale = 0.72 + 0.55 * ((i * 3) % 5) / 4;
+      const r = size * own * scale;
+      if (!(r > 0)) continue;
+      /*
+       * ELLIPTICAL, EACH AT ITS OWN SLOWLY TURNING ANGLE — this is where the structure comes from.
+       * Overlapping circles sum to a bigger circle, however many there are; overlapping ellipses at
+       * different angles sum to ridges and lens shapes that move against each other. That is the
+       * difference between a glow and a picture, and it costs one transform per lobe.
+       */
+      const ecc = 0.52 + 0.34 * ((i * 2) % 3) / 2;
+      const ang = p.px + t * (0.013 + 0.006 * i) * 2 * Math.PI;
+      const warm = mixColor(COOL, WARM, mood);
+      const core = mixColor(warm, mixColor(DEEP, GOLD, mood), p.hue);
+      /* A DENSE CORE AND A LONG TAIL, rather than a linear falloff. The near stops carry most of the alpha
+         over a fifth of the radius, so each lobe has a centre the eye can find; the tail is what merges. */
+      const a0 = bright / Math.sqrt(scale);      // small lobes denser, so total light stays even
+      const g = c.createRadialGradient(x, y, 0, x, y, r);
+      /*
+       * THE TAIL MUST FOLLOW THE MOOD, and this was the bug that made a settled sit look violet.
+       *
+       * The far stop used to mix 55% toward DEEP — a blue-violet — regardless of state. The tails are most
+       * of the picture's AREA, so five overlapping violet tails set the colour of the whole field while the
+       * cores, which were correctly amber, were five small dots inside it. The key said "warm is settled"
+       * over a violet screen.
+       *
+       * So the shade the tail falls toward is itself on the warm-to-cool axis: a deep ember when settled, a
+       * deep indigo when busy. And the core is less peaked (0.22 carries most of the near alpha) so the
+       * lobes read as one body rather than as five bright points in a haze.
+       */
+      const shade = mixColor(DEEP, [128, 52, 26], mood);
+      g.addColorStop(0, rgba(mixColor(core, GOLD, 0.22 * mood), a0 * 0.95));
+      g.addColorStop(0.24, rgba(core, a0 * 0.78));
+      g.addColorStop(0.52, rgba(mixColor(core, shade, 0.30), a0 * 0.34));
+      g.addColorStop(0.78, rgba(shade, a0 * 0.12));
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      c.save();
+      c.translate(x, y);
+      c.rotate(ang);
+      c.scale(1, ecc);
+      c.translate(-x, -y);
+      c.fillStyle = g;
+      c.beginPath(); c.arc(x, y, r, 0, Math.PI * 2); c.fill();
+      c.restore();
+    }
+
+    /* THE CORE. Where the lobes gather, one tighter warm centre — so at high focus the field has a middle
+       to rest the eye on, and at low focus it is lost among them, which is the honest picture of both. */
+    const coreR = min * (0.05 + 0.10 * focus) * (0.9 + 0.2 * pulse);
+    const cg = c.createRadialGradient(cx, cy, 0, cx, cy, coreR);
+    const cCol = mixColor(mixColor(COOL, GOLD, mood), [255, 240, 214], 0.25);
+    cg.addColorStop(0, rgba(cCol, (0.05 + 0.08 * calm) * (0.30 + 0.70 * focus)));
+    cg.addColorStop(1, 'rgba(0,0,0,0)');
+    c.fillStyle = cg;
+    c.beginPath(); c.arc(cx, cy, coreR, 0, Math.PI * 2); c.fill();
+    c.restore();
+
+    /* A VIGNETTE, so the mass sits INSIDE something rather than bleeding off every edge. Multiplied down
+       rather than added: this is the one place in the picture that needs to darken, and `lighter` cannot. */
+    c.globalCompositeOperation = 'source-over';
+    const vig = c.createRadialGradient(cx, cy, min * 0.28, cx, cy, Math.max(W, H) * 0.78);
+    vig.addColorStop(0, 'rgba(3,4,10,0)');
+    vig.addColorStop(0.62, `rgba(3,4,10,${0.30 - 0.10 * calm})`);
+    vig.addColorStop(1, `rgba(2,3,8,${0.74 - 0.14 * calm})`);
+    c.fillStyle = vig;
+    c.fillRect(0, 0, W, H);
+  }
+
+  function lumenBreathDriver() { return smooth.breathAmount != null ? 'breath' : 'pacer'; }
 
   // ---- Pulse: a clock hand sweeping a ring per metric --------------------
 
@@ -3002,6 +3245,7 @@ function createZenVisual(canvas) {
       // upscale from the shared small buffer.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       if (mode === 'flow') renderFlow(ctx, canvas.width, canvas.height);
+      else if (mode === 'lumen') renderLumen(ctx, canvas.width, canvas.height, tSec);
       else if (mode === 'ribbon') renderRibbon(ctx, canvas.width, canvas.height, tSec);
       else if (mode === 'silk') renderSilk(ctx, canvas.width, canvas.height, tSec);
       else if (mode === 'corona') renderCoronaDiffuse(ctx, canvas.width, canvas.height, tSec);
@@ -3047,7 +3291,8 @@ function createZenVisual(canvas) {
         /* What the centre glow is really pulsing on. See LEGENDS.ribbon: this is the difference between
            "follows your breath" and "a steady 10s pacer, not your breath", and only one of them is true
            at any moment. */
-        bloom: mode === 'ribbon' ? ribbonBreathDriver() : null,
+        bloom: mode === 'ribbon' ? ribbonBreathDriver()
+          : mode === 'lumen' ? lumenBreathDriver() : null,
         omitSeries: VizCore.CHANNEL_LABELS.filter((_, i) => !everFresh[i]),
       }));
     }
@@ -3135,6 +3380,9 @@ function createZenVisual(canvas) {
       }
       flowEma.breath = emaStep(flowEma.breath, state.breathAmount, emaAlpha(5));
       history.push({
+        /* A counter that belongs to the SAMPLE rather than to its slot in the array — see the note on the
+           control-point selection in renderRibbon. Monotonic for the life of the page. */
+        seq: pushSeq++,
         breath: state.breathAmount,
         levels: bands.map((b) => clamp01(b.level)),
         held: bands.map((b) => b.fresh === false),
@@ -3261,6 +3509,14 @@ function createZenVisual(canvas) {
        fixed x beside the head, so the maximum became a constant and the scroll read as zero. A renderer
        that has to be reverse-engineered from its draw calls will keep breaking tests that way. */
     flowScroll() { return { phase: flowPhase(), intervalSec: pushIntervalSec, headX: flowHeadX }; },
+    /* The eased values every renderer actually draws from. Exposed because a harness that sets state and
+       then screenshots is not testing what it thinks: the app's own tick calls setState four times a
+       second too, so a driver at the same cadence only wins about half the frames. Three rounds of colour
+       tuning were done against a `smooth.calm` of roughly 0.5 while the harness believed it was 0.9. */
+    debugSmooth() {
+      return { calm: smooth.calm, activity: smooth.activity, focus: smooth.focus,
+        breathAmount: smooth.breathAmount };
+    },
     /* The y actually drawn for every sample of a series, last frame, in canvas pixels —
        the only way to measure whether the RECORDED PAST holds still, which is the thing
        that was reported as drifting. Off unless asked for: this allocates per frame. */
@@ -3274,7 +3530,8 @@ function createZenVisual(canvas) {
         composites: seriesMode === 'composites',
         breath: history.some((h) => h.breath != null),
         depositSec: irisDepositSec(),
-        bloom: VizCore.MODES[modeIndex].key === 'ribbon' ? ribbonBreathDriver() : null,
+        bloom: VizCore.MODES[modeIndex].key === 'ribbon' ? ribbonBreathDriver()
+          : VizCore.MODES[modeIndex].key === 'lumen' ? lumenBreathDriver() : null,
         omitSeries: VizCore.CHANNEL_LABELS.filter((_, i) => !everFresh[i]),
       });
     },

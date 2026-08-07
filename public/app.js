@@ -2078,7 +2078,7 @@ function applyPlaceChrome() {
   /*
    * AND MEDITATE OPENS ON RIBBON, the same way and for the opposite reason.
    *
-   * Asked for: "make a new visual and make it the default for meditate". Ribbon is what a fresh page
+   * Asked for: "make a new visual and make it the default for meditate". Lumen is what a fresh page
    * already opens on — it is first in VizCore.MODES — but coming BACK from Train would otherwise leave
    * Flow on screen, and Flow is an instrument: a plotted grid of four lines is the wrong thing to sit in
    * front of with your eyes closing.
@@ -2088,7 +2088,7 @@ function applyPlaceChrome() {
    * itself on every later render and undo choosing a different visual while meditating.
    */
   if (!trainingMode && wasTraining === true && typeof visual !== 'undefined' && visual.setModeByKey) {
-    visual.setModeByKey('ribbon');
+    visual.setModeByKey('lumen');
     renderBarModes();
   }
   wasTraining = trainingMode;

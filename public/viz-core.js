@@ -103,11 +103,14 @@
   }
 
   const MODES = [
-    /* FIRST, so it is what a fresh page opens on — `modeIndex` starts at 0. Asked for as "make a new
-       visual and make it the default for meditate", and Meditate is where a fresh page starts.
-       Inserting rather than appending is safe here because the mode index is not persisted anywhere:
+    /* FIRST, so it is what a fresh page opens on — `modeIndex` starts at 0, and Meditate is where a fresh
+       page starts. Inserting rather than appending is safe because the mode index is not persisted:
        nothing stored points at position 0 and would silently be repointed. Train still overrides to Flow
-       on entry, which is what an instrumented screen wants. */
+       on entry, which is what an instrumented screen wants.
+       Ribbon held this place for one build and was reported as "too similar to flow ... really choppy
+       too" — both true, and both for one reason: Ribbon's geometry IS the sample buffer. Lumen touches no
+       history at all, so it can be neither a chart nor choppy. See renderLumen. */
+    { key: 'lumen', label: 'Lumen', family: 'core', blurb: 'drifting light that gathers as you focus — no timeline, nothing to read' },
     { key: 'ribbon', label: 'Ribbon', family: 'core', blurb: 'four silks over a breathing bloom: height and thickness are the score' },
     { key: 'eclipse', label: 'Eclipse', family: 'core', blurb: 'stillness grows as a void; thinking flares at its edge' },
     { key: 'iris',    label: 'Iris',    family: 'core', blurb: 'your session laid down as a rose window' },
@@ -867,6 +870,17 @@
      * over a glow running on a timer is precisely the unearned claim this file exists to prevent. The
      * line is dropped entirely if the caller does not say, rather than defaulting to the flattering one.
      */
+    /*
+     * Lumen's key has no swatches, because its colours are not series — the whole field walks one
+     * warm-to-cool axis, so naming four would be naming lines that are not there. Words only, and the
+     * `%BLOOM%` substitution is the same honesty rule as Ribbon's: the pulse is only called your breath
+     * when a sensor is actually measuring one.
+     */
+    lumen: {
+      notes: ['light gathers as focus rises, scatters as it goes',
+        'warm is settled, violet is busy · brighter is calmer',
+        'the pulse %BLOOM%'],
+    },
     ribbon: {
       palette: 'metrics',
       notes: ['higher and thicker is more of it, 0 to 1 — the same scale every sit',

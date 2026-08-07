@@ -145,14 +145,14 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   /* EACH PLACE OPENS ON THE VISUAL THAT SUITS IT, checked here because this is where the page is first
    * put into Train and the transition is only made once per entry.
    *
-   * Meditate opens on Ribbon — "make a new visual and make it the default for meditate" — and Train opens
+   * Meditate opens on Lumen — "make a new visual and make it the default for meditate" — and Train opens
    * on Flow, because a plotted grid of four lines is what an instrumented screen wants and the wrong thing
    * to sit in front of with your eyes closing. Both must also YIELD: a visual chosen by hand while in a
    * place has to survive the next render of that place, or the default is not a default but an override.
    */
   {
     const boot = await page.evaluate(() => visual.currentMode().key);
-    assert.strictEqual(boot, 'ribbon', `a fresh page must open on Ribbon, got ${boot}`);
+    assert.strictEqual(boot, 'lumen', `a fresh page must open on Lumen, got ${boot}`);
   }
   await page.click('#placeTrain');
   await page.waitForTimeout(400);
@@ -170,8 +170,8 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
     await page.click('#placeMeditate');
     await page.waitForTimeout(300);
     const back = await page.evaluate(() => visual.currentMode().key);
-    assert.strictEqual(back, 'ribbon',
-      `leaving Train must return to Ribbon rather than leaving an instrument on screen, got ${back}`);
+    assert.strictEqual(back, 'lumen',
+      `leaving Train must return to Lumen rather than leaving an instrument on screen, got ${back}`);
     const keptToo = await page.evaluate(() => {
       visual.setModeByKey('breath');
       applyPlaceChrome();
@@ -185,7 +185,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
   await page.evaluate(ARM_WITHOUT_RESET);
 
   assert.deepStrictEqual(errors, [], `the page must load without console errors:\n  ${errors.join('\n  ')}`);
-  console.log('✓ direct.html loads without throwing, Meditate opens on Ribbon and Train on Flow,'
+  console.log('✓ direct.html loads without throwing, Meditate opens on Lumen and Train on Flow,'
     + ' and a visual chosen by hand sticks in both');
 
   /* 0a1) A BOOT FAILURE MUST BE VISIBLE, AND VERSION SKEW MUST NOT CAUSE ONE.
@@ -2721,7 +2721,7 @@ async function waitFor(page, fn, label, timeoutMs = 6000) {
        mode 0. The list is asserted in full and in order, so a mode added or hidden shows up here — the
        point of this assertion was never the number seven, it is that the picker offers exactly the modes
        that are kept and in the order the keyboard cycles them. */
-    const wanted = ['Ribbon', 'Eclipse', 'Iris', 'Pulse', 'Corona', 'Silk', 'Flow', 'Breath'];
+    const wanted = ['Lumen', 'Ribbon', 'Eclipse', 'Iris', 'Pulse', 'Corona', 'Silk', 'Flow', 'Breath'];
     assert.deepStrictEqual(out.visuals, wanted,
       `only the kept visuals may be offered, in order (got ${out.visuals.join(', ')})`);
 
